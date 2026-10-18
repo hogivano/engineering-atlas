@@ -13,9 +13,9 @@ minutes: 15
 ## How it works
 
 ### The definition is about knowledge
-The phrase comes from *The Pragmatic Programmer* (Hunt and Thomas, 1999), which defines it as "every piece of knowledge must have a single, unambiguous, authoritative representation within a system". The key words are knowledge and authoritative. A shipping-weight limit of 30 kg is knowledge. If it appears as `30` in the API validator, as `30000` grams in the warehouse service and as "up to 30 kg" in the help page, the system holds three copies of one fact, and nothing forces them to agree.
+The phrase comes from *The Pragmatic Programmer* (Hunt and Thomas, 1999), whose section "DRY: The Evils of Duplication" defines it as "every piece of knowledge must have a single, unambiguous, authoritative representation within a system". The key words are knowledge and authoritative. A shipping-weight limit of 30 kg is knowledge. If it appears as `30` in the API validator, as `30000` grams in the warehouse service and as "up to 30 kg" in the help page, the system holds three copies of one fact, and nothing forces them to agree.
 
-Code, schemas, configuration, documentation, tests and database constraints can all hold knowledge. DRY applies to all of them, which is why a principle that sounds like "extract a function" is really about where facts live.
+Dave Thomas stresses the same point: most people take DRY to mean not duplicating code, but it covers database schemas, test plans, the build system and documentation too ([Artima interview](https://www.artima.com/articles/orthogonality-and-the-dry-principle)). Code, schemas, configuration, documentation, tests and database constraints can all hold knowledge. DRY applies to all of them, which is why a principle that sounds like "extract a function" is really about where facts live.
 
 ### What drift looks like
 ```python
@@ -31,7 +31,7 @@ def label_class(weight_kg):
 
 Then the carrier raises the limit to 32 kg. The team updates `MAX_PARCEL_KG`, and checkout keeps rejecting parcels between 30 and 32 kg for a month. Each copy was correct when written. The defect is that they were copies.
 
-The fix is one owner of the fact, `shipping_limits.MAX_PARCEL_GRAMS = 32_000`, imported by both. When the services are separate deploy units, the owner might be a config service, a shared schema, or one service exposing the limit through its API.
+The ordinary code-level treatment is the one Refactoring.Guru gives for its duplicate-code smell: extract the shared part into one method and call it from both places ([Refactoring.Guru](https://refactoring.guru/smells/duplicate-code)). Here the fact crosses services, so the fix is one owner of the fact, `shipping_limits.MAX_PARCEL_GRAMS = 32_000`, imported by both. When the services are separate deploy units, the owner might be a config service, a shared schema, or one service exposing the limit through its API.
 
 ### Coincidental duplication
 Two functions can be textually identical and still represent different knowledge:
@@ -47,10 +47,10 @@ def loyalty_bonus_eligible(order_cents):
 Marketing owns one threshold, the loyalty team the other. Merging them into `over_fifty_dollars()` couples two policies that will diverge next quarter. The test is the reason to change: if the two would always change together, they are one piece of knowledge; if they change for different reasons and by different people, they are two, however alike they look.
 
 ### The wrong abstraction
-Sandi Metz describes the usual decay: someone extracts a shared helper; a new caller needs something slightly different, so a parameter is added; then a flag; then a branch for a third caller. After a year the helper is a switch statement over callers, each change risks the others, and nobody dares touch it. Her advice is to inline the abstraction back into its callers and let them diverge, then look again for what is truly shared. The rule of three is the practical version: tolerate the second copy, extract on the third, when you can see what actually varies.
+Sandi Metz's claim is that duplication is far cheaper than the wrong abstraction ([The Wrong Abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction)). She describes the usual decay: someone extracts a shared helper; a new caller needs something slightly different, so a parameter is added; then a flag; then a branch for a third caller. After a year the helper is a switch statement over callers, each change risks the others, and nobody dares touch it. Her advice is to inline the abstraction back into its callers and let them diverge, then look again for what is truly shared. The rule of three is the practical version: tolerate the second copy, extract on the third, when you can see what actually varies.
 
 ### Generate instead of copy
-Some knowledge must exist in several forms: a request format appears as server validation, client types, API docs and a database column. Writing each by hand is four copies. Generating them from one definition (Protocol Buffers, OpenAPI, JSON Schema, an ORM model) keeps one authoritative source and lets tools produce the rest. The practice task builds a small version: one field schema that drives both validation and documentation.
+Some knowledge must exist in several forms: a request format appears as server validation, client types, API docs and a database column. Writing each by hand is four copies. Generating them from one definition (Protocol Buffers, OpenAPI, JSON Schema, an ORM model) keeps one authoritative source: protobuf's own overview describes defining how data is structured once and generating native language bindings for many languages ([Protobuf docs](https://protobuf.dev/overview/)), and Kubernetes ships generators that produce clients and informers from API type definitions ([kubernetes/code-generator](https://github.com/kubernetes/code-generator)). That keeps one authoritative source and lets tools produce the rest. The practice task builds a small version: one field schema that drives both validation and documentation.
 
 ### Reviewing agent-written code
 A coding agent asked to add a "premium" plan often copies the "standard" plan's pricing function and edits two numbers. That is duplication of the rounding and proration rules, which will drift. Asked to "reduce duplication", the same agent may merge two unrelated validators behind a `mode` parameter. Ask, for each copy or each merge: what is the fact here, who owns it, and will these change together?
@@ -64,12 +64,12 @@ DRY is the *multi-step consistency* problem in source code. Two copies of a fact
 A DRY design promises that changing a piece of knowledge requires editing one place, and that every consumer sees the change after the next build or deploy. Testable form: grep for the fact (the literal, the regex, the field name) and find one definition; change it and watch every dependent test respond. The flip side of the contract is coupling: every consumer of the shared definition now changes when it changes, whether it wanted to or not.
 
 ### Layer 2: The mechanism
-Languages offer several ways to keep one copy, each with a different cost. A function is the simplest. Generics remove duplication across types, and are implemented very differently: C++ templates and Rust generics are monomorphised, meaning the compiler emits a separate machine-code copy per type; Java erases type parameters to one shared body that works on `Object` references; Go uses "GC shape stenciling", producing one body per memory shape (all pointer types share one) plus a dictionary argument that carries type information. Code generators (`protoc`, OpenAPI generators, `sqlc`) produce source from a schema at build time. Shared libraries move a definition into a separate package that several programs import.
+Languages offer several ways to keep one copy, each with a different cost. A function is the simplest. Generics remove duplication across types, and are implemented very differently: C++ templates and Rust generics are monomorphised, meaning the compiler emits a separate machine-code copy per type; Java erases type parameters to one shared body that works on `Object` references; Go uses "GC shape stenciling", producing one body per memory shape (all pointer types share one) plus a dictionary argument that carries type information ([Go design document](https://github.com/golang/proposal/blob/master/design/generics-implementation-gcshape.md)). Code generators (`protoc`, OpenAPI generators, `sqlc`) produce source from a schema at build time. Shared libraries move a definition into a separate package that several programs import.
 
 Each of these adds an edge to the build graph. In a monorepo built with Bazel or a similar tool, a change to a widely shared package invalidates every target that depends on it, so editing one constant in a `common` library can rebuild and retest thousands of targets. Across services, a shared library ties deploy units together: to change the shared model, every service that embeds it must be rebuilt and redeployed, or run with mismatched versions in the meantime.
 
 ### Layer 3: The machine
-Extracting a helper adds a call: a few nanoseconds at most, and usually zero, because compilers inline small functions. Go inlines functions under a cost budget of roughly 80 nodes of its intermediate representation; HotSpot inlines hot methods up to a bytecode size threshold of a few hundred bytes. So the compiler often undoes your DRY at the machine level by copying the helper into each caller, which is fine: duplication in machine code is cheap and does not drift.
+Extracting a helper adds a call: a few nanoseconds at most, and usually zero, because compilers inline small functions. Go inlines functions under a cost budget of 80 nodes of its intermediate representation, raised to 2000 for hot call sites when profile-guided optimisation is on ([Go compiler source](https://github.com/golang/go/blob/master/src/cmd/compile/internal/inline/inl.go)); HotSpot inlines hot methods up to a bytecode size threshold of a few hundred bytes. So the compiler often undoes your DRY at the machine level by copying the helper into each caller, which is fine: duplication in machine code is cheap and does not drift.
 
 Monomorphisation is the same trade made deliberately. Each instantiation of a C++ template gets its own specialised, fast code, at the price of binary size and instruction-cache pressure; a heavily templated library can add megabytes to a binary. Go's shape-based approach keeps binaries smaller but routes some method calls through the dictionary, which can be slower than a direct call in hot loops. Dynamic linking is DRY at the operating-system level: one copy of `libc` lives in the page cache and is mapped read-only into every process, so 200 processes share one set of physical pages instead of 200.
 
@@ -96,6 +96,11 @@ flowchart LR
 An online store computes discounts in two places: the TypeScript cart shows a price as the shopper builds an order, and the Go payment service charges the card. Both implement "10 percent off orders over 100 dollars, rounded to the cent". The cart rounds each line item and sums; the payment service sums and then rounds. For three items at 33.35 dollars, the cart discounts each line to 30.015, rounds it to 30.02 and shows 90.06; the payment service discounts the 100.05 total to 90.045, rounds once and charges 90.05. Across 40,000 orders a day, about 0.6 percent end with the displayed and charged totals a cent apart: around 240 orders and a steady trickle of support tickets asking why the price changed at payment.
 
 The team considered sharing a library between the two codebases, which is awkward across languages and would couple the web release to the payment release. They chose a single source of truth instead: the payment service exposes a `quote` endpoint that returns the exact total, and the cart calls it on each change (about 20 ms per call). The discount rule now exists once. For the offline preview, the cart shows "about 90 dollars" until the quote returns. Mismatch tickets went to zero, and the next pricing change touched one file.
+
+## In the wild
+- **Google Cloud, 2016: one fact in two config files.** An engineer removed an unused IP block from Google's network configuration. The block had been removed from one configuration file but the change had not yet reached a second file the management software also used, so the software saw an inconsistency. It was designed to fail safe and keep the old configuration, but a latent bug made it remove every Compute Engine IP block instead. Inbound traffic to Compute Engine fell by more than 95 percent in all regions, and instances lost external connectivity for a total of 18 minutes ([Google Cloud incident 16007](https://status.cloud.google.com/incident/compute/16007)). The root cause was the bug, not the duplication, but two copies of one fact are what produced the inconsistent input.
+- **npm, 2016: the cost of DRY by dependency.** When an author unpublished 273 packages, including the tiny `left-pad`, thousands of projects that depended on it directly or indirectly began failing at hundreds of failures per minute until someone published a functionally identical replacement about ten minutes in ([npm blog](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm)). It is the counterweight to deduplication: every shared definition is a dependency, which is why Go's proverb says a little copying is better than a little dependency ([Go Proverbs](https://go-proverbs.github.io/)).
+- **Kubernetes, ongoing: generation as DRY.** Kubernetes derives versioned clients, informers and helpers such as conversions and defaulters for its API types with `code-generator`, so changing a type does not mean hand-editing each of those artefacts ([kubernetes/code-generator](https://github.com/kubernetes/code-generator)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -682,6 +687,24 @@ func Describe(schema []Rule) ([]string, error) {
 - For offline display, shipping a versioned snapshot of the rules generated from the source, with the version checked on reconnect, and labelling offline numbers as estimates.
 - The cost of a shared library across four codebases and languages: coupled releases, version skew, and per-language reimplementation anyway.
 - Separating rules with different owners and change rates, rather than forcing them into one abstraction because they look alike.
+
+## Sources and further study
+**Primary**
+- [Protocol Buffers overview](https://protobuf.dev/overview/): one `.proto` definition as the source for serialisation code in many languages.
+- [Go generics: GC shape stenciling design](https://github.com/golang/proposal/blob/master/design/generics-implementation-gcshape.md): how Go shares one body per shape, a compiler-level answer to duplication.
+
+**Systems docs**
+- [Google Cloud incident 16007 (April 2016)](https://status.cloud.google.com/incident/compute/16007): the postmortem in which an inconsistency between two config files played a part.
+- [kubernetes/code-generator](https://github.com/kubernetes/code-generator): generated clients and helpers for API types.
+- [npm: kik, left-pad, and npm](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm): what happened when a tiny shared package disappeared.
+- [OpenAPI Specification overview](https://swagger.io/docs/specification/about/): one API description that drives docs, clients and servers.
+
+**Books**
+- *The Pragmatic Programmer*, Hunt and Thomas: the section "DRY: The Evils of Duplication" (Topic 9 in the 20th anniversary edition).
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 3 "Bad Smells in Code" (duplicated code) and chapter 6 "A First Set of Refactorings" (Extract Function).
+
+**Other curricula**
+- [Refactoring.Guru: Duplicate Code](https://refactoring.guru/smells/duplicate-code): frames duplication as a smell caused by copy and paste and treated mainly with Extract Method.
 
 ## Watch
 - [All the Little Things (Sandi Metz, RailsConf 2014)](https://www.youtube.com/watch?v=8bZh5LMaSmE): refactoring tangled conditionals step by step, and why duplication is cheaper than the wrong abstraction.

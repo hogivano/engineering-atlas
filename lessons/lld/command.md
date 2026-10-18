@@ -37,10 +37,10 @@ The Gang of Four name four participants. The *command* holds a request and its p
 ### Undo and redo
 A linear history needs two stacks. Executing a command pushes it on the undo stack and clears the redo stack, because the redo entries were computed against a state that no longer exists. Undo pops a command, calls its `undo`, and pushes it on the redo stack. Redo does the reverse. Each command must store exactly the data it needs to reverse itself: `Insert` needs the position and text; `Delete` must save the text it removed when it executes, because the original command only knew a position and a length.
 
-Two refinements matter in real editors. *Coalescing*: typing "hello" should be one undo step, not five, so consecutive adjacent inserts merge into one command. Emacs groups runs of typed characters this way, and ProseMirror's history starts a new group only when an edit is not adjacent to the previous one or arrives more than 500 ms later. *Bounding*: history is capped by count or bytes, dropping the oldest entries.
+Two refinements matter in real editors. *Coalescing*: typing "hello" should be one undo step, not five, so consecutive adjacent inserts merge into one command. Emacs groups runs of typed characters this way, and ProseMirror's history starts a new group when an edit is not adjacent to the previous one or arrives after `newGroupDelay`, which defaults to 500 ms ([ProseMirror reference](https://prosemirror.net/docs/ref/)). *Bounding*: history is capped by count or bytes, dropping the oldest entries. ProseMirror's history plugin keeps 100 events by default (`depth`, same reference).
 
 ### Commands as values
-When commands must outlive the process, they become records: a type name plus arguments, serialised as JSON or protobuf. Task queues store exactly that (a Celery task message carries the task name and its arguments), CQRS systems accept commands such as `PlaceOrder` that a handler validates and executes, VS Code registers every action under a string ID so menus, keybindings and extensions call `executeCommand("editor.action.formatDocument")`, and Redis's append-only file is a log of write commands replayed on restart. The task scheduler lesson stores actions this way, and the tic-tac-toe lesson uses moves as commands for undo; this lesson focuses on the inverse operations and history management those designs rely on.
+When commands must outlive the process, they become records: a type name plus arguments, serialised as JSON or protobuf. Task queues store exactly that (a Celery task message carries the task name and its arguments, per its [message protocol](https://docs.celeryq.dev/en/stable/internals/protocol.html)), CQRS systems accept commands such as `PlaceOrder` that a handler validates and executes, VS Code registers every action under a string ID so menus, keybindings and extensions call `executeCommand("editor.action.formatDocument")`, and Redis's append-only file is a log of write commands replayed on restart ([Redis docs](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)). The task scheduler lesson stores actions this way, and the tic-tac-toe lesson uses moves as commands for undo; this lesson focuses on the inverse operations and history management those designs rely on.
 
 ### Command versus event
 A command is a request that may be rejected ("reserve seat 14C"); an event is a fact that already happened ("seat 14C reserved"). Keeping the two apart makes logs honest: replaying events rebuilds state without rerunning validation, while replaying commands would rerun business rules that may have changed.
@@ -57,7 +57,7 @@ Commands address the *ordering* and *multi-step consistency* shapes: once an act
 An undoable command promises that `undo` applied immediately after `execute` restores the receiver to exactly the prior state, and that `execute` either fully applies or fails without changing anything (so a failed command is never recorded). A history promises linear semantics: undo reverses the most recent recorded command, redo is available only until a new command executes, and the history holds at most its configured limit. A queued command promises at-least-once or exactly-once delivery; at-least-once is far more common, so handlers must be idempotent, usually by deduplicating on a command ID.
 
 ### Layer 2: The mechanism
-Emacs keeps undo information in `buffer-undo-list`, a list of entries such as `(BEG . END)` for inserted text and `(TEXT . POSITION)` for deleted text, separated by `nil` boundaries that mark where one command ends; undo walks back to the previous boundary and applies each inverse. ProseMirror represents edits as steps; each step can produce its inverse against the document it was applied to, and the history plugin stores inverted steps along with position maps so earlier entries can be rebased when collaborators change the document. Redis appends each write command to the AOF in the same RESP encoding clients send, and the `appendfsync` setting (`always`, `everysec` or `no`) decides how often the file is flushed with `fsync`. Go's `os/exec.Cmd` is a command in the literal sense: a struct describing a process to run, built first and started later with `Run` or `Start`.
+Emacs keeps undo information in `buffer-undo-list`, a list of entries such as `(BEG . END)` for inserted text and `(TEXT . POSITION)` for deleted text, separated by `nil` boundaries that mark where one command ends; undo walks back to the previous boundary and applies each inverse. ProseMirror represents edits as steps; each step can produce its inverse against the document it was applied to, and the history plugin stores inverted steps along with position maps so earlier entries can be rebased when collaborators change the document. Redis appends each command that changes the dataset to the append-only file and replays it on restart. Since Redis 7.0 the AOF is split into a base file and incremental files, and `appendfsync` (`always`, `everysec` or `no`) decides how often it is flushed with `fsync`; `everysec` can lose about a second of data in a disaster ([Redis docs](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)). Go's `os/exec.Cmd` is a command in the literal sense: a struct describing a process to run, built first and started later with `Run` or `Start`.
 
 ### Layer 3: The machine
 Each command is a heap allocation of a few dozen bytes plus its payload, and each `execute` is one indirect call: an itab lookup in Go, a vtable call in Java or C++, a prototype-chain lookup in JavaScript that V8's inline caches turn into a fixed offset when the call site sees few command classes. A Go closure used as a command allocates its captured variables once when it is created. None of that matters for user actions arriving at tens per second.
@@ -71,7 +71,7 @@ For concurrency, a single-consumer command queue is the simplest correct design:
 2. Reversing an action needs information captured when it ran, so each command stores its own inverse data.
 3. Snapshots cost memory proportional to the whole state, so storing inverses scales with the size of changes instead.
 4. Redo entries depend on the state they were made against, so a new command must invalidate them.
-5. Commands crossing processes can be delivered twice, so handlers deduplicate by ID rather than trusting the transport.
+5. Commands crossing processes can be delivered twice, so handlers deduplicate by ID rather than trusting the transport. Stripe's API makes this a contract: the client sends a unique `Idempotency-Key` and the server replays the stored result for a repeat ([Stripe](https://stripe.com/blog/idempotency)).
 
 ## Diagram
 ```mermaid
@@ -92,6 +92,11 @@ A web document editor holds documents up to 2 MB of text, and users make about 3
 The team replaced snapshots with `Insert` and `Delete` commands storing positions and changed text, and coalesced adjacent inserts. A typical 30-minute session of 5,400 keystrokes became about 600 history entries averaging 40 bytes of text plus around 60 bytes of object overhead, roughly 60 KB in total. A cap of 10,000 entries or 5 MB, whichever comes first, bounds the worst case.
 
 The tests that caught the most bugs were property tests: generate a random document and a random sequence of valid commands, execute them all, undo them all, and compare with the original; then redo them all and compare with the final state. They found two bugs in the first week: `Delete` at the end of a document stored one character too few, and merging an insert after an undo corrupted the redo stack.
+
+## In the wild
+- **Stripe, 2017: idempotency keys make retried commands safe.** A charge must happen once even when a network failure leaves it unclear whether the request arrived. Clients send a unique `Idempotency-Key` with each POST, the server replays the stored result or resumes the operation, and clients retry with exponential backoff plus jitter ([Stripe](https://stripe.com/blog/idempotency)).
+- **CKEditor 5, 2018: undo in a collaborative editor is hard.** Textbook operational transformation covered insert, delete and set-attribute on a linear model, which was not enough for rich text. The team added rename, split, merge and marker operations, a graveyard root for removed nodes and selective undo, and reported four years of work and 12,500 tests ([CKEditor blog](https://ckeditor.com/blog/Lessons-learned-from-creating-a-rich-text-editor-with-real-time-collaboration/)).
+- **GitHub, 2022: a queued command that can never succeed.** Webhook jobs whose payload data had been deleted kept failing and being retried, which tied up the workers and blocked new events for about 31 minutes. GitHub changed the workers to skip retries when the data no longer exists ([GitHub availability report](https://github.blog/2022-11-02-github-availability-report-october-2022/)). Queued commands need a rule for the ones that cannot run.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -853,6 +858,24 @@ func (h *History) Seal() { h.canMerge = false }
 - Coalescing (a drag becomes one move), caps by count and bytes, and dropping old history when it scrolls out.
 - Durability through an append-only log of accepted operations, with periodic snapshots so recovery replays only the tail, and idempotent application by command ID for replays and retries.
 - Trade-offs: operational transformation versus CRDT shapes, snapshot frequency against recovery time, and why the log stores accepted events rather than raw requests.
+
+## Sources and further study
+**Primary**
+- [ProseMirror reference: history](https://prosemirror.net/docs/ref/): `depth` and `newGroupDelay`, the two knobs of a real undo history.
+- [Stripe: designing robust APIs with idempotency keys](https://stripe.com/blog/idempotency): the retry contract for commands that cross a network.
+
+**Systems docs**
+- [Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/): the append-only file, multi-part AOF and `appendfsync`.
+- [Celery message protocol](https://docs.celeryq.dev/en/stable/internals/protocol.html): a task as a serialised command with name, args and id.
+- [CKEditor: lessons from real-time collaboration](https://ckeditor.com/blog/Lessons-learned-from-creating-a-rich-text-editor-with-real-time-collaboration/): selective undo and operation transformation in production.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 5 "Behavioral Patterns": the original Command, including undo and macro commands.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed.), chapter 6 "Encapsulating Invocation: The Command Pattern".
+
+**Other curricula**
+- [Azure Architecture Center: CQRS](https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs): commands as messages in a service architecture.
+- [Azure Architecture Center: Compensating Transaction](https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction): undo across services, where an exact inverse is not always possible.
 
 ## Watch
 - [Command Pattern (Christopher Okhravi)](https://www.youtube.com/watch?v=9qA5kw8dcSU): invoker, receiver and command worked through, including undo.

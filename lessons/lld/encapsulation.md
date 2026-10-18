@@ -49,7 +49,7 @@ class Order:
 Now each invariant has one guardian. Callers say what they want (`add`, `ship`) instead of pulling data out, deciding, and pushing new data back: the "tell, don't ask" style. The representation is also free to change: `_total` could be computed on demand without any caller noticing.
 
 ### Getters and setters are not encapsulation
-Generating `get_total()` and `set_total()` changes the syntax and keeps the problem: the setter is a public door to the same invariant. Expose domain operations (`apply_discount(pct)`, `ship()`) and read access only where callers need it. A type with no rules, such as a DTO or config record, is honestly a plain struct.
+Generating `get_total()` and `set_total()` changes the syntax and keeps the problem: the setter is a public door to the same invariant. The standard "Encapsulate Field" recipe is only a first step, and even refactoring.guru's version ends by telling you to review the callers, since some of their logic belongs inside the accessors ([refactoring.guru](https://refactoring.guru/encapsulate-field)). Expose domain operations (`apply_discount(pct)`, `ship()`) and read access only where callers need it. A type with no rules, such as a DTO or config record, is honestly a plain struct.
 
 ### Aliasing: the leak that passes review
 ```go
@@ -58,7 +58,7 @@ func (o *Order) Lines() []Line { return o.lines }
 
 The returned slice shares the backing array, so `lines[0].Qty = 100` changes the order without touching the total. The leak also runs inbound: `NewOrder(lines)` that stores the caller's slice lets the caller keep mutating it. Python lists, Java `ArrayList`s and JavaScript arrays behave the same way.
 
-Fixes, from cheapest to strongest:
+Fixes, from cheapest to strongest (the catalogue names the move Encapsulate Collection, *Refactoring*, 2nd ed., Ch 7):
 - **Copy at the boundary** on the way in and out (`slices.Clone`, `list(self._lines)`, `[...this.lines]`).
 - **Read-only views**: `types.MappingProxyType` in Python and `Collections.unmodifiableList` in Java are wrappers that refuse writes. TypeScript `ReadonlyArray` is compile-time only.
 - **Iteration instead of collections**: offer `for_each` or an iterator, so no container escapes.
@@ -84,15 +84,15 @@ Encapsulation is the *multi-step consistency* shape solved by giving one party e
 An encapsulated type promises that its invariants hold before and after every public operation, and that outside code reaches its representation only through those operations. The compiler, the runtime or only convention enforces this, depending on the language, and none makes it a security boundary inside a process: reflection, `unsafe` or a debugger gets through.
 
 ### Layer 2: The mechanism
-**Python.** A single underscore (`_lines`) is convention only; tools such as linters and `from module import *` respect it. A double underscore (`__lines`) inside a class body is rewritten by the compiler to `_Order__lines` in the bytecode, so a subclass's `__lines` does not collide with the parent's. It is name mangling for collision avoidance, not access control: `order._Order__lines` works. A frozen dataclass blocks assignment by overriding `__setattr__`, which `object.__setattr__(obj, "x", 1)` bypasses.
+**Python.** A single underscore (`_lines`) is convention only; tools such as linters and `from module import *` respect it. A double underscore (`__lines`) inside a class body is rewritten by the compiler to `_Order__lines` in the bytecode, so a subclass's `__lines` does not collide with the parent's. The tutorial says the rules are "designed mostly to avoid accidents" ([Python tutorial](https://docs.python.org/3/tutorial/classes.html)). It is name mangling for collision avoidance, not access control: `order._Order__lines` works. A frozen dataclass blocks assignment by adding `__setattr__` and `__delattr__` methods that raise ([dataclasses docs](https://docs.python.org/3/library/dataclasses.html)), a guard that `object.__setattr__(obj, "x", 1)` bypasses.
 
 **TypeScript.** `private` and `readonly` are type-checker rules. `tsc` emits an ordinary JavaScript property, so `(o as any).lines`, `Object.keys(o)` and `JSON.stringify(o)` all see it.
 
-**JavaScript `#private`.** A `#lines` field is not a property at all. Each evaluation of a class body creates a unique private name, and the field is stored on the instance under that name, where only code lexically inside the class can name it. `Object.keys`, `Reflect.ownKeys` and `JSON.stringify` do not see it, reading it on the wrong object throws `TypeError`, and `#lines in obj` is a brand check that tells you whether an object came from this class. One consequence: a `Proxy` around such an object breaks methods that read `#lines`, because the proxy itself does not have the field.
+**JavaScript `#private`.** A `#lines` field is not a property at all. Each evaluation of a class body creates a unique private name, and the field is stored on the instance under that name, where only code lexically inside the class can name it. Naming one outside the class is a syntax error, and private elements are widely available in browsers since July 2021 ([MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements)). `Object.keys`, `Reflect.ownKeys` and `JSON.stringify` do not see it, reading it on the wrong object throws `TypeError`, and `#lines in obj` is a brand check that tells you whether an object came from this class. One consequence: a `Proxy` around such an object breaks methods that read `#lines`, because the proxy itself does not have the field.
 
 **Go.** Visibility is decided by the first letter of the identifier and enforced per package by the compiler. Every file in the package sees everything, so a package, not a struct, is Go's unit of encapsulation. The `reflect` package can read an unexported field's value, but `CanSet` reports false and calling `Interface()` on it panics; only `unsafe` pointer arithmetic gets past that.
 
-**Java.** `private` is checked by the compiler and again by the JVM's access control when a call or field reference is resolved. `setAccessible(true)` used to open anything; since JDK 16 and 17 (JEP 396 and JEP 403), reflection into packages a module does not open fails unless the application is launched with `--add-opens`.
+**Java.** `private` is checked by the compiler and again by the JVM's access control when a call or field reference is resolved. `setAccessible(true)` used to open anything; since JDK 16 and 17 (JEP 396 made strong encapsulation the default, and JEP 403 in JDK 17 removed the relaxed mode), reflection into JDK internals fails unless the application is launched with `--add-opens` ([JEP 403](https://openjdk.org/jeps/403)).
 
 ### Layer 3: The machine
 Encapsulation through methods is usually free after compilation. A Go or JVM getter that returns a field is inlined to a single load at a fixed offset from the object pointer, the same instruction as a public field access. V8 implements `#private` fields as properties keyed by private symbols, so they use the same hidden classes and inline caches as public fields and cost the same. CPython is the exception: a `property` is a descriptor that runs a Python function, typically two to three times the cost of a plain attribute load.
@@ -127,6 +127,10 @@ A subscription billing service had a `Plan` object with a public `prices` map (c
 The fix made `prices` private, added `set_price(currency, cents)` that validated the currency and refreshed the display string, and made `prices()` return a read-only view. Moving the 11 call sites took two days. Tickets of that kind fell to zero, and a later change that computed `display_price` on demand instead of caching it touched one file.
 
 The one performance surprise was a reporting job that called `prices()` for each of 2 million plans. The first version returned a copied dict, adding 2 million small allocations and about 4 seconds to a 40-second job. Switching to `MappingProxyType`, which wraps the dict without copying, removed the overhead.
+
+## In the wild
+- **GitHub, 2012-03: mass assignment on a public-key form.** On 4 March 2012 a user exploited a missing check on incoming form parameters in the public-key update form and added his own key to the `rails` organisation, then pushed a file to prove it. Database and log analysis found three compromised accounts. GitHub deleted the key and suspended the user, deployed a fix at 9:53am Pacific, and audited the codebase for the same flaw ([GitHub blog](https://github.blog/news-insights/company-news/public-key-security-vulnerability-and-mitigation/)). The model accepted any attribute the request named: an object with no say over which of its fields outsiders may set.
+- **OpenJDK, JDK 16 and 17: strong encapsulation of JDK internals.** For years libraries reflected into private JDK classes, which locked the platform's own representation in place. JEP 396 made strong encapsulation the default in JDK 16 and JEP 403 removed the `--illegal-access` escape in JDK 17; code needing access must now name the package with `--add-opens` ([JEP 403](https://openjdk.org/jeps/403)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -697,6 +701,25 @@ func (s *RangeSet) Ranges() [][2]int {
 - Returning copies or immutable snapshots of items, so the front end and pricing cannot mutate the cart through a shared reference.
 - Concurrency handled inside the cart: a lock around every operation, or an immutable cart replaced atomically, with no references to guarded state escaping.
 - An event stream or a read model for analytics instead of direct table access, so the cart's storage can change without breaking another team.
+
+## Sources and further study
+**Primary**
+- [Python tutorial, Private Variables](https://docs.python.org/3/tutorial/classes.html): underscore convention and name mangling, with the statement that mangling is bypassable.
+- [dataclasses (Python docs)](https://docs.python.org/3/library/dataclasses.html): how `frozen=True` is enforced and what it costs in `__init__`.
+- [Go specification](https://go.dev/ref/spec): exported and unexported identifiers and the package as the unit of visibility.
+
+**Systems docs**
+- [GitHub's 2012 incident write-up](https://github.blog/news-insights/company-news/public-key-security-vulnerability-and-mitigation/): mass assignment as an encapsulation failure at the framework level.
+- [Private elements (MDN)](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements): semantics of `#private` and brand checks.
+
+**Books**
+- *Refactoring*, 2nd ed., Ch 7: Encapsulation, for Encapsulate Record, Encapsulate Collection and Hide Delegate.
+- *Clean Architecture* (Martin, 2017), Ch 5: Object-Oriented Programming, which treats encapsulation as the first OOP claim and notes how weakly C++ and Java kept it.
+- *Head First Design Patterns*, 2nd ed., Ch 1: Welcome to Design Patterns, for "encapsulate what varies".
+- *Design Patterns* (Gamma et al., 1994), Ch 1: Introduction, on how inheritance breaks encapsulation.
+
+**Other curricula**
+- [refactoring.guru, Encapsulate Field](https://refactoring.guru/encapsulate-field): the basic recipe, with the performance exception for public fields.
 
 ## Watch
 - [Core Design Principles for Software Developers (Venkat Subramaniam, Devoxx)](https://www.youtube.com/watch?v=llGgO74uXMI): a practical talk on keeping design simple, cohesive and well encapsulated.

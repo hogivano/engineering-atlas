@@ -131,17 +131,21 @@ sequenceDiagram
 - **Façade**: `ChatService` is the only entry point. Clients never touch a `Conversation` directly, so every mutation passes the same membership and policy checks and the same lock.
 - **Strategy** for permissions. `DirectPolicy` refuses `addMember` and lets only the author delete; `GroupPolicy` lets admins add and delete. A future "announcement channel" where only admins post is a third policy, with no change to `send`.
 - **State** for the message lifecycle, kept as an enum with guarded transitions: sent to edited, sent or edited to deleted, and nothing out of deleted. A full class per state is more machinery than three states need; see the [State](state.md) lesson for when it pays off.
-- **Observer** for delivery. The service emits events; a gateway adapter pushes them to devices, a notification adapter sends pushes to offline users, and a search indexer consumes the same stream. Listeners run after the lock is released, so a slow push provider cannot block senders. See [Design Pub Sub System](design-pub-sub.md) for keeping that fan-out non-blocking.
+- **Observer** for delivery. The service emits events; a gateway adapter pushes them to devices, a notification adapter sends pushes to offline users, and a search indexer consumes the same stream. Listeners run after the lock is released, so a slow push provider cannot block senders. Discord found the same at scale: one Erlang process per guild sending to every session took 30 to 70 microseconds per recipient, so it batched sends per remote node ([Discord](https://discord.com/blog/how-discord-scaled-elixir-to-5-000-000-concurrent-users)). See [Design Pub Sub System](design-pub-sub.md) for keeping that fan-out non-blocking.
 - **Factory method** for conversations: `direct(a, b)` normalises the pair, consults the index and returns the existing conversation or builds a new one with `DirectPolicy`. Callers never construct conversations themselves, which is what makes the "one direct thread per pair" rule enforceable.
 
 ## Concurrency and edge cases
 
 - **Two sends at once.** Sequence assignment and append must be one step under the conversation's lock. Without it, two senders read `lastSeq = 57` and both write 58. A per-conversation lock (not a global one) lets busy conversations proceed in parallel.
-- **Out-of-order read events.** A phone reports "read up to 60" and a laptop then reports "read up to 55". Taking `max(current, new)` makes the cursor monotonic, so the second event is a no-op. Clamp to `lastSeq` so a buggy client cannot mark future messages read.
+- **Out-of-order read events.** A phone reports "read up to 60" and a laptop then reports "read up to 55". Taking `max(current, new)` makes the cursor monotonic, so the second event is a no-op. Matrix's spec works the same way: when a public and a private receipt differ, the one that is more "ahead" sets the highest read-up-to mark ([Matrix spec](https://spec.matrix.org/latest/client-server-api/#receipts)). It also adds a `thread_id` to receipts, which is the second cursor per thread mentioned under Extensibility, and says servers should batch receipts into one event per room and thread. Clamp to `lastSeq` so a buggy client cannot mark future messages read.
 - **Joining mid-conversation.** The new member's `joinedAfterSeq` is the conversation's `lastSeq` at join time. History and unread counts ignore anything at or below it. Their read cursor starts there too, which also keeps them out of "seen by" for old messages.
 - **Edit racing delete.** The author edits while an admin deletes. Under the lock, whichever runs second sees the other's result; an edit on a deleted message fails. The outcome is consistent, and the error tells the client to refresh.
 - **Edit window.** Compare `clock.now() - sentAt` against the window. Store `sentAt` from the server clock at send time; never trust a client timestamp for a permission check.
 - **Duplicate direct conversations.** Two users tap "message" on each other at the same moment. The pair index is checked and written under one lock (or a unique constraint on `(min(a,b), max(a,b))` in the database), so both calls return the same conversation.
+
+## In the wild
+- **Discord, 2017: one process per guild stalls at about 30,000 users.** Each guild is an Erlang process that sends every event to every connected session. Busy guilds reached about 30,000 concurrent users, each send cost 30 to 70 microseconds, so one publish took 900 ms to 2.1 s and the guild fell behind at peak. The Manifold library groups recipients by remote node and sends one batch per node, with partitioned workers delivering locally while keeping order ([Discord](https://discord.com/blog/how-discord-scaled-elixir-to-5-000-000-concurrent-users)).
+- **Discord, 2023: one server with more than a million people online.** Fan-out in a single guild is quadratic in the number of active members. About 90% of user-guild connections in large servers became passive sessions that receive far fewer updates, and relays between the guild and up to 15,000 sessions each split the fan-out and the permission checks ([Discord](https://discord.com/blog/maxjourney-pushing-discords-limits-with-a-million-plus-online-users-in-a-single-server)).
 
 ## Down the stack
 
@@ -149,10 +153,10 @@ sequenceDiagram
 `send` returns a sequence number one greater than the previous message in that conversation, and every member's history shows messages in that order. `history` returns only messages with `seq > joinedAfterSeq` for the caller. `readUpTo` never decreases and never exceeds `lastSeq`. `unread` is the number of visible, non-deleted messages from other senders after the cursor. A failed operation (not a member, not allowed, outside the window) changes nothing.
 
 ### Layer 2: The mechanism
-Each conversation keeps messages in an array indexed by `seq - 1`, so lookup by sequence is O(1) and "last 50" is a slice. In a database this is a table keyed by `(conversation_id, seq)`, clustered on that key so a history page is one range scan; `INSERT ... SELECT last_seq + 1` inside a transaction that locks the conversation row (`SELECT ... FOR UPDATE`) assigns the sequence. Memberships are a table keyed by `(conversation_id, user_id)` with `role`, `joined_after_seq` and `read_up_to`, plus a secondary index on `user_id` for the inbox list. The read path for an inbox computes a cheap unread approximation, `last_seq - read_up_to`, from those two integers without touching messages; an exact count that excludes your own and deleted messages is either computed on open or kept as a per-membership counter maintained on send and delete. The practice computes it exactly by scanning, which is fine in memory and too slow for a 10,000-conversation inbox.
+Each conversation keeps messages in an array indexed by `seq - 1`, so lookup by sequence is O(1) and "last 50" is a slice. In a database this is a table keyed by `(conversation_id, seq)`, clustered on that key so a history page is one range scan (Discord partitions messages by channel id plus a time bucket and uses time-sortable Snowflake ids for order, per its [storage write-up](https://discord.com/blog/how-discord-stores-trillions-of-messages)); `INSERT ... SELECT last_seq + 1` inside a transaction that locks the conversation row (`SELECT ... FOR UPDATE`, see [Postgres explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html)) assigns the sequence. Memberships are a table keyed by `(conversation_id, user_id)` with `role`, `joined_after_seq` and `read_up_to`, plus a secondary index on `user_id` for the inbox list. The read path for an inbox computes a cheap unread approximation, `last_seq - read_up_to`, from those two integers without touching messages; an exact count that excludes your own and deleted messages is either computed on open or kept as a per-membership counter maintained on send and delete. The practice computes it exactly by scanning, which is fine in memory and too slow for a 10,000-conversation inbox.
 
 ### Layer 3: The machine
-A text message row is small: two 8-byte ids, an 8-byte sequence, an 8-byte timestamp, a status byte and a body that averages under 100 bytes, so roughly 140 bytes, and a 16 KB InnoDB page holds about 100 of them. A history page of 50 messages is then one or two page reads, served from the buffer pool for an active conversation. The conversation lock is the contended resource: an uncontended mutex costs tens of nanoseconds and a database row lock held for a sub-millisecond transaction allows a few thousand sends per second in one conversation, far more than any human group produces. Delivery is where bytes multiply: one message to a 500-member group is 500 WebSocket frames of a few hundred bytes each, which is why events leave the lock first and fan out on other threads. Read receipts are the hidden load: every member reading every message generates as many events as messages times members, so clients batch them (send "read up to N" once per second, not per message), and the cursor model makes batching lossless.
+A text message row is small: two 8-byte ids, an 8-byte sequence, an 8-byte timestamp, a status byte and a body that averages under 100 bytes, so roughly 140 bytes, and a 16 KB InnoDB page holds about 100 of them. A history page of 50 messages is then one or two page reads, served from the buffer pool for an active conversation. The conversation lock is the contended resource: an uncontended mutex costs tens of nanoseconds and a database row lock held for a sub-millisecond transaction allows a few thousand sends per second in one conversation, far more than any human group produces. Delivery is where bytes multiply: one message to a 500-member group is 500 WebSocket frames of a few hundred bytes each, which is why events leave the lock first and fan out on other threads. Fan-out cost grows with group size squared if everyone talks: Discord's example is 1,000 online members each sending one message producing 1 million deliveries, and 100,000 producing 10 billion ([Discord](https://discord.com/blog/maxjourney-pushing-discords-limits-with-a-million-plus-online-users-in-a-single-server)). Read receipts are the hidden load: every member reading every message generates as many events as messages times members, so clients batch them (send "read up to N" once per second, not per message), and the cursor model makes batching lossless.
 
 ### Why it's built this way
 1. People need the same order on every device, so the conversation assigns sequence numbers at one point instead of trusting client clocks.
@@ -1186,12 +1190,32 @@ func (s *ChatService) SeenBy(convID string, seq int) ([]string, error) {
 - Delivery through listeners after the lock is released, with receipts batched because the cursor makes batching lossless.
 - A clear split between this object model and the transport and storage covered in the system design lessons.
 
+## Sources and further study
+
+**Primary**
+- [Matrix Client-Server API: receipts](https://spec.matrix.org/latest/client-server-api/#receipts): public and private read receipts, threaded receipts and the highest-read-up-to rule.
+- [PostgreSQL: explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html): the row lock behind per-conversation sequence assignment.
+
+**Systems docs**
+- [Discord: how Discord stores trillions of messages](https://discord.com/blog/how-discord-stores-trillions-of-messages): channel-and-bucket partitioning, Snowflake ids, hot partitions.
+- [Slack Engineering: real-time messaging](https://slack.engineering/real-time-messaging/): channel servers, consistent hashing and gateway fan-out.
+- [Discord: scaling Elixir to 5,000,000 concurrent users](https://discord.com/blog/how-discord-scaled-elixir-to-5-000-000-concurrent-users): guild fan-out costs and the Manifold batching fix.
+- [Discord: Maxjourney](https://discord.com/blog/maxjourney-pushing-discords-limits-with-a-million-plus-online-users-in-a-single-server): quadratic fan-out and passive sessions.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 3 (Creational: Factory Method), chapter 4 (Structural: Facade) and chapter 5 (Behavioral: Strategy, Observer, State).
+- *Head First Design Patterns*, Freeman and Robson: chapter 2 (Observer) and chapter 4 (Factory).
+- *Designing Data-Intensive Applications*, Martin Kleppmann (1st edition): chapter 9 (Consistency and Consensus), on ordering and why a single point of sequence assignment gives a total order.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): its social-network and messaging material is about feeds and fan-out at scale, not the in-process model here.
+
 ## Watch
 - [WhatsApp System Design (Gaurav Sen)](https://www.youtube.com/watch?v=vvhC64hQZMk): connections, receipts and group messaging, the distributed side of this model.
 - [Keith Adams on the Architecture of Slack (InfoQ)](https://www.youtube.com/watch?v=5WZ5F8KtW7k): how a production chat system stores channels and messages and delivers them.
 
 ## Free resources
-- [Real-time Messaging (Slack Engineering)](https://slack.engineering/real-time-messaging/): how Slack's channel servers order messages and push them to clients.
+- [Real-time Messaging (Slack Engineering)](https://slack.engineering/real-time-messaging/): how Slack maps channels to in-memory channel servers by consistent hashing and fans messages out to gateways.
 - [How Discord Stores Trillions of Messages (Discord)](https://discord.com/blog/how-discord-stores-trillions-of-messages): message ids, partitioning by channel and time buckets, and the read path.
 - [Matrix specification: receipts](https://spec.matrix.org/latest/client-server-api/#receipts): an open chat protocol's definition of read receipts as "read up to" markers.
 - [State (Game Programming Patterns, Robert Nystrom)](https://gameprogrammingpatterns.com/state.html): when an enum with guarded transitions is enough and when a state machine needs more.

@@ -121,7 +121,7 @@ If the same request is retried after a timeout, the best score stays 85, the les
 
 ## Design patterns used and why
 
-**Immutable snapshot (versioning).** Each publish produces a new `CourseVersion` and never edits an old one. Enrollments point at a version, so an instructor deleting a lesson cannot move a learner from 100% to 90% or invalidate the version their certificate names. This is the same move as pinning a dependency lock file.
+**Immutable snapshot (versioning).** Each publish produces a new `CourseVersion` and never edits an old one. Open edX's split modulestore works this way: each edit clones the previous course structure into a new one, so history is kept and rollback is possible ([Open edX docs](https://openedx.atlassian.net/wiki/spaces/PLAT/pages/32309309/Split+Modulestore+Draft+Versioning+Modulestore)). Enrollments point at a version, so an instructor deleting a lesson cannot move a learner from 100% to 90% or invalidate the version their certificate names. This is the same move as pinning a dependency lock file.
 
 **Polymorphism for lesson kinds.** `Lesson.isComplete(enrollment, passMark)` is overridden by `VideoLesson` and `QuizLesson`. Adding a `CodingExercise` that is complete when hidden tests pass is a new subclass; progress code does not change.
 
@@ -134,7 +134,7 @@ If the same request is retried after a timeout, the best score stays 85, the les
 ## Concurrency and edge cases
 
 ### Duplicate and out-of-order completion events
-A video player posts "completed" at the end, again on replay, and again when a phone that was offline reconnects. Store completions as a set keyed by (learner, course, lesson), or in a database as a unique key with `INSERT ... ON CONFLICT DO NOTHING`. Quiz scores fold with `max`. Both operations are commutative and idempotent, so arrival order and repeats do not matter. The xAPI standard bakes the same idea into its protocol: each statement carries a client-chosen UUID, and a learning record store that receives an id it already has should check the content matches and answer `409 Conflict` if it does not.
+A video player posts "completed" at the end, again on replay, and again when a phone that was offline reconnects. Store completions as a set keyed by (learner, course, lesson), or in a database as a unique key with `INSERT ... ON CONFLICT DO NOTHING`, which skips the duplicate instead of raising an error (and returns no row from `RETURNING`, so check the row count if you need to know whether this call was the first) ([PostgreSQL docs](https://www.postgresql.org/docs/current/sql-insert.html)). Quiz scores fold with `max`. Both operations are commutative and idempotent, so arrival order and repeats do not matter. The xAPI standard bakes the same idea into its protocol: each statement carries a client-chosen UUID, and a learning record store that receives an id it already has must leave the stored statement alone, and should answer `409 Conflict` if the new content does not match ([xAPI communication spec](https://github.com/adlnet/xAPI-Spec/blob/master/xAPI-Communication.md)). Any consumer fed at-least-once events needs the same discipline: track the last processed sequence number or make the state change safe to repeat ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/idempotent-consumer)).
 
 ### Two final lessons finishing at once
 On two devices, Mia completes the last video and the last quiz within a millisecond. Each request sees progress at 100% and tries to issue a certificate. Under a per-enrollment lock (or a row lock on the enrollment), the second request sees the certificate already attached and does nothing. Without it, she gets two certificates with different ids, which is exactly what a verification page cannot tolerate.
@@ -148,13 +148,17 @@ Upgrading maps completions by stable lesson id. A lesson that disappeared is dro
 ### Which version's prerequisites?
 Enrollment checks the latest version's prerequisites, because that is what the learner is enrolling in. Changing prerequisites never removes existing enrollments.
 
+## In the wild
+- **Open edX, ongoing: draft and published course structures.** The platform behind edX courses stores every edit as a new cloned structure and keeps a draft branch for authors and a published branch for the live course, so a course team can edit without moving the course under learners. The documentation notes that history is preserved for rollback ([Open edX wiki](https://openedx.atlassian.net/wiki/spaces/PLAT/pages/32309309/Split+Modulestore+Draft+Versioning+Modulestore)). Open edX does not pin each learner to a version the way this lesson does; the lesson takes the same immutable-structure idea one step further.
+- **ADL xAPI, 2013 onward: statement ids make retries safe.** The xAPI specification makes statements immutable, gives each a UUID, and tells a record store to answer a re-sent statement with success if it matches and `409 Conflict` if it differs, without ever modifying the stored one ([xAPI data spec](https://github.com/adlnet/xAPI-Spec/blob/master/xAPI-Data.md), [communication spec](https://github.com/adlnet/xAPI-Spec/blob/master/xAPI-Communication.md)). This is the same duplicate-completion rule as the lesson's set insert, standardised for an industry of players and record stores.
+
 ## Down the stack
 
 ### Layer 1: The contract
 For each enrollment, `progress = floor(100 * |done ∩ lessons(v)| / |lessons(v)|)` where `v` is the pinned version. Recording the same completion again changes nothing. A quiz is done exactly when its best score is at least the version's pass mark. A certificate is issued at most once per enrollment, at the first moment progress reaches 100, and is never modified. The prerequisite graph over latest versions is acyclic. A rejected call changes nothing.
 
 ### Layer 2: The mechanism
-A course stores versions in a list indexed by number, so pinning is just an integer. An enrollment keeps a set of done lesson ids and a map of best scores. The `complete` method is a set insert and a `max`, and progress is a count over the pinned version's lesson list. Publishing validates the lessons (non-empty, unique ids, known kinds), then runs a DFS over prerequisite edges, which costs O(courses + edges) in the worst case. At scale, completions are an append-only event table (learner, course, lesson, score, ts, event_id), and the enrollment row holds the denormalised done set and percentage, rebuilt from events if ever in doubt. That is event sourcing in its most ordinary form.
+A course stores versions in a list indexed by number, so pinning is just an integer. An enrollment keeps a set of done lesson ids and a map of best scores. The `complete` method is a set insert and a `max`, and progress is a count over the pinned version's lesson list. Publishing validates the lessons (non-empty, unique ids, known kinds), then runs a DFS over prerequisite edges, which costs O(courses + edges) in the worst case. At scale, completions are an append-only event table (learner, course, lesson, score, ts, event_id), and the enrollment row holds the denormalised done set and percentage, rebuilt from events if ever in doubt. That is event sourcing in its most ordinary form, and the usual caveats apply: projections are eventually consistent, and a bad event is fixed by a compensating event, not by editing history ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)).
 
 ### Layer 3: The machine
 A 200-lesson course fits its done set into a 200-bit bitmap: 25 bytes, four 64-bit words. With lesson positions assigned per version, progress is four `POPCNT` instructions, which modern x86 cores retire at about one per cycle, compared with hashing 200 strings. A million active enrollments then cost 25 MB of bitmaps, which fits in one cache server's memory. The catch is that positions are per version, so upgrade must remap bits through the lesson ids, which is one more reason upgrades are explicit. The event table grows by roughly 100 bytes per row. Ten million completions a day is about 1 GB a day, cheap to keep forever and enough to rebuild any learner's state.
@@ -1268,6 +1272,26 @@ func (p *LearningPlatform) Upgrade(user, courseID string) (int, error) {
 - Certificate issuance in the same critical section as the completing event, exactly once, and immutable afterwards.
 - Cycle detection on the prerequisite graph at publish time.
 - Progress as a projection of an append-only completion log, with a Strategy or Composite for weighting.
+
+## Sources and further study
+
+**Primary**
+- [xAPI communication spec: statement resource](https://github.com/adlnet/xAPI-Spec/blob/master/xAPI-Communication.md): duplicate ids, matching content and `409 Conflict`.
+- [xAPI data spec](https://github.com/adlnet/xAPI-Spec/blob/master/xAPI-Data.md): statement ids as UUIDs and immutability of statements.
+
+**Systems docs**
+- [PostgreSQL: INSERT and ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html): `DO NOTHING` versus `DO UPDATE`, and what `RETURNING` omits.
+- [Open edX: split modulestore](https://openedx.atlassian.net/wiki/spaces/PLAT/pages/32309309/Split+Modulestore+Draft+Versioning+Modulestore): a production course store built on cloned, versioned structures.
+- [Azure: Idempotent Consumer pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/idempotent-consumer): handling at-least-once delivery without double effects.
+- [Azure: Event Sourcing pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing): snapshots, compensating events and projections.
+
+**Books**
+- *Designing Data-Intensive Applications* (1st ed.), Kleppmann: Ch 11 "Stream Processing", for event logs, derived state and idempotent processing.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: Ch 4 (Composite, Facade) and Ch 5 (Observer, Strategy).
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: Ch 2 (Observer) and Ch 9 (Iterator and Composite).
+
+**Other curricula**
+- [Refactoring.Guru: Observer](https://refactoring.guru/design-patterns/observer): frames the pattern as a subscription mechanism, matching the lesson's certificate and email subscribers.
 
 ## Watch
 - [System Design 19: Design of Online Learning Platform (InterviewWithBunny)](https://www.youtube.com/watch?v=PUf-Q7lNtv8): walks through a Udemy or Coursera style platform at both the high and low level.

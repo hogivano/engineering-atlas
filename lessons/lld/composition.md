@@ -23,13 +23,13 @@ A composite whole does four things that an aggregate does not:
 - **Copies its parts.** Cloning an order deep-copies its lines with new identities.
 - **Destroys its parts.** Deleting the whole deletes every part. There is no orphan state.
 
-Removing a part from the whole ends its life too; JPA's `orphanRemoval = true` deletes a line dropped from the collection.
+UML's definition is that a part belongs to at most one composite at a time and is deleted with it, but a part may be removed from its composite first and so survive ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)). Whether a removed part dies is therefore a rule you state; JPA's `orphanRemoval = true` makes it die, deleting a line dropped from the collection ([Hibernate User Guide](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html)).
 
 ### Lifecycle and cascading delete
-Lifecycle is the main payoff. A `Connection` that owns a `Socket` and a `Buffer` closes both in `close()`, so no caller can forget a step. In a database the rule is a foreign key with `ON DELETE CASCADE` from `order_line.order_id` to `order.id`. Cascades are only safe along ownership edges; following one into a shared table destroys data other wholes still use.
+Lifecycle is the main payoff. A `Connection` that owns a `Socket` and a `Buffer` closes both in `close()`, so no caller can forget a step. In a database the rule is a foreign key with `ON DELETE CASCADE` from `order_line.order_id` to `order.id`, which deletes the referencing rows automatically when the referenced row goes ([Postgres docs](https://www.postgresql.org/docs/current/ddl-constraints.html)). Cascades are only safe along ownership edges; following one into a shared table destroys data other wholes still use.
 
 ### Composition over inheritance
-Inheritance couples a subclass to its parent's internals: which methods call which, in what order. A `class CountingList(list)` that overrides `append` to count items misses everything added through `extend`, because CPython's `extend` does not call `append`. Java's classic version is a `HashSet` subclass that double-counts, because the base `addAll` does call `add`. That is the fragile base class problem. The Gang of Four put it as "favour object composition over class inheritance".
+Inheritance couples a subclass to its parent's internals: which methods call which, in what order. A `class CountingList(list)` that overrides `append` to count items misses everything added through `extend`, because CPython's `extend` does not call `append`. Java's classic version is a `HashSet` subclass that double-counts, because the base `addAll` does call `add`. That is the fragile base class problem. The JDK has its own example: `Stack` extends `Vector`, and its Javadoc now says the `Deque` interface should be used in preference ([Stack Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html)). The Gang of Four put it as "favour object composition over class inheritance".
 
 The composed alternative owns a list and exposes only the operations it supports. It costs a few forwarding methods, depends only on the list's public contract, and can vary behaviour at runtime by swapping an owned collaborator.
 
@@ -42,7 +42,7 @@ If the part has an identity outside the whole (a customer on an order), it is no
 Agents tend to return the live list from getters, accept pre-built parts in constructors, and write shallow `clone` methods. Check that parts are built inside the whole, getters return copies, clone is deep along owned fields, and every cascade follows an ownership edge.
 
 ### The same shape elsewhere
-A Kubernetes Deployment owns its ReplicaSets, which own their Pods, through `ownerReferences`, and deleting it garbage-collects the tree. A process owns its file descriptors, which the kernel closes at exit. Ownership is a tree, and cleanup walks it.
+A Kubernetes Deployment owns its ReplicaSets, which own their Pods, through `ownerReferences`, and deleting it garbage-collects the tree. A process owns its file descriptors, which the kernel closes at exit. Ownership is a tree, and cleanup walks it. Kubernetes adds a scope rule: an owner must be in the same namespace as its dependent, and cross-namespace owner references are disallowed by design ([Kubernetes docs](https://kubernetes.io/docs/concepts/architecture/garbage-collection/)).
 
 ## Down the stack
 
@@ -50,9 +50,9 @@ A Kubernetes Deployment owns its ReplicaSets, which own their Pods, through `own
 Every part has exactly one owner for its whole life. No reference to a part is reachable except through its owner. Deleting, closing or cloning the owner applies the same operation to all of its parts, and after the owner is gone no part is observable.
 
 ### Layer 2: The mechanism
-**C++ and Rust** encode composition in the type system. A member object is constructed with the whole and destroyed with it: C++ runs member destructors in reverse order of declaration, Rust drops fields in declaration order. `std::unique_ptr<T>` and Rust's `Box<T>` own heap parts and free them with the owner; Rust's borrow checker rejects code that keeps a reference to a part past its owner's life.
+**C++ and Rust** encode composition in the type system. A member object is constructed with the whole and destroyed with it: C++ runs member destructors in reverse order of declaration, while Rust drops struct fields in declaration order and local variables in reverse ([Rust Reference](https://doc.rust-lang.org/reference/destructors.html)). `std::unique_ptr<T>` and Rust's `Box<T>` own heap parts and free them with the owner; Rust's borrow checker rejects code that keeps a reference to a part past its owner's life.
 
-**Go** stores a struct-typed field inline, and a `[]Line` slice holds lines contiguously. Assigning the whole copies inline fields, but a slice field copies only its 24-byte header (pointer, length, capacity), so the copy shares the backing array. A correct clone must allocate a new slice and copy into it.
+**Go** stores a struct-typed field inline, and a `[]Line` slice holds lines contiguously. Assigning the whole copies inline fields, but a slice field copies only its 24-byte header (pointer, length, capacity), so the copy shares the backing array ([Go blog](https://go.dev/blog/slices-intro)). A correct clone must allocate a new slice and copy into it.
 
 **Java, Python, JavaScript** hold every object field as a reference, so ownership lives in your API: private fields, copies at the boundary, and `close()` with `try`-with-resources or `with` for non-memory resources.
 
@@ -90,6 +90,10 @@ A warehouse system stores 4 million orders with an average of 6 lines each, 24 m
 The first job ran one monthly `DELETE FROM orders WHERE created_at < $1`. The cascade removed about 1.8 million lines in a single transaction, generated gigabytes of WAL, and lagged the replicas for 40 minutes.
 
 Composition made the fix straightforward. Because lines belong to exactly one order and nothing else references them, the job deletes in batches of 1,000 orders per transaction. Each batch removes about 6,000 lines, commits in around 200 ms, and replica lag stays under a second. No orphan check is needed, because no line is shared; a shared table such as products would need a reference check before every delete.
+
+## In the wild
+- **Kubernetes: owner references as a composition tree.** Pods are owned by ReplicaSets, which are owned by Deployments. Deleting the owner garbage-collects dependents either in the background (the default) or in the foreground, where dependents with `blockOwnerDeletion` go first. An orphan deletion policy leaves them behind deliberately, and owners and dependents must share a namespace ([Kubernetes docs](https://kubernetes.io/docs/concepts/architecture/garbage-collection/)). Ownership is explicit data, not a convention.
+- **Java's `Stack extends Vector`: inheritance where composition was needed.** A stack that is-a vector exposes every list operation, including inserting in the middle, so it cannot guard its own invariant. The class's Javadoc points readers to `Deque` and `ArrayDeque` instead ([Stack Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -789,6 +793,24 @@ func (s *Store) LiveLines() int { return len(s.owner) }
 - Deletes cascade along ownership edges only, in batches or as a soft delete with background reclamation.
 - Parts created only through the owner and exposed as ids or read-only views, with one lock or transaction per document.
 - Shared layout behaviour extracted into an owned layout component instead of an inheritance chain between block types.
+
+## Sources and further study
+**Primary**
+- [OMG UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF): composite aggregation as a part in at most one composite, deleted with it, and the note that a part may be removed first.
+- [The Rust Reference: destructors](https://doc.rust-lang.org/reference/destructors.html): the exact drop order of fields, variables and elements.
+
+**Systems docs**
+- [Kubernetes: garbage collection](https://kubernetes.io/docs/concepts/architecture/garbage-collection/): owner references, cascading deletion modes and namespace scoping.
+- [Hibernate 6.6 User Guide](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html): cascade and `orphanRemoval` as the ORM's expression of ownership.
+- [Java `Stack` Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html): a standard-library class whose own docs steer you away from its inheritance.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 1, where "favor object composition over class inheritance" is stated as a principle.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed., 2020): chapter 1, which introduces the same principle through the Strategy pattern.
+- *Effective Java* (3rd ed.), Joshua Bloch: item 18 "Favor composition over inheritance", with the instrumented `HashSet` example of a subclass counting additions twice.
+
+**Other curricula**
+- [Refactoring.Guru: Composite](https://refactoring.guru/design-patterns/composite): frames Composite as tree-shaped structures whose containers and leaves share one interface; it is a different idea from the ownership relationship, so keep the two apart.
 
 ## Watch
 - [Composition over Inheritance (Fun Fun Function)](https://www.youtube.com/watch?v=wfMtDGfHWpA): a short, concrete case for building objects from parts instead of class hierarchies.

@@ -137,7 +137,7 @@ sequenceDiagram
 
 ## In the wild
 - **Egypt, 2016: daylight saving cancelled two days before it started.** The tz database had Egypt starting DST on 7 July 2016. The government reversed at short notice and release 2016f, published on 5 July, removed it. Any calendar that had already converted future local meetings to UTC under the old rule was an hour off until it re-derived them ([IANA tz NEWS](https://data.iana.org/time-zones/tzdb/NEWS)).
-- **Lebanon, 2023: three tz releases in a week.** Release 2023b (23 March) moved Lebanon's DST start to 20/21 April, and 2023c (28 March) reverted to the earlier data after the decision was reversed. A system that re-indexed on 2023b and not again on 2023c kept wrong local times for a month ([IANA tz NEWS](https://data.iana.org/time-zones/tzdb/NEWS)).
+- **Lebanon, 2023: a rule change and its reversal five days apart.** Release 2023b (23 March) moved Lebanon's DST start to 20/21 April, and 2023c (28 March) reverted to the earlier data after the decision was reversed. A system that re-derived meeting times on 2023b and not again on 2023c would keep wrong local times for future meetings ([IANA tz NEWS](https://data.iana.org/time-zones/tzdb/NEWS)).
 - **Microsoft Azure, 2012: the leap-day certificate.** An agent computed a certificate expiry as "today plus one year", which on 29 February gave a date that does not exist. The same class of bug hits recurring-meeting code that adds a year or a month by bumping fields ([Azure blog](https://azure.microsoft.com/en-us/blog/summary-of-windows-azure-service-disruption-on-feb-29th-2012/)).
 
 ## Down the stack

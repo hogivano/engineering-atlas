@@ -40,8 +40,8 @@ These are easy to confuse because they all reduce direct references.
 A useful test: if you can point to one place and say "this is where the rules about how these components interact live", you have a mediator.
 
 ### Where you already use it
-- **React's "lifting state up".** Two sibling components that must agree do not reference each other; their common parent owns the state and passes values and callbacks down. The parent is the mediator.
-- **Kubernetes controllers.** The Deployment controller does not call the ReplicaSet controller, and neither calls the scheduler. Each reads and writes objects through the API server and watches for changes, so the API server and its stored state mediate every interaction between them.
+- **React's "lifting state up".** Two sibling components that must agree do not reference each other; their closest common parent owns the state and passes it down as props ([React docs](https://react.dev/learn/sharing-state-between-components)). The parent is the mediator.
+- **Kubernetes controllers.** The Deployment controller does not call the ReplicaSet controller, and neither calls the scheduler. Each reads and writes objects through the API server and watches for changes, so the API server and its stored state mediate every interaction between them ([Kubernetes docs](https://kubernetes.io/docs/concepts/architecture/controller/)). The docs add a caveat: a controller that manages something outside the cluster talks to that external system directly, so the mediator covers cluster state only.
 - **Exchanges and air traffic control.** Buyers and sellers never contact each other, and aircraft do not negotiate runways; the matching engine and the tower decide.
 
 ### Keeping the mediator from becoming a god object
@@ -61,7 +61,7 @@ Components promise to report their own changes to the mediator and to never refe
 ### Layer 2: The mechanism
 The structure is a star: the mediator holds typed references to each component, and each component holds one reference to the mediator, usually through a small interface (`changed(sender)`) so components do not depend on the concrete form. Re-entrancy is handled in one of two ways. Either components expose a silent setter that the mediator uses (the practice solution's approach), or the mediator sets an "updating" flag and ignores notifications that arrive while it is applying rules.
 
-In React, the parent's state setter schedules a re-render rather than mutating children; React 18 batches the updates from one event into one render, and children receive new props. In Kubernetes, controllers use informers that list and watch resources into a local cache and queue the keys that changed; reconciliation writes through the API server with optimistic concurrency, where a stale `resourceVersion` fails with a conflict and the controller retries. The API server never calls controllers; the interaction emerges from shared state. In Go programs, a common in-process mediator is a single goroutine that owns the state and serves requests from channels in a `select` loop, so no lock is needed because only one goroutine touches the data.
+In React, the parent's state setter schedules a re-render rather than mutating children. Before React 18 only updates inside React event handlers were batched into one render; React 18 batches automatically, including updates inside promises and timeouts ([React 18 announcement](https://react.dev/blog/2022/03/29/react-v18)). Children receive new props. In Kubernetes, controllers use informers that list and watch resources into a local cache and queue the keys that changed; reconciliation writes through the API server with optimistic concurrency, where a stale `resourceVersion` makes the API server return a 409 Conflict and the controller retries ([Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)). The API server never calls controllers; the interaction emerges from shared state. In Go programs, a common in-process mediator is a single goroutine that owns the state and serves requests from channels in a `select` loop, so no lock is needed because only one goroutine touches the data; the Go team's slogan for this is to share memory by communicating ([Go blog](https://go.dev/blog/codelab-share)).
 
 ### Layer 3: The machine
 The star costs N references instead of up to N(N-1)/2, and each interaction costs one indirect call into the mediator plus the rule evaluation, a few nanoseconds in Go and well under a microsecond in a browser. The memory effect worth knowing is cycles: components point to the mediator and the mediator points to components. Tracing collectors (V8, the JVM, Go) reclaim such cycles once nothing outside reaches them, but CPython frees most objects by reference counting and needs its cyclic collector to reclaim them, which runs later. A long-lived global mediator, like a lapsed observer, keeps every registered component alive until it is explicitly removed.
@@ -98,6 +98,11 @@ A travel site's booking page had 14 interactive controls (dates, travellers, cab
 The rewrite made every control report only its own changes, to a trip-section mediator or an extras-section mediator, joined by a page mediator that owns the continue check. The dependency rules became a table of 22 entries such as "bags depends on fare family and travellers", and sibling references per control fell from 3.2 on average to zero.
 
 Interaction bugs fell to 1 in the next two quarters. Rule handling took about 0.3 ms per user action against a 16 ms frame budget, and a change that once touched 7 handlers became one table row and one test.
+
+## In the wild
+- **Kubernetes, ongoing: the API server as mediator.** Built-in controllers such as the Job controller do not call each other. They read desired state from the API server and write changes back to it, so the server and its stored objects are the only meeting point ([Kubernetes docs](https://kubernetes.io/docs/concepts/architecture/controller/)). Concurrent writers are kept honest by `resourceVersion`: a stale write gets a 409 Conflict ([API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)).
+- **Google Docs, 2010: the server relays every edit.** In the rebuilt editor each document is a revision log of InsertText, DeleteText and ApplyStyle changes. Editors send changes through the server and transform incoming ones against their own, so concurrent users never talk peer to peer ([Google Drive blog](https://drive.googleblog.com/2010/09/whats-different-about-new-google-docs_22.html)).
+- **GitHub, 2018: a coordinator promotes the wrong primaries.** A 43-second network partition cut the US East hub off from the main East Coast data center. Orchestrator, which had quorum, promoted West Coast MySQL primaries, so both coasts held writes the other lacked. Service was degraded for 24h11m, and GitHub said it would reconfigure Orchestrator to stop promoting primaries across regional boundaries ([GitHub post-incident analysis](https://github.blog/2018-10-30-oct21-post-incident-analysis/)). A central decider is only as safe as the view it decides from.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -926,6 +931,24 @@ func (f *CheckoutForm) Submit() (map[string]string, error) {
 - Re-entrancy handled explicitly: updates issued by the mediator do not trigger the mediator again, and rules recompute from current state.
 - Splitting by interaction cluster (locking, selection, presence) behind a thin board-level coordinator, with the dependency rules readable as data.
 - The event bus trade: easier to add listeners, but the rules scatter across subscribers and ordering becomes implicit; keep a bus for cross-board notifications only.
+
+## Sources and further study
+**Primary**
+- [React 18 announcement](https://react.dev/blog/2022/03/29/react-v18): automatic batching, which decides how often a parent-as-mediator re-renders.
+- [Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/): `resourceVersion` and the 409 Conflict that guards a shared-state mediator.
+
+**Systems docs**
+- [Kubernetes controllers](https://kubernetes.io/docs/concepts/architecture/controller/): controllers coordinating through the API server, and the exception for external systems.
+- [React: sharing state between components](https://react.dev/learn/sharing-state-between-components): lifting state to the closest common parent.
+- [Go blog: share memory by communicating](https://go.dev/blog/codelab-share): one goroutine owning state, a mediator without a lock.
+- [Google Drive blog: the new Google Docs](https://drive.googleblog.com/2010/09/whats-different-about-new-google-docs_22.html): a server that orders and transforms concurrent edits.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 5 "Behavioral Patterns": the original Mediator, with its trade-off between decoupled colleagues and a complex mediator.
+
+**Other curricula**
+- [Refactoring.Guru: Mediator](https://refactoring.guru/design-patterns/mediator): frames it as removing chaotic dependencies and names the god-object risk.
+- [SourceMaking: Mediator](https://sourcemaking.com/design_patterns/mediator): compares it with Observer and Facade.
 
 ## Watch
 - [Mediator Design Pattern (Derek Banas)](https://www.youtube.com/watch?v=8DxIpdKd41A): a code walkthrough of components talking only through a mediator.

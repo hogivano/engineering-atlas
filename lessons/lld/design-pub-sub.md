@@ -15,7 +15,7 @@ minutes: 20
 Functional:
 - Publishers publish a message (payload plus string attributes) to a named topic. Topics are created on first use.
 - Subscribers subscribe to one topic, optionally with an attribute filter such as `region = eu`, and receive every matching message published after they subscribed, in publish order.
-- Each subscription has a capacity and an overflow policy: drop the oldest queued message, drop the new one, or reject the publish.
+- Each subscription has a capacity and an overflow policy: drop the oldest queued message, drop the new one, or reject the publish. (Real brokers add a fourth option, disconnecting the slow subscriber; see In the wild.)
 - Subscribers can unsubscribe at any time; pending messages for that subscription are discarded.
 - The broker reports per-subscription counters: queued, delivered and dropped.
 
@@ -130,7 +130,7 @@ sequenceDiagram
 
 - **Façade**: `Broker` is the only type publishers and subscribers see. It hides topics, buffers and dispatchers, so you can swap the ring buffer for a lock-free one, or the dispatcher for a shared thread pool, without touching callers.
 - **Strategy** for overflow. Different consumers want different behaviour when full: a live price feed wants the newest value (drop oldest), an audit consumer wants none silently lost (reject, so the publisher feels it), a debug tap wants to cost nothing (drop newest). One interface, three small classes, chosen per subscription.
-- **Specification** for filters. `AttributeEquals("region", "eu")` composes with `And`, `Or` and `Not`. Filters run on the publisher's thread for every message, so the interface also gives you one place to optimise later, for example by indexing equality filters by attribute value.
+- **Specification** for filters. `AttributeEquals("region", "eu")` composes with `And`, `Or` and `Not`. Filters run on the publisher's thread for every message, so the interface also gives you one place to optimise later, for example by indexing equality filters by attribute value. Amazon SNS does the same job with per-subscription filter policies over attributes or the JSON body, and a subscription without a policy receives everything ([AWS docs](https://docs.aws.amazon.com/sns/latest/dg/sns-message-filtering.html)).
 - **Observer**, but only at the edge. The `Subscriber` interface is an observer; the dispatcher is what calls it. Keeping Observer on the far side of a buffer is the main difference from the [Observer](observer.md) lesson's synchronous subject.
 - **Producer and consumer** inside each subscription: the broker produces into the bounded buffer and the dispatcher consumes. The [Producer Consumer](producer-consumer.md) lesson covers the blocking variant; here the producer side never blocks, it applies a policy instead.
 - **Immutable value object** for messages, so one allocation serves every subscriber and nobody can mutate a payload another subscriber is reading.
@@ -144,18 +144,24 @@ Argue against a **Singleton** broker: tests share state, and you will soon want 
 - **Subscribe during publish.** Iterate a snapshot of the subscription list (copy on write), so a subscriber added mid-publish either gets the whole message or none of it. A new subscription starts at the next sequence number; it never sees history in this design.
 - **Unsubscribe from inside a handler.** The dispatcher checks a closed flag after each handler call and discards the rest of the batch.
 - **Handler throws.** Catch it in the dispatcher, count it, and keep going, or the subscription dies silently. After N consecutive failures, park the subscription and raise an alert instead of spinning.
+- **Duplicate matches.** If routing allows both exact and pattern subscriptions, one publish can reach the same client twice. Redis documents exactly this: a client subscribed to both `foo` and `f*` receives a `message` and a `pmessage` for one publish ([Redis docs](https://redis.io/docs/latest/develop/pubsub/)). Decide whether your subscription identity de-duplicates.
 - **Gap detection.** After a drop, a subscriber sees sequence 7 then 10, and can resync from the source of truth.
+
+## In the wild
+- **Redis Pub/Sub: a slow subscriber is disconnected.** Redis pushes messages into a per-client output buffer. For subscribed clients the default `client-output-buffer-limit pubsub 32mb 8mb 60` disconnects a client immediately at 32 MB, or once its buffer stays above 8 MB for 60 seconds. The configuration file says the usual cause is a subscriber that cannot consume as fast as publishers produce ([redis.conf](https://github.com/redis/redis/blob/unstable/redis.conf)). This is the fourth overflow policy: protect the broker by cutting the consumer loose. Delivery is at most once, so the dropped client misses messages for good ([Redis docs](https://redis.io/docs/latest/develop/pubsub/)).
+- **LMAX Exchange, 2011: the ring buffer behind an in-process event pipeline.** LMAX's paper reports 52 ns mean latency per hop through its Disruptor in a three-stage pipeline against 32,757 ns for a queue built on locks and condition variables, and attributes the difference to locks and signalling. A lagging consumer catches up by processing every entry up to the cursor in one batch ([LMAX paper](https://lmax-exchange.github.io/disruptor/disruptor.html)).
+- **Google Cloud Pub/Sub: redelivery is the default.** Delivery is at-least-once, a message not acknowledged within the subscriber's `ackDeadline` can be redelivered, and ordering needs an explicit ordering key ([Google Cloud docs](https://docs.cloud.google.com/pubsub/docs/subscription-overview)). A durable broker trades the drop policies of this lesson for acknowledgements, which is why handlers must be idempotent.
 
 ## Down the stack
 
 ### Layer 1: The contract
-`publish` returns a sequence number once the message is in every matching buffer, or fails with back pressure and changes nothing. For each subscription, messages are delivered in increasing sequence order with no duplicates; gaps appear only where the overflow policy dropped a message, and the dropped counter accounts for every gap. No ordering holds across topics. Delivery is at most once: a crash loses whatever is buffered. Publish latency does not depend on any handler's speed.
+`publish` returns a sequence number once the message is in every matching buffer, or fails with back pressure and changes nothing. For each subscription, messages are delivered in increasing sequence order with no duplicates; gaps appear only where the overflow policy dropped a message, and the dropped counter accounts for every gap. No ordering holds across topics. Delivery is at most once: a crash loses whatever is buffered. Redis Pub/Sub makes the same promise, and says a message the subscriber cannot handle is "forever lost" ([Redis docs](https://redis.io/docs/latest/develop/pubsub/)). Managed services default the other way: Google Cloud Pub/Sub is at-least-once with no ordering unless you enable ordering keys, so its subscribers must be idempotent ([Google Cloud docs](https://docs.cloud.google.com/pubsub/docs/subscription-overview)). Publish latency does not depend on any handler's speed.
 
 ### Layer 2: The mechanism
-Each topic holds an array of subscriptions replaced on change (copy on write), so publish reads it without taking the subscription-set lock. Each subscription's buffer is a ring buffer: a fixed array of `capacity` slots and two counters, `head` and `tail`, where `tail - head` is the length and `index = counter mod capacity`. Drop-oldest advances `head` by one before writing; drop-newest just increments `dropped`. A dispatcher per subscription takes up to a batch of messages and calls the handler; Go programs often model this as one goroutine and a buffered channel per subscription, with a `select` and `default` branch to implement drop-newest without blocking.
+Each topic holds an array of subscriptions replaced on change (copy on write), so publish reads it without taking the subscription-set lock. Each subscription's buffer is a ring buffer: a fixed array of `capacity` slots and two counters, `head` and `tail`, where `tail - head` is the length and `index = counter mod capacity`. The LMAX Disruptor paper sizes its ring as a power of two so that a bit mask replaces the costly remainder ([LMAX paper](https://lmax-exchange.github.io/disruptor/disruptor.html)). Drop-oldest advances `head` by one before writing; drop-newest just increments `dropped`. A dispatcher per subscription takes up to a batch of messages and calls the handler; Go programs often model this as one goroutine and a buffered channel per subscription, with a `select` and `default` branch to implement drop-newest without blocking.
 
 ### Layer 3: The machine
-A message here is a pointer to an immutable object, so fan-out to 100 subscriptions writes 100 pointers (800 bytes on a 64-bit machine), not 100 payloads. A ring buffer slot write is a store into memory that is usually already in L1 or L2 cache, a few nanoseconds; an uncontended Go channel send is on the order of 50 to 100 ns because it takes the channel's internal lock. When a dispatcher sleeps on an empty buffer and is woken, the cost is a futex wake and a context switch, a few microseconds. That is why dispatchers drain in batches: one wake-up for 32 messages instead of 32 wake-ups. The `head` and `tail` counters are written by different threads; if they share a 64-byte cache line, every publish invalidates the dispatcher's copy and vice versa (false sharing), which is why high-throughput rings pad them onto separate lines. Garbage collection is the hidden cost of unbounded buffers: a backlog of a million small messages is a million live objects the collector must trace on every cycle.
+A message here is a pointer to an immutable object, so fan-out to 100 subscriptions writes 100 pointers (800 bytes on a 64-bit machine), not 100 payloads. A ring buffer slot write is a store into memory that is usually already in L1 or L2 cache, a few nanoseconds; an uncontended Go channel send is on the order of 50 to 100 ns because it takes the channel's internal lock. When a dispatcher sleeps on an empty buffer and is woken, the cost is a futex wake and a context switch, a few microseconds. That is why dispatchers drain in batches: one wake-up for 32 messages instead of 32 wake-ups. The `head` and `tail` counters are written by different threads; if they share a 64-byte cache line, every publish invalidates the dispatcher's copy and vice versa (false sharing), which is why high-throughput rings keep them on separate lines. The LMAX paper measured the cost of locking: 500 million increments of a counter took 300 ms with no lock, 10,000 ms with a lock on one thread and 224,000 ms with two contending threads, and its ring buffer reached about 26 million operations per second in a one-producer, one-consumer test against 5.3 million for `ArrayBlockingQueue` ([LMAX paper](https://lmax-exchange.github.io/disruptor/disruptor.html)). Garbage collection is the hidden cost of unbounded buffers: a backlog of a million small messages is a million live objects the collector must trace on every cycle.
 
 ### Why it's built this way
 1. Subscribers run at different speeds, so each needs its own buffer, or the slowest sets the pace for everyone.
@@ -168,7 +174,7 @@ A message here is a pointer to an immutable object, so fan-out to 100 subscripti
 
 - **Durability.** Replace the per-subscription ring with one append-only log per topic and a cursor per subscription. Drop policies become retention policies, and "dropped" becomes "the cursor fell behind the oldest retained offset". This is the step from this lesson to the broker in [Design Messaging Queue](../sdi/design-messaging-queue.md).
 - **At-least-once delivery.** Add `ack(seq)` and an in-flight set with a redelivery deadline from the injected clock. Handlers must then be idempotent; see the [Idempotency](../sd/idempotency.md) lesson.
-- **Wildcards.** Swap the topic map for a trie keyed by topic levels so `orders/+/created` matches in O(levels). Only the routing step changes.
+- **Wildcards.** Swap the topic map for a trie keyed by topic levels so `orders/+/created` matches in O(levels). Only the routing step changes. Redis supports glob patterns with `PSUBSCRIBE` ([Redis docs](https://redis.io/docs/latest/develop/pubsub/)).
 - **Shared subscriptions.** Several workers attach to one subscription and compete for its messages. The buffer stays the same; the dispatcher becomes a pool.
 
 ## Leadership lens
@@ -985,6 +991,24 @@ func (b *Broker) Dropped(subID string) (int, error) {
 - Immutable messages shared across subscribers, per-topic sequence numbers for gap detection, and copy-on-write subscription lists.
 - Dispatcher robustness: catch handler errors, tolerate self-unsubscribe, batch drains to amortise wake-ups.
 - A clear boundary: durability means a log and cursors, which is a broker, not a library.
+
+## Sources and further study
+**Primary**
+- [LMAX Disruptor technical paper](https://lmax-exchange.github.io/disruptor/disruptor.html): lock cost measurements, ring buffer sizing, batching and the single-writer principle.
+- [redis.conf, client-output-buffer-limit](https://github.com/redis/redis/blob/unstable/redis.conf): hard and soft limits that disconnect slow pub/sub clients.
+
+**Systems docs**
+- [Redis Pub/Sub](https://redis.io/docs/latest/develop/pubsub/): at-most-once semantics, pattern subscriptions, duplicate matches and sharded channels.
+- [Google Cloud Pub/Sub subscriptions](https://docs.cloud.google.com/pubsub/docs/subscription-overview): at-least-once default, ordering keys and acknowledgement deadlines.
+- [Amazon SNS message filtering](https://docs.aws.amazon.com/sns/latest/dg/sns-message-filtering.html): filter policies over attributes or message body.
+
+**Books**
+- *Design Patterns*, Gamma et al., chapter 5 (Behavioral): Observer, the synchronous pattern this design puts a buffer behind, and Strategy for overflow policies.
+- *Head First Design Patterns*, Freeman and Robson, chapter 2: Observer, with the same subject-and-observers model.
+- *Designing Data-Intensive Applications*, Kleppmann, 1st ed., chapter 11 "Stream Processing": message brokers versus logs, and what happens when consumers fall behind.
+
+**Other curricula**
+- [Game Programming Patterns: Event Queue](https://gameprogrammingpatterns.com/event-queue.html): the same decoupling in a game loop, with ring buffers.
 
 ## Watch
 - [What is the Publisher Subscriber Model? (Gaurav Sen)](https://www.youtube.com/watch?v=FMhbR_kQeHw): why systems move from direct calls to pub/sub, and what that decoupling costs.

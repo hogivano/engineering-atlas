@@ -15,7 +15,7 @@ minutes: 22
 Functional:
 - Browse tracks, albums, artists; save tracks to a library; create, rename, reorder and delete playlists.
 - Start playback from a context (an album or playlist) at a chosen track.
-- Play, pause, seek, skip, previous; repeat modes off, context and track (the names Spotify's public Web API uses); shuffle on or off.
+- Play, pause, seek, skip, previous; repeat modes off, context and track (the names Spotify's public Web API uses ([Spotify Web API](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback))); shuffle on or off.
 - Add to queue: queued tracks play before the rest of the context, in the order they were added, and survive a change of context.
 - Show "next up" so the user sees what will play.
 
@@ -137,9 +137,9 @@ sequenceDiagram
 
 ## Design patterns used and why
 
-- **Command** for player actions. Play, pause, skip, seek and add-to-queue are objects placed on one queue and applied in order by a single control loop. That gives one ordering for the phone UI, headphone buttons and a remote device (Spotify Connect is the product version of this), and makes logging and replaying a session trivial.
-- **State** for the player: stopped, playing, paused, buffering. Each state decides what `play` and `pause` mean; pausing a stopped player is a no-op, not an error.
-- **Strategy** for shuffle. Plain Fisher-Yates is uniformly random, and users complain that it is "not random" when two songs by the same artist land together. Spotify's engineering blog described in 2014 moving to an algorithm that spreads each artist's tracks across the list. That is a second strategy behind the same interface, and the queue does not change.
+- **Command** for player actions. Play, pause, skip, seek and add-to-queue are objects placed on one queue and applied in order by a single control loop. That gives one ordering for the phone UI, headphone buttons and a remote device (Spotify Connect is the product version of this; the public Web API even warns that execution order is not guaranteed when you mix its queue call with other player calls ([Spotify Web API](https://developer.spotify.com/documentation/web-api/reference/add-to-queue)), which is the problem a single control loop removes), and makes logging and replaying a session trivial.
+- **State** for the player: stopped, playing, paused, buffering. The state pattern lets each state own its behaviour ([Refactoring.Guru](https://refactoring.guru/design-patterns/state)). Each state decides what `play` and `pause` mean; pausing a stopped player is a no-op, not an error.
+- **Strategy** for shuffle. Plain Fisher-Yates is uniformly random ([Wikipedia](https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle)), and users complain that it is "not random" when two songs by the same artist land together. Spotify's engineering blog described in 2014 moving to an algorithm that spreads each artist's tracks across the list ([Spotify Labs, archived](https://web.archive.org/web/20150316041107/https://labs.spotify.com/2014/02/28/how-to-shuffle-songs/)). That is a second strategy behind the same interface, and the queue does not change.
 - **Iterator**, in spirit. The queue is a cursor over a sequence with policies (repeat, shuffle, manual inserts). Callers ask for `next`, never for the internal list, which keeps the representation free to change.
 - **Memento** for history. Each history entry records which track was playing, where in the context it was and whether it came from the manual queue, so "previous" can restore the cursor precisely.
 - **Observer** for everything downstream of playback: the now-playing UI, lock-screen metadata, scrobbling and the play-event reporter that feeds stream counting. The player publishes events; it never calls those components.
@@ -154,13 +154,17 @@ sequenceDiagram
 - **End of context.** With repeat off, playback stops at the end; with repeat context, it wraps to the start of the current order. A new context clears history, since positions from the old context mean nothing in the new one, but keeps the manual queue.
 - **Duplicates.** A playlist can hold the same track twice, so the queue works with indices into the context, never with "find this track id".
 
+## In the wild
+- **Spotify, 2022-03: a service-discovery outage logs users out.** A Google Cloud Traffic Director outage, compounded by a bug in the gRPC client library, broke discovery for services that used it. From 18:12 UTC users were logged out and could not log back in, and the incident was fully mitigated at 20:35 UTC, about 2 hours 23 minutes after the first reports. Services on DNS-based discovery were unaffected. Spotify moved affected services back to DNS discovery and added monitoring for discovery health ([Spotify Engineering](https://engineering.atspotify.com/2022/03/incident-report-spotify-outage-on-march-8/)). A client player that keeps working from cached queue and downloaded audio during such an outage is a design requirement, not a luxury.
+- **Spotify Web API, current: the queue as a public contract.** The API exposes "add to queue" as `POST /me/player/queue`, targets the active device unless `device_id` is given, and documents that order of execution is not guaranteed relative to other player endpoints ([Spotify Web API](https://developer.spotify.com/documentation/web-api/reference/add-to-queue)). Repeat is a three-valued state, `off`, `track` or `context`, reported in the playback state ([Spotify Web API](https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback)).
+
 ## Down the stack
 
 ### Layer 1: The contract
 `skip` returns the head of the manual queue if there is one, else the next track in the current order, wrapping only under repeat context, else nothing. `trackEnded` behaves like `skip` except that under repeat track it returns the current track again. `previous(p)` restarts when `p` is at least 3,000 ms or there is no history, and otherwise restores the previous track and cursor exactly. `upcoming(n)` predicts what successive skips would return, so the player can prefetch.
 
 ### Layer 2: The mechanism
-The context is an array of track ids and the play order is an array of indices into it (identity when unshuffled). The cursor is an integer. The manual queue is a deque: O(1) at both ends, which "add to queue" and "put back on previous" both need. History is a stack of small records. Shuffle with Fisher-Yates walks the array from the end, swapping each element with a random earlier one including itself, O(n) with n calls to the random source and every permutation equally likely. Keeping the current track at position zero and shuffling only the rest is what makes toggling shuffle seamless. The audio side keeps two decoders: one playing, one preloading `upcoming(1)`.
+The context is an array of track ids and the play order is an array of indices into it (identity when unshuffled). The cursor is an integer. The manual queue is a deque: O(1) at both ends, which "add to queue" and "put back on previous" both need. History is a stack of small records. Shuffle with Fisher-Yates ([Wikipedia](https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle)) walks the array from the end, swapping each element with a random earlier one including itself, O(n) with n calls to the random source and every permutation equally likely. Keeping the current track at position zero and shuffling only the rest is what makes toggling shuffle seamless. The audio side keeps two decoders: one playing, one preloading `upcoming(1)`.
 
 ### Layer 3: The machine
 A 3.5-minute track at 160 kbit/s is about 4 MB compressed. Decoded to 16-bit stereo PCM at 44.1 kHz it is 176,400 bytes per second, about 37 MB, which is why players decode a few seconds ahead into a ring buffer rather than decoding whole tracks. The audio callback runs on a real-time thread with a buffer of perhaps 512 frames, about 11.6 ms at 44.1 kHz; if it blocks on a mutex, allocates, or waits on a garbage-collection pause, the buffer underruns and the user hears a click. So the control loop (commands, queue logic) and the audio thread share only a lock-free single-producer, single-consumer ring of samples and a few atomics. Queue operations themselves are nanoseconds to microseconds; shuffling a 10,000-track playlist is 10,000 swaps in a contiguous integer array, well under a millisecond.
@@ -1094,6 +1098,25 @@ func (q *PlayQueue) Upcoming(n int) []string {
 - Shuffle as an index order over an unchanged context, with the current track pinned and a seeded or injected random source; artist spreading as a new strategy.
 - One control loop that serializes commands from every device, play ids to drop stale end-of-track events, and an audio thread that never takes a lock.
 - `upcoming` as a side-effect-free query used for gapless preloading.
+
+## Sources and further study
+
+**Primary**
+- [Spotify Web API: set repeat mode](https://developer.spotify.com/documentation/web-api/reference/set-repeat-mode-on-users-playback): the three repeat states this lesson models.
+- [Spotify Web API: get playback state](https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback): the repeat and shuffle state a client reports.
+- [Fisher-Yates shuffle (Wikipedia)](https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle): the uniform-shuffle algorithm and its off-by-one bias traps.
+
+**Systems docs**
+- [Spotify Engineering: incident report, 8 March 2022](https://engineering.atspotify.com/2022/03/incident-report-spotify-outage-on-march-8/): a candid postmortem from the product this lesson models.
+- [Spotify Web API: add to queue](https://developer.spotify.com/documentation/web-api/reference/add-to-queue): how the real queue is exposed to remote controllers.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: Ch 5 (Command, Iterator, Memento, Observer, State, Strategy).
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: Ch 6 (Command), Ch 9 (Iterator) and Ch 10 (State).
+
+**Other curricula**
+- [Refactoring.Guru: Iterator](https://refactoring.guru/design-patterns/iterator): traversal separated from the collection, the idea behind the queue's cursor.
+- [Refactoring.Guru: Strategy](https://refactoring.guru/design-patterns/strategy): swappable algorithms, as in plain versus artist-spreading shuffle.
 
 ## Watch
 - [Build Spotify, Music Player App (Coder Army)](https://www.youtube.com/watch?v=DkLwFqbCsu8): a low-level design lecture that builds a music player's classes, useful to compare with the queue-centred model here.

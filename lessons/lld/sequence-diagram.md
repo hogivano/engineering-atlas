@@ -15,10 +15,10 @@ minutes: 17
 ### Reading the axes
 Horizontal position means nothing except identity: each column is one participant, which can be an object, a service, a queue or a human actor. Vertical position is time, but only as order. Equal spacing does not mean equal duration, and two arrows at the same height on different lifelines are not necessarily simultaneous.
 
-Each lifeline is a total order of events: on the `pricing` lifeline, receiving `Quote` happens before sending `GET rules`. Across lifelines the order is partial. A message's send happens before its receive, and that chains through, which is exactly Lamport's happens-before relation drawn on paper. Two events on different lifelines with no chain of messages between them are concurrent, whatever their height on the page.
+Each lifeline is a total order of events: on the `pricing` lifeline, receiving `Quote` happens before sending `GET rules`. Across lifelines the order is partial. A message's send happens before its receive, and that chains through, which is exactly Lamport's happens-before relation drawn on paper ([Lamport, 1978](https://lamport.azurewebsites.net/pubs/time-clocks.pdf)). Two events on different lifelines with no chain of messages between them are concurrent, whatever their height on the page.
 
 ### Messages
-A solid line with a filled arrowhead is a synchronous call: the sender blocks until the reply. A solid line with an open arrowhead is an asynchronous send: the sender continues. A dashed line back is a reply, labelled with the return value or status. In Mermaid these are `->>`, `-)` and `-->>`, and `-x` or `--x` ends a message with a cross to show it was lost or failed.
+A solid line with a filled arrowhead is a synchronous call: the sender blocks until the reply. A solid line with an open arrowhead is an asynchronous send: the sender continues. A dashed line back is a reply, labelled with the return value or status. In Mermaid these are `->>`, `-)` and `-->>`, and `-x` or `--x` ends a message with a cross to show it was lost or failed ([Mermaid docs](https://mermaid.js.org/syntax/sequenceDiagram.html)).
 
 The activation bar on the receiver starts when a synchronous call arrives and ends when the reply leaves. Nested bars show a participant calling itself or being re-entered by a callback, which is often the first visual hint of a reentrancy bug.
 
@@ -32,7 +32,7 @@ A fragment is a labelled box around some messages:
 - `loop [for each item]` repeats its contents.
 - `par` splits into regions separated by dashed lines that run concurrently; the fragment ends when all regions finish.
 - `break` runs its contents and then abandons the rest of the enclosing interaction, the diagram's version of an early return or thrown exception.
-- `critical` marks a region that must not interleave with others, such as a lock or a transaction.
+- `critical` marks a region that must not interleave with others, such as a lock or a transaction (Mermaid draws it as a labelled box with optional `option` branches for failure handling).
 
 Nesting more than two fragments deep is a sign the diagram is trying to be a program. Split it into one diagram per scenario: the happy path, the declined card, the inventory timeout.
 
@@ -50,7 +50,7 @@ A sequence diagram claims four things that can be checked against a running syst
 ### Layer 2: The mechanism
 Inside one process a synchronous arrow is a function call and the activation bar is the callee's stack frame: pushed on call, popped on return. A debugger's stack view at any instant is a vertical slice through the diagram's nested activations.
 
-Across processes the mapping is distributed tracing (see the Distributed Tracing lesson for propagation and sampling). OpenTelemetry records each operation as a span with `trace_id` (16 bytes), `span_id` (8 bytes), `parent_span_id`, `name`, `kind`, `start_time_unix_nano`, `end_time_unix_nano` and `status`. One arrow between services is a pair of spans: a `CLIENT` span in the caller and a `SERVER` span in the callee whose parent is that client span, linked by the W3C `traceparent` header, a 55-character string such as `00-<32 hex trace id>-<16 hex parent id>-01`. An asynchronous send is a `PRODUCER` span and a `CONSUMER` span, often connected with a span link rather than a parent, because the consumer may run long after the producer has finished. `INTERNAL` spans are work inside one participant and draw as nothing, or as a self-call.
+Across processes the mapping is distributed tracing (see the Distributed Tracing lesson for propagation and sampling). OpenTelemetry records each operation as a span with `trace_id` (16 bytes), `span_id` (8 bytes), `parent_span_id`, `name`, `kind`, `start_time_unix_nano`, `end_time_unix_nano` and `status`. One arrow between services is a pair of spans: a `CLIENT` span in the caller and a `SERVER` span in the callee whose parent is that client span, linked by the W3C `traceparent` header, a 55-character string such as `00-<32 hex trace id>-<16 hex parent id>-01` ([W3C Trace Context](https://www.w3.org/TR/trace-context/)). An asynchronous send is a `PRODUCER` span and a `CONSUMER` span. The OpenTelemetry messaging conventions connect them with a span link by default, because a link is the only structure that holds across every broker model, and a consumer may run long after the producer finished ([messaging spans](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/), [span kinds](https://opentelemetry.io/docs/concepts/signals/traces/)). `INTERNAL` spans are work inside one participant and draw as nothing, or as a self-call.
 
 A `par` fragment corresponds to sibling spans whose intervals overlap. A `loop` is a run of sibling spans with the same name. An `alt` is not visible in one trace at all; it appears only across many traces, as different children under the same parent.
 
@@ -109,6 +109,10 @@ hold = await inventory.reserve(cart)
 Running them with `asyncio.gather` makes them overlap, and the critical path drops from 40 + 58 = 98 ms to max(40, 58) = 58 ms, taking p50 from 180 to about 140 ms. The rest of the gap turns out to be payments waiting on an undersized connection pool.
 
 The other 20 traces matter more: `Reserve` failed and the gateway still called `Charge`. The design diagram had no inventory failure branch, so nobody had designed one. The fix adds a `break` fragment to the diagram and an early return to the code.
+
+## In the wild
+- **AWS, 2025: a DNS race that only an interleaving diagram explains.** On 19 October 2025 two independent DNS Enactors for DynamoDB raced. One was unusually delayed, and by the time it applied an old plan, its one-time "is this plan newer?" check was stale. A second Enactor finished a newer plan, then its clean-up deleted the old plan that had just overwritten the regional endpoint, which removed every IP address for it at 11:48 PM PDT. DNS was restored at 2:25 AM, and EC2 launches were not fully normal until 1:50 PM ([AWS post-event summary](https://aws.amazon.com/message/101925/)). The bug lives in the order of messages across three lifelines, which a table of components would not show.
+- **Google, 2010: Dapper turns every request into a trace tree.** Google's tracing system records the call tree of a request across services, using sampling and instrumentation restricted to a small number of common libraries, so that it can run on production traffic ([Dapper paper](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/)). OpenTelemetry's spans and the `traceparent` header descend from the same idea, which is why a trace can be rendered back into a sequence diagram.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -726,6 +730,25 @@ func ToSequence(spans []Span) ([]string, error) {
 - A failure scenario with `alt` or `break`: release the driver, notify the rider, and a compensation path for any hold already placed.
 - Idempotency keys on the retried calls, shown as message parameters.
 - Verification from traces: span overlap for `par`, client and server span pairs for every arrow, and a regenerated diagram in incident reviews.
+
+## Sources and further study
+**Primary**
+- [Lamport, Time, Clocks, and the Ordering of Events (1978)](https://lamport.azurewebsites.net/pubs/time-clocks.pdf): the happens-before relation that lifelines and message arrows draw.
+- [Dapper (Google Research)](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/): the design of production trace trees.
+- [W3C Trace Context](https://www.w3.org/TR/trace-context/): the `traceparent` header format.
+
+**Systems docs**
+- [OpenTelemetry: traces and span kinds](https://opentelemetry.io/docs/concepts/signals/traces/): `CLIENT`, `SERVER`, `PRODUCER`, `CONSUMER` and `INTERNAL`.
+- [OpenTelemetry: messaging spans](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/): why producer and consumer are linked rather than parented.
+- [AWS: DynamoDB service disruption, October 2025](https://aws.amazon.com/message/101925/): a published account of a cross-component ordering race.
+- [Mermaid sequence diagram syntax](https://mermaid.js.org/syntax/sequenceDiagram.html): arrows, fragments and create or destroy.
+
+**Books**
+- *Designing Data-Intensive Applications*, Martin Kleppmann: see the chapters on distributed systems trouble and on ordering for the same message-ordering ideas in prose.
+- *Release It!*, Michael Nygard (2nd edition): the stability chapters on timeouts and cascading failures, the cases where a failure branch missing from the sequence diagram hurts.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): describes flows in prose and boxes, which is a reminder to pair them with a failure scenario.
 
 ## Watch
 - [How to Make a UML Sequence Diagram (Lucid Software)](https://www.youtube.com/watch?v=pCK6prSq8aw): lifelines, activations, message types and fragments step by step.

@@ -45,7 +45,7 @@ Before drawing a class diagram, write down the rules that must always hold:
 3. A member with an overdue loan gets no new loans.
 4. Holds for a title are served in the order they were placed.
 
-Then make the checking methods the only way to change that state; that is what encapsulation is for. Invariants also show where locks go: rule 1 is a per-copy rule, so a per-copy lock or a conditional `UPDATE ... WHERE state = 'shelf'` is enough; rule 2 spans a member's loans, so the check and the insert must be atomic per member.
+Then make the checking methods the only way to change that state; that is what encapsulation is for. Fowler calls the opposite, entities that are bags of getters and setters with every rule in services, an [anemic domain model](https://martinfowler.com/bliki/AnemicDomainModel.html), because nothing stops a second caller from skipping the rules. Invariants also show where locks go: rule 1 is a per-copy rule, so a per-copy lock or a conditional `UPDATE ... WHERE state = 'shelf'` is enough, and a database can enforce it on every path with a partial unique index such as `CREATE UNIQUE INDEX ON loan (copy_id) WHERE returned_at IS NULL` ([Postgres docs](https://www.postgresql.org/docs/current/indexes-partial.html)); rule 2 spans a member's loans, so the check and the insert must be atomic per member.
 
 ### Where patterns come in
 Patterns enter when a requirement is expected to vary. If fines differ by member type and the business changes them every year, a `FinePolicy` interface with one class per policy (Strategy) is worth it. If members must be notified when a held copy arrives, an event the notifier subscribes to (Observer) keeps the loan code from knowing about email. If the copy's lifecycle grows to include repair, lost and in-transit states, an explicit state machine (State, or an enum with a transition table) stops `if` chains from multiplying. Without such pressure, a plain method is better.
@@ -59,13 +59,13 @@ The library's hardest rule, one copy to at most one borrower, is the **contentio
 ## Down the stack
 
 ### Layer 1: The contract
-The contract of an LLD is the set of method contracts plus the invariants. For `checkout(member, isbn, today)`: the precondition is that both exist; on success it returns a copy id, that copy is on loan to that member with `due = today + loan_days`, and the member's loan count went up by one; on failure it raises a specific error (`LimitReached`, `HasOverdue`, `Unavailable`) and changes nothing. "Changes nothing on failure" is the part most designs forget, and it is testable.
+The contract of an LLD is the set of method contracts plus the invariants, which is the vocabulary of [design by contract](https://en.wikipedia.org/wiki/Design_by_contract). For `checkout(member, isbn, today)`: the precondition is that both exist; on success it returns a copy id, that copy is on loan to that member with `due = today + loan_days`, and the member's loan count went up by one; on failure it raises a specific error (`LimitReached`, `HasOverdue`, `Unavailable`) and changes nothing. "Changes nothing on failure" is the part most designs forget, and it is testable.
 
 ### Layer 2: The mechanism
 Languages give you different tools to enforce that contract. Private fields and constructors stop outside code from creating a `Loan` without a due date. Enums or sum types make illegal states unrepresentable: a copy's state is `Shelf | OnLoan(member, due) | Held(member)`, so "on loan with no member" cannot be expressed. Interfaces let `Library` call `policy.fine(loan, today)` without knowing which policy it has; the call is resolved at run time through a vtable in C++ or Java, an itab in Go, or a prototype chain lookup in JavaScript. Injecting the clock keeps time out of the rules, which is why the practice task passes `today` in.
 
 ### Layer 3: The machine
-Each object is an allocation. A Java object has a 12 to 16 byte header; a CPython instance has a 16-byte header plus its attribute storage; a Go struct has none, and a slice of structs is one contiguous block. Ten million copies as small objects fit in about 1 GB of managed heap, and an interface call costs a few nanoseconds, so at library scale clarity wins. What does matter is concurrency: two requests for the last copy on two threads must not both see "available". An uncontended mutex costs around 20 to 50 ns; a contended one can park a thread for microseconds; and once state lives in a database, the equivalent is a row lock or a conditional update, each costing a round trip of a fraction of a millisecond.
+Each object is an allocation. A 64-bit HotSpot object has a 12 to 16 byte header, which compact object headers cut to 8 bytes ([JEP 450](https://openjdk.org/jeps/450); a product feature in JDK 25, [JEP 519](https://openjdk.org/jeps/519)). A CPython 3.12 instance with two attributes cost about 88 bytes in my measurement of a million of them, and about 56 with `__slots__`. A Go struct has no header, and a slice of structs is one contiguous block. Ten million copies as small objects fit in about 1 GB of managed heap, and an interface call is a couple of memory loads and one indirect jump ([Russ Cox on Go interfaces](https://research.swtch.com/interfaces)), so at library scale clarity wins. What does matter is concurrency: two requests for the last copy on two threads must not both see "available". An uncontended mutex costs around 20 to 50 ns (17 ns on [Colin Scott's latency table](https://colin-scott.github.io/personal_website/research/interactive_latency.html)); a contended one can park a thread for microseconds; and once state lives in a database, the equivalent is a row lock or a conditional update, each costing a round trip of a fraction of a millisecond.
 
 ### Why it's built this way
 1. Requirements change more often than infrastructure, so LLD optimises for cheap, local change.
@@ -107,6 +107,10 @@ def checkout(self, member_id, isbn, today):
 
 Notice the split. `Library` checks the rules that span entities (limits, overdue loans, choosing a copy). `Copy.lend` checks the copy's own state. If a later requirement adds a "lost" state, only `Copy` changes. If fines are added, a `FinePolicy` is called from `return_copy`, and `checkout` does not change. Under concurrency, one lock per branch is plenty for a few hundred checkouts a minute; beyond that, lock per member and per copy in a fixed order.
 
+## In the wild
+- **Therac-25, 1985 to 1987: state that did not mean what its name said.** In the Tyler overdoses, a data-entry completion variable recorded only that the cursor had once been at the command line, not that it still was. An operator who edited the mode within the roughly 8 seconds the magnets took to set was never noticed. In the Yakima accident a one-byte check counter was incremented on each pass and wrapped to zero every 256th pass, which skipped the collimator check. AECL's fixes were a shared variable owned by the keyboard handler and setting the counter to a fixed non-zero value ([Leveson and Turner, part III](https://web.mit.edu/6.033/2004/wwwdocs/papers/Therac_3.html)). Both are invariants held by convention, not by an owning class.
+- **Alibaba, 2012-11: one inventory row, many buyers.** On Double Eleven every purchase of a popular item updated the same stock row. Row-lock contention collapsed throughput, the inventory database ran out of capacity at midnight, and Alibaba reports many oversold orders. The 2013 fix added switchable AliSQL changes that queue updates to the same row ([Alibaba Cloud](https://www.alibabacloud.com/blog/a-decade-of-evolution-of-alibabas-databases---part-1_594444)). It is the "last copy" race at scale, and the cure was still to serialise the one unit.
+
 ## Trade-offs
 
 | Choice | Strengths | Weaknesses | Choose when |
@@ -119,7 +123,7 @@ Notice the split. `Library` checks the rules that span entities (limits, overdue
 ## Pitfalls in production
 - **One class per noun, mechanically.** `Book`, `BookManager`, `BookHelper`, and no owner for any rule. Fix: give each invariant exactly one owning class.
 - **Rules enforced only in the controller.** A batch job or a second endpoint calls the repository directly and creates a double loan. Fix: put the check in the entity or in one service that every path goes through, and back it with a database constraint.
-- **Check-then-act races.** "Is it available? Then lend it" in two steps lets two requests win. Fix: make check and change atomic with a lock, a conditional update, or a unique constraint on active loans per copy.
+- **Check-then-act races.** "Is it available? Then lend it" in two steps lets two requests win. Fix: make check and change atomic with a lock, a conditional update, or a partial unique index on active loans per copy.
 - **Hidden time.** Calling the system clock inside domain logic makes overdue rules untestable and flaky near midnight. Fix: inject a clock or pass `today` in.
 - **Errors that leave partial state.** The loan is recorded but the copy state update throws. Fix: validate everything first, then mutate, or wrap the mutation in a transaction.
 
@@ -917,6 +921,24 @@ func (l *Library) Available(isbn string) int {
 - A copy state machine and a check-then-change that is atomic (lock, conditional update or unique constraint).
 - Fine rules behind a policy interface because a second variant is already known, and nothing speculative beyond that.
 - How e-books fit: a licence count per title replaces per-copy state, which tests whether the design isolates that difference.
+
+## Sources and further study
+**Primary**
+- [PostgreSQL: partial indexes](https://www.postgresql.org/docs/current/indexes-partial.html): the unique partial index that lets the database enforce "one active loan per copy" on every path.
+- [JEP 450: compact object headers](https://openjdk.org/jeps/450): the real per-object header sizes on 64-bit HotSpot, and the 8-byte layout.
+- [Leveson and Turner, An Investigation of the Therac-25 Accidents](https://web.mit.edu/6.033/2004/wwwdocs/papers/Therac_3.html): two accidents caused by software state that did not enforce what it implied.
+
+**Systems docs**
+- [Latency numbers (Colin Scott)](https://colin-scott.github.io/personal_website/research/interactive_latency.html): mutex, memory and datacenter round-trip costs side by side.
+
+**Books**
+- *Domain-Driven Design*, Eric Evans (1st ed.): chapter 5 (entities, value objects, services) and chapter 6 (aggregates, factories, repositories) on where rules and identity live.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 1, "program to an interface, not an implementation", the idea behind the policy interface here.
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 3, Bad Smells in Code, a checklist for the scattered-rules and data-class problems this lesson warns about.
+
+**Other curricula**
+- [donnemartin/system-design-primer: object-oriented design](https://github.com/donnemartin/system-design-primer): frames LLD as worked class-design problems, with little on invariants or concurrency.
+- [roadmap.sh: software design and architecture](https://roadmap.sh/software-design-architecture): lists the same building blocks (principles, patterns, UML) as a checklist, without the rule-ownership view taken here.
 
 ## Watch
 - [Introduction - Low Level Design (The Code Mate)](https://www.youtube.com/watch?v=GCTEVZjxznc): how to go from software requirements to a low-level design.

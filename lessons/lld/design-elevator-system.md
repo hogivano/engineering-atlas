@@ -128,9 +128,14 @@ sequenceDiagram
 - **Request for the floor you are passing.** A car moving at 2 m/s cannot stop at a floor it is half a metre from. Real controllers compute the next floor where stopping is still possible and only accept stops at or beyond it. In the tick model, the car commits to the next floor as soon as it starts moving.
 - **Request for the current floor.** If the car is idle there, reopen the doors instead of moving. The practice code serves it on the next tick without moving.
 - **Duplicate presses.** People press the button five times. Stops are a set, so repeats are free and idempotent.
-- **Starvation.** Shortest-seek-first (always go to the nearest stop) can leave someone on floor 30 waiting forever while floors 2 to 6 keep calling. LOOK bounds the wait: a request is reached within at most two sweeps.
+- **Starvation.** Shortest-seek-first (always go to the nearest stop) can leave someone on floor 30 waiting forever while floors 2 to 6 keep calling ([OSTEP](https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf)). LOOK bounds the wait: a request is reached within at most two sweeps.
 - **Direction of hall calls.** An up call at floor 7 should not be answered by a car passing 7 on its way down; the passenger would ride the wrong way. Production cars keep separate up and down stop sets. The practice keeps one set and handles direction only in dispatch, which is a reasonable interview simplification if you say so.
 - **Car taken out of service with stops pending.** Its hall calls must be reassigned to other cars, or those passengers wait forever. The car calls die with it; passengers inside are taken to the nearest floor.
+
+## In the wild
+- **Linux block layer: elevator ordering with deadlines.** The deadline I/O scheduler keeps requests in sorted sector order and serves them in batches, yet gives each request an expiry time so that sorting cannot starve one, and it limits how long reads can be preferred over writes. It is the elevator idea plus the lesson this chapter draws from nearest-first: pure ordering needs a bound on waiting ([kernel docs](https://docs.kernel.org/block/deadline-iosched.html)).
+- **Schindler and destination dispatch, 1990s.** Destination dispatch was first conceived in 1961 by Leo Port (the Port-El system), and Schindler's Miconic 10 is credited as the first product. Passengers enter a floor at the lobby and the group controller assigns a car and groups similar destinations. The change is to the request type and the dispatcher, as this design predicts ([source](https://en.wikipedia.org/wiki/Destination_dispatch)).
+- **Knuth, TAOCP vol. 1: the earliest treatment.** The first published treatment of the elevator problem is a simulation of one elevator in Caltech's mathematics building, and the multi-elevator version was a classic software problem by the 1980s ([source](https://en.wikipedia.org/wiki/Elevator_algorithm)).
 
 ## Down the stack
 
@@ -138,10 +143,10 @@ sequenceDiagram
 Each accepted hall call is assigned to exactly one in-service car, and that car stops at the floor within a bounded number of ticks (at most about two full sweeps, `2F`, for LOOK with no new competing requests ahead). A car moves at most one floor per tick and never moves on a tick when it opened doors. Given the same initial state and the same sequence of requests at the same ticks, the system produces the same stops in the same order. That last property is what makes the design testable.
 
 ### Layer 2: The mechanism
-Each car keeps a set of stop floors and a direction. On a tick: if the current floor is a stop, serve it; otherwise pick a direction (continue if any stop lies ahead, reverse if not; when idle, go toward the nearest stop) and move one floor. That is LOOK. SCAN differs only in that it travels to the end of the shaft before reversing, which wastes trips in a building. Dispatch scores each car with a cost: distance if the car is idle or already heading toward the call in the call's direction, distance plus a large penalty otherwise, and picks the minimum with ties broken by car id. Real group controllers replace distance with an estimated time to arrival that counts the stops already queued in front of the call, and can reassign calls when a better car frees up.
+Each car keeps a set of stop floors and a direction. On a tick: if the current floor is a stop, serve it; otherwise pick a direction (continue if any stop lies ahead, reverse if not; when idle, go toward the nearest stop) and move one floor. That is LOOK. SCAN differs only in that it travels to the end before reversing, whether or not anyone is there, while LOOK turns at the last pending request ([Elevator algorithm](https://en.wikipedia.org/wiki/Elevator_algorithm)). In a building that end trip is wasted. The idea comes from disks: OSTEP shows how shortest-seek-first starves far requests and how elevator-style sweeps avoid it ([OSTEP, Hard Disk Drives](https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf)). On modern storage it is mostly historical, since SSDs have no seek and drives hide data placement ([Elevator algorithm](https://en.wikipedia.org/wiki/Elevator_algorithm)). Dispatch scores each car with a cost: distance if the car is idle or already heading toward the call in the call's direction, distance plus a large penalty otherwise, and picks the minimum with ties broken by car id. Real group controllers replace distance with an estimated time to arrival that counts the stops already queued in front of the call, and can reassign calls when a better car frees up.
 
 ### Layer 3: The machine
-Real elevators run on programmable logic controllers or embedded boards with a fixed scan cycle: read every input (buttons, floor sensors, door switches), run the logic, write every output, repeat, typically every few to tens of milliseconds. That is exactly the `step()` model. Floor position comes from sensors in the shaft or encoders on the motor; a variable-frequency drive ramps the motor to limit jerk. A mid-rise car travels around 1 to 2.5 m/s and floors are about 3 to 4 m apart, so a floor passes in a couple of seconds and a door cycle takes several more. The dispatcher's arithmetic takes microseconds, so compute is never the bottleneck. Safety does not depend on any of this software: door interlocks are wired in a hardware safety chain, and a mechanical governor trips the safety gear if the car overspeeds. Software decides where to go; hardware decides whether moving is allowed.
+Real elevators run on programmable logic controllers or embedded boards with a fixed scan cycle: read every input (buttons, floor sensors, door switches), run the logic, write every output, repeat, typically every few to tens of milliseconds. That is exactly the `step()` model. Floor position comes from sensors in the shaft or encoders on the motor; a variable-frequency drive ramps the motor to limit jerk. A mid-rise car travels around 1 to 2.5 m/s and floors are about 3 to 4 m apart, so a floor passes in a couple of seconds and a door cycle takes several more. The dispatcher's arithmetic takes microseconds, so compute is never the bottleneck. Safety does not depend on any of this software: door interlocks are wired in a hardware safety chain, and a mechanical governor trips the safety gear if the car overspeeds. The traction machine's brake is spring-applied and held open electrically, so a power failure sets it rather than frees the car ([Elevator](https://en.wikipedia.org/wiki/Elevator)). Software decides where to go; hardware decides whether moving is allowed.
 
 ### Why it's built this way
 1. Cars are slow and expensive and passengers are impatient, so the order of stops matters more than the speed of the code.
@@ -153,7 +158,7 @@ Real elevators run on programmable logic controllers or embedded boards with a f
 ## Extensibility
 
 - **Separate up and down stops:** replace the single stop set with two, and let a car pick up only calls in its current direction. LOOK still works; the reversal point now also checks the other set.
-- **Destination dispatch:** passengers enter their destination in the lobby and are told which car to take. The request becomes `(origin, destination)` and the dispatcher groups people going to nearby floors. Only the `Request` type and a new dispatcher change.
+- **Destination dispatch:** passengers enter their destination in the lobby and are told which car to take (vendors claim trip times cut by about 25% and capacity up 30%, and the known weakness is a group boarding on one entry, [Destination dispatch](https://en.wikipedia.org/wiki/Destination_dispatch)). The request becomes `(origin, destination)` and the dispatcher groups people going to nearby floors. Only the `Request` type and a new dispatcher change.
 - **Zoning and peak modes:** a dispatcher that consults a schedule. In the morning up-peak, idle cars return to the lobby.
 - **Capacity:** add load to the car state; a full car skips hall calls but still serves car calls.
 - **Fire service and maintenance:** new car states. Fire recall sends every car to a designated floor and ignores all calls; the State pattern makes this an added class, not an edited switch statement.
@@ -933,6 +938,23 @@ func (s *System) Position(carID int) (int, Direction) {
 - A cost function that accounts for direction and queued stops, with deterministic tie-breaking.
 - A tick-driven core with a request queue drained at the start of each tick, so the logic is single-threaded and replayable.
 - Up-peak handling (return idle cars to the lobby, zoning) and reassignment of calls when a car fails.
+
+## Sources and further study
+**Primary**
+- [OSTEP, Hard Disk Drives (Arpaci-Dusseau)](https://pages.cs.wisc.edu/~remzi/OSTEP/file-disks.pdf): shortest-seek-first, starvation and the elevator (SCAN) family, from first principles.
+- [Linux deadline I/O scheduler](https://docs.kernel.org/block/deadline-iosched.html): sorted batches plus per-request expiry, the production form of bounded waiting.
+
+**Systems docs**
+- [Elevator (Wikipedia)](https://en.wikipedia.org/wiki/Elevator): machine types, spring-applied brakes, interlocks, speeds and codes such as ASME A17.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral), covering State, Strategy, Mediator, Command and Observer.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed.): chapter 10 (The State Pattern) and chapter 1 (Strategy).
+- *The Art of Computer Programming*, vol. 1, Donald Knuth: the elevator simulation used to teach linked lists, per the Wikipedia history.
+
+**Other curricula**
+- [Refactoring.Guru: Mediator](https://refactoring.guru/design-patterns/mediator): frames a mediator as the object that stops components referring to each other, as buttons and cars do here.
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): frames requests as objects that can be queued, logged and replayed.
 
 ## Watch
 - [Low-Level Design Interview: Design an Elevator w/ a Ex-Meta Staff Engineer (Hello Interview)](https://www.youtube.com/watch?v=fODT0ldeBiU): a mock interview that shows how to scope the problem and structure the classes.

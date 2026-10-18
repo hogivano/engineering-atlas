@@ -19,15 +19,17 @@ A registration service gives each `Student` a list of sections and each `Section
 An association becomes one of three things in code. A direct reference (`self.sections: set[Section]`) is fast to follow but ties both objects to one process. A stored id resolved through a repository crosses process and database boundaries but needs a lookup and can dangle. A link object (`Enrollment(student, section, enrolled_at)`) is right when the relationship carries its own data; if a `grades` dict keyed by section appears on the student, the association wants to be a class.
 
 ### Multiplicity is a constraint, not a label
-A UML class diagram might show `Student 0..* --- 0..6 Section`: a student takes at most six sections, a section has any number of students. Add a capacity of 30 and the section end becomes `0..30`. A `list` accepts a seventh item without complaint, so multiplicity must be checked in the operation that creates the link, before either side changes, and in the database too (a unique index or a conditional counter update) if more than one process writes.
+A UML class diagram might show `Student 0..* --- 0..6 Section` (multiplicity is part of the standard notation, [UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)): a student takes at most six sections, a section has any number of students. Add a capacity of 30 and the section end becomes `0..30`. A `list` accepts a seventh item without complaint, so multiplicity must be checked in the operation that creates the link, before either side changes, and in the database too (a unique index or a conditional counter update) if more than one process writes.
 
 Lower bounds matter too: `1` forces the other object into the constructor, while `0..1` means every reader must handle an empty field.
 
 ### Navigability: pick the directions you query
-A one-way association from `Section` to `Room` has one place to write and no consistency problem, but "which sections use room 204?" needs a scan or an index. Make it two-way only when a frequent query needs it. Databases phrase the same choice differently: a foreign key `section.room_id` gives you navigation from section to room for free and from room to sections only if you index `room_id`. A many-to-many link becomes a join table, and you index both columns if both directions are queried.
+In UML an arrow on an association end marks it navigable, and an association with no arrows at all is read as navigable in both directions ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)). So a plain line on a diagram is a claim of two-way access, which is rarely what the author meant.
+
+A one-way association from `Section` to `Room` has one place to write and no consistency problem, but "which sections use room 204?" needs a scan or an index. Make it two-way only when a frequent query needs it. Databases phrase the same choice differently: a foreign key `section.room_id` gives you navigation from section to room for free and from room to sections only if you index `room_id`: Postgres does not index referencing columns automatically, and without an index each delete of a referenced row scans the referencing table ([Postgres docs](https://www.postgresql.org/docs/current/ddl-constraints.html)). A many-to-many link becomes a join table, and you index both columns if both directions are queried.
 
 ### Bidirectional consistency
-If both sides hold references, make one pair of link and unlink methods the only way to change either side, and have them validate everything before mutating anything. In JPA only the owning side of a relationship is written on flush; changing just the inverse side is silently ignored. SQLAlchemy's `back_populates` takes the opposite approach and updates the in-memory inverse for you.
+If both sides hold references, make one pair of link and unlink methods the only way to change either side, and have them validate everything before mutating anything. In JPA only the owning side of a relationship is written on flush; changing just the inverse side is silently ignored. Hibernate's guide states the obligation plainly: every bidirectional association has one owning side, and the developer must keep both sides in sync, usually with `addPhone`/`removePhone` helpers ([Hibernate User Guide](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html)). SQLAlchemy's `back_populates` takes the opposite approach and propagates a change on one side to the other ([SQLAlchemy docs](https://docs.sqlalchemy.org/en/20/orm/backref.html)).
 
 ### When not to bother
 If an object only uses another during a call, there is no lasting link; that is a dependency, not an association. Skip the reverse pointer when the reverse query is rare: compute it on demand and keep one source of truth.
@@ -44,7 +46,7 @@ A bidirectional association is a denormalised fact. The same problem appears wit
 A navigable end promises that you can reach the associated objects, and that their count satisfies the multiplicity whenever a caller can observe it. A bidirectional association adds a symmetry invariant: `b in a.items` if and only if `a in b.owners`. Outside the link methods, no caller may ever see one half of a link.
 
 ### Layer 2: The mechanism
-In Python a reference is a pointer to a `PyObject`, and storing it increments the target's reference count. Two objects that point at each other form a cycle, so their counts never reach zero when the program drops them; CPython's cyclic collector finds such groups by subtracting internal references from counts, then frees them. `weakref.WeakSet` stores back-pointers that do not count. Go and the JVM use tracing collectors that mark what is reachable from roots, so cycles cost nothing special.
+In Python a reference is a pointer to a `PyObject`, and storing it increments the target's reference count. Two objects that point at each other form a cycle, so their counts never reach zero when the program drops them; CPython's cyclic collector finds such groups by subtracting internal references from counts, then frees them. It is a supplement to reference counting that exists precisely for cycles, and it runs by generation, so the memory comes back on a later pass rather than at once ([Python gc docs](https://docs.python.org/3/library/gc.html)). `weakref.WeakSet` stores back-pointers that do not count: an element is discarded when no strong reference to it remains ([Python weakref docs](https://docs.python.org/3/library/weakref.html)). Go and the JVM use tracing collectors that mark what is reachable from roots, so cycles cost nothing special.
 
 Collections hold the many end. A Go `map[*Section]struct{}` gives constant-time membership and removal; a slice gives order and cheap iteration but linear removal. In a relational database the many end is a foreign key column or a join table with a composite primary key, and navigation in a direction is only fast if an index exists for it.
 
@@ -84,6 +86,10 @@ A university has 40,000 students in 2,500 sections, about 200,000 links. A two-w
 The cost is opening hour, when about 3,000 requests per second hit mostly the 50 most popular sections. The first implementation checked the seat count, then added each side under its own object lock. Two requests for the last seat both passed the check, and 38 sections ended over capacity. Reconciliation also found 112 transcripts listing a section that had no record of the student, from timeouts between the two adds.
 
 The fix moved the whole operation into one place: a single database transaction that inserts into `enrollment(student_id, section_id)` with a unique key and decrements `section.seats_left` with `WHERE seats_left > 0`. The in-memory objects became read caches built from that table, and mismatches dropped to zero.
+
+## In the wild
+- **Hibernate and JPA: the framework hands you the sync obligation.** Hibernate's user guide tells developers that when a bidirectional association is formed they must keep both sides in sync at all times, and ships `addPhone`/`removePhone` helpers that update the collection and the child's back-reference together. The database holds one foreign key; the second direction exists only in memory, so the code owns its consistency ([Hibernate User Guide](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html)).
+- **CPython: the collector exists because of two-way links.** Reference counting alone cannot free two objects that point at each other. Python therefore ships a generational cycle collector as a supplement, can be told to ignore cycle-free programs with `gc.disable()`, and offers weak references for back-pointers that should not keep their target alive ([gc docs](https://docs.python.org/3/library/gc.html), [weakref docs](https://docs.python.org/3/library/weakref.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -603,6 +609,19 @@ func WithdrawAll(s *Student) int {
 - Stored directions chosen from real queries, preferring an index over a second writable copy.
 - Capacity enforced in the database, since in-memory checks do not span servers.
 - Promoting the link to an `Attendance` entity once it carries data such as check-in time.
+
+## Sources and further study
+**Primary**
+- [OMG UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF): the definitions of association, navigability arrows, multiplicity and association classes.
+
+**Systems docs**
+- [Hibernate 6.6 User Guide](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html): owning side versus inverse side, and the helper-method pattern for keeping both ends consistent.
+- [SQLAlchemy: linking relationships with backref and back_populates](https://docs.sqlalchemy.org/en/20/orm/backref.html): the in-memory synchronisation approach to two-way links.
+- [PostgreSQL: constraints and foreign keys](https://www.postgresql.org/docs/current/ddl-constraints.html): referential actions and why referencing columns need their own index.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 1, which separates aggregation (one object owns or is part of another) from acquaintance (one object merely knows another), the distinction behind a stored reference.
+- *Domain-Driven Design*, Eric Evans (1st ed., 2003): chapter 5, on simplifying associations by constraining direction and multiplicity.
 
 ## Watch
 - [UML Class Diagram Tutorial (Lucid Software)](https://www.youtube.com/watch?v=UI6lqHOVHic): a walkthrough of class diagram notation, including associations and multiplicity.

@@ -4,7 +4,7 @@ minutes: 15
 ---
 
 ## In one minute
-- YAGNI ("You Aren't Gonna Need It") says: build what today's requirements need, and add the rest when a real requirement arrives. It came out of Extreme Programming in the late 1990s, from a conversation between Kent Beck and Chet Hendrickson on the C3 payroll project ([Fowler](https://martinfowler.com/bliki/Yagni.html)).
+- YAGNI ("You Aren't Gonna Need It") says: build what today's requirements need, and add the rest when a real requirement arrives. It came out of Extreme Programming, from a conversation between Kent Beck and Chet Hendrickson on the C3 payroll project ([Fowler](https://martinfowler.com/bliki/Yagni.html)).
 - It is a bet about economics. Speculative code costs time to build, costs effort to carry every month, and is often wrong when the real need shows up. Deferring costs only the price of building it later.
 - YAGNI is not "skip design". It depends on code that is cheap to change: tests, small modules and the habit of refactoring. Without those, deferral really is expensive.
 - It does not cover one-way doors: on-disk and wire formats, public APIs, data you cannot recreate later, and security. Decide those carefully up front.

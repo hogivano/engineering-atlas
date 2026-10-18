@@ -496,7 +496,6 @@ func CheckMethod(m Method) []string {
 
 **Books**
 - *Refactoring*, Martin Fowler (2nd ed.): chapter 3 "Bad Smells in Code" (message chains) and chapter 7 "Encapsulation" (Hide Delegate, Remove Middle Man).
-- *Clean Architecture*, Robert C. Martin: chapter 17 "Boundaries: Drawing Lines", on keeping one side of a boundary from knowing the other's structure.
 
 **Other curricula**
 - [Refactoring.Guru: Message Chains](https://refactoring.guru/smells/message-chains): treats the law as a code smell, with Hide Delegate and Extract Method plus Move Method as treatments.

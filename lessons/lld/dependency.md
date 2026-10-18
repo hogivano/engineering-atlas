@@ -33,7 +33,7 @@ class ReceiptPrinter:
 
 `ReceiptPrinter` depends on four classes and holds none of them. `Order` and `CurrencyFormat` arrive as parameters, `TaxCalculator` is created as a local, and `Receipt` is returned. When `print_receipt` returns, the printer is exactly as it was before. Call it a thousand times with a thousand orders and nothing leaks between calls.
 
-UML can label the arrow with a stereotype to say how the supplier is used: `«use»` is the general case, `«create»` or `«instantiate»` for a local constructed inside, `«call»` for a static or module function. In practice most diagrams skip the dependency arrows entirely, because there are so many of them; drawing them is worth it only when the dependency crosses a package or layer boundary that matters.
+UML can label the arrow to say how the supplier is used: `«use»` is the general Usage dependency, and the standard profile adds `«Create»` and `«Instantiate»` for a class that builds instances of the supplier and `«Call»` for an operation that invokes another ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)). In practice most diagrams skip the dependency arrows entirely, because there are so many of them; drawing them is worth it only when the dependency crosses a package or layer boundary that matters.
 
 ### Why "weakest" matters
 Every relationship is a reason to change. A dependency is the narrowest one: the client relies on the supplier's signature only during one call. An association adds lifetime (who creates the stored object, who releases it), state (the field can be stale) and concurrency (two threads may use the shared reference at once). When a collaborator is used by one method, storing it as a field buys nothing and adds all three.
@@ -47,7 +47,7 @@ The reverse mistake also exists. If five methods of a class all take the same `r
 - **Varies per call but the object is shared across threads**: definitely a parameter. Storing it is a data race.
 
 ### Reviewing agent-written code
-A model asked to "pass the tenant id through to the report" often sets `self.tenant_id = tenant_id` in a handler and reads it three methods later. It works in a single-threaded test. In a server where one `ReportService` instance handles concurrent requests, two tenants overwrite each other's field. Look for request-scoped values (user, tenant, deadline, trace id, `now`) being stored on objects created once at startup, and ask for them to be passed down instead.
+A model asked to "pass the tenant id through to the report" often sets `self.tenant_id = tenant_id` in a handler and reads it three methods later. It works in a single-threaded test. In a server where one `ReportService` instance handles concurrent requests, two tenants overwrite each other's field. Look for request-scoped values (user, tenant, deadline, trace id, `now`) being stored on objects created once at startup, and ask for them to be passed down instead. Frameworks warn about this directly: Vue's server-rendering guide calls it cross-request state pollution and prescribes a fresh app instance per request ([Vue docs](https://vuejs.org/guide/scaling-up/ssr.html)).
 
 ### The same shape elsewhere
 Dependency versus association is the difference between a stateless request and a session. An HTTP call that carries everything it needs in its headers is a dependency between client and server; a sticky session that stores state on one server is an association, with its lifetime, failover and staleness problems. The same choice appears in a function that takes a database transaction as an argument versus one that reads a transaction stored in a global.
@@ -58,12 +58,12 @@ Dependency versus association is the difference between a stateless request and 
 A dependency promises two testable things. First, the client compiles against the supplier's interface, so a change to the supplier's signature may break the client's build. Second, the client holds no reference after the call returns: calling the method with object A and then with object B leaves no trace of A in the client. The second property is what makes the method safe to call concurrently on a shared instance, provided the method touches no other shared state.
 
 ### Layer 2: The mechanism
-Even the weakest relationship is visible to the toolchain. In Go, using a type as a parameter means importing its package, and the compiler forbids import cycles, so a dependency between packages is a hard edge in the build graph. In Java, the client's class file holds a symbolic reference to the supplier in its constant pool; the JVM resolves it lazily, typically the first time the call actually touches the supplier class, so an unused dependency rarely costs loading time. Python executes `import` statements when the module loads, which is why a dependency used only in type hints is often moved under `if TYPE_CHECKING:` to avoid circular import errors at runtime. TypeScript's `import type` is erased entirely by the compiler and emits no `require`.
+Even the weakest relationship is visible to the toolchain. In Go, using a type as a parameter means importing its package, and the compiler forbids import cycles, so a dependency between packages is a hard edge in the build graph. In Java, the client's class file holds a symbolic reference to the supplier in its constant pool; the JVM resolves it lazily, typically the first time the call actually touches the supplier class, so an unused dependency rarely costs loading time. Python executes `import` statements when the module loads, which is why a dependency used only in type hints is often moved under `if TYPE_CHECKING:` so the import never runs. Since Python 3.14 annotations are evaluated lazily, so a forward reference no longer needs quotes ([What's New in 3.14](https://docs.python.org/3/whatsnew/3.14.html)). TypeScript's `import type` is erased entirely by the compiler and emits no `require`.
 
 So a parameter dependency costs a build-graph edge but no runtime state, while a field costs both the edge and a slot in every instance.
 
 ### Layer 3: The machine
-On amd64, Go's register-based calling convention (since Go 1.17) passes the first several integer and pointer arguments in registers, so a dependency passed as a pointer parameter costs roughly a register move. The bigger difference is escape analysis. A value created as a local and not stored anywhere that outlives the call can stay on the goroutine's stack and is freed when the frame pops, at no GC cost. The moment you assign it to a field of a heap object, it escapes: the compiler allocates it on the heap (tens of nanoseconds), and the garbage collector must trace that pointer on every cycle until the field is cleared. `go build -gcflags=-m` prints which values escape. HotSpot's C2 compiler does a similar analysis and can replace a non-escaping local object with plain registers (scalar replacement). In CPython every object is heap-allocated anyway, but a stored reference still keeps the object alive, which is how a cache of "last request" on a singleton turns into a memory leak.
+On amd64, Go's register-based calling convention passes arguments and results in registers on amd64 since Go 1.17, which the release notes measured at about 5% faster on a representative set of programs, so a dependency passed as a pointer parameter costs roughly a register move ([Go 1.17 notes](https://go.dev/doc/go1.17)). The bigger difference is escape analysis. A value created as a local and not stored anywhere that outlives the call can stay on the goroutine's stack and is freed when the frame pops, at no GC cost. The compiler may put it on the stack only when it can prove nothing references it after the function returns; otherwise it must use the garbage-collected heap ([Go FAQ](https://go.dev/doc/faq#stack_or_heap)). The moment you assign it to a field of a heap object, it escapes: the compiler allocates it on the heap (tens of nanoseconds), and the garbage collector must trace that pointer on every cycle until the field is cleared. `go build -gcflags=-m` prints which values escape. HotSpot's C2 compiler does a similar analysis and can replace a non-escaping local object with plain registers (scalar replacement). In CPython every object is heap-allocated anyway, but a stored reference still keeps the object alive, which is how a cache of "last request" on a singleton turns into a memory leak.
 
 ### Why it's built this way
 1. Code that uses another type must know its shape, so every use is at least a compile-time edge.
@@ -95,6 +95,11 @@ A reporting service runs one `ReportService` instance per process with 16 worker
 Each report takes about 40 ms, but the field is read only 20 microseconds after it is written, before the slow query runs. At 300 requests per second, the expected number of other requests that start inside a 20 microsecond window is 300 times 0.00002, or 0.006. So roughly one report in 170 picked up another tenant's value: about 1.8 wrong reports per second, around 150,000 a day. Nothing failed in tests, which ran one request at a time, and the bug was found when a customer saw a competitor's name on a PDF.
 
 The fix turned the association back into a dependency: `format_totals(tenant, totals)` takes the tenant as a parameter, and `generate()` passes it down. The field disappeared, the race disappeared, and a unit test now calls `format_totals` with two tenants on two threads to pin the behaviour. A follow-up lint rule flags assignments to `self.*` inside request handlers on singleton services.
+
+## In the wild
+- **Quarkus REST, CVE-2025-1247: one shared endpoint instance, many users.** Endpoint classes that used field injection without a CDI scope were shared across requests, and under concurrency request parameters could leak between them. Red Hat rated it Important (CVSS 8.3) and classed it as exposure of a data element to the wrong session ([Red Hat advisory](https://access.redhat.com/security/cve/cve-2025-1247)). It is the tenant-field bug in this lesson's worked example, found in a framework.
+- **Vue server rendering: modules are singletons.** The Vue guide explains that module-level state is created once when the server boots, so mutating it with one user's data can leak it to another user's request. Its answer is to build a new app, router and store per request and inject the store instead of importing it ([Vue docs](https://vuejs.org/guide/scaling-up/ssr.html)).
+- **Python 3.14: annotations stop being eager.** Type-only dependencies used to force quoted names or `TYPE_CHECKING` guards because annotations ran at definition time. From 3.14 they are stored and evaluated only on demand, so a type-only dependency has less reason to cost anything at load time ([What's New in 3.14](https://docs.python.org/3/whatsnew/3.14.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -630,6 +635,20 @@ func BuildOrder(classes []ClassSpec) ([]string, error) {
 - A deterministic concurrency test that interleaves two quotes, or simply a design where the method has no shared mutable state, so the race cannot exist.
 - Grouping per-request values into a small immutable `QuoteRequest` value instead of nine parameters, without turning it into a grab-bag context.
 - Noting the runtime side: non-escaping per-call values can avoid heap allocation, and fewer stored references mean less GC tracing.
+
+## Sources and further study
+**Primary**
+- [OMG UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF): defines the dashed dependency arrow, Usage with `«use»`, and the standard `«Call»`, `«Create»` and `«Instantiate»` stereotypes.
+- [Go 1.17 release notes](https://go.dev/doc/go1.17): the register-based calling convention that makes a parameter dependency nearly free.
+- [What's New in Python 3.14](https://docs.python.org/3/whatsnew/3.14.html): deferred evaluation of annotations and what it means for type-only imports.
+
+**Systems docs**
+- [Go FAQ: stack or heap?](https://go.dev/doc/faq#stack_or_heap): how escape analysis decides where a local value lives.
+- [Vue: server-side rendering, cross-request state pollution](https://vuejs.org/guide/scaling-up/ssr.html): the same stored-instead-of-passed bug in a front-end framework.
+- [Red Hat: CVE-2025-1247](https://access.redhat.com/security/cve/cve-2025-1247): a shared endpoint instance leaking request data, as a security advisory.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin (1st ed., 2017): chapter 14 "Component Coupling", on which dependencies between components to allow and why cycles hurt.
 
 ## Watch
 - [UML Class Diagram Tutorial (Lucid Software)](https://www.youtube.com/watch?v=UI6lqHOVHic): the notation for association, aggregation, composition and dependency arrows, with examples.

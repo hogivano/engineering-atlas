@@ -140,9 +140,13 @@ sequenceDiagram
 - **Calls arriving during clearance.** A car arriving on the green approach during yellow cannot extend it. Treat it as a call for that phase's next turn.
 - **Max timer start.** Start the maximum green timer when a conflicting call arrives, not when the green began.
 - **Preemption mid-clearance.** If the controller is already in yellow or all-red, let the clearance finish and then go to the preempted phase.
-- **Clock jumps.** A wall clock set backwards by NTP or a technician must not rewind the controller. Use a monotonic clock for intervals and clamp time so it never goes back.
+- **Clock jumps.** A wall clock set backwards by NTP or a technician must not rewind the controller. Use a monotonic clock for intervals and clamp time so it never goes back. Cloudflare's DNS servers learned this at a leap second, when a wall-clock step produced a negative duration ([Cloudflare](https://blog.cloudflare.com/how-and-why-the-leap-second-affected-cloudflare-dns/)).
 - **Stuck detector.** A loop stuck "on" extends green to max-out every cycle. Maximum green bounds the damage; diagnostics (no change in N minutes) switch the phase to a fixed recall and raise an alarm.
 - **Power and boot.** After a power cut, start in flash, then run a startup all-red before the first green.
+
+## In the wild
+- **Cloudflare, 2017: time went backwards.** At the leap second at midnight UTC on 1 January, a measured round-trip time came out negative because Go's `time.Now()` was not monotonic. The value reached weighted server selection and `rand.Int63n`, which panics on negative input. About 0.2% of DNS queries failed at peak, the worst machines were patched within 90 minutes, and the fix reached every location by 06:45 UTC ([source](https://blog.cloudflare.com/how-and-why-the-leap-second-affected-cloudflare-dns/)). A controller that computes `now - start` from the wall clock has the same bug.
+- **US federal standard, 2023: hardware watches the software.** The 11th edition of the MUTCD requires a conflict monitor circuit that forces flashing operation, and says flashing must survive switching off the controller or the monitor. The design rule is that a general-purpose controller is never the only thing standing between drivers and two conflicting greens ([source](https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf)).
 
 ## Down the stack
 
@@ -153,18 +157,18 @@ At every instant, the set of movements showing green or yellow contains no confl
 The engine stores the phase index, interval kind and start time, and computes one value: when the current interval is due to end. For yellow and all-red that is start plus duration. For green it is `min(waitSince + maxGreen, max(start + minGreen, lastExtension + gap, waitSince))`, undefined while nobody else waits, which is how resting in green falls out without a special case. Every entry point runs a catch-up loop that fires each due transition at its due time, not at now, so a late tick never stretches an interval. Real controllers do the same at larger scale: NEMA TS 2 defines dual-ring, eight-phase operation with barriers between the two street directions, and NTCIP 1202 defines the objects (minimum green, passage, maximum, yellow change, red clearance) a central system uses to read and write timings.
 
 ### Layer 3: The machine
-A field controller is a small embedded computer in a roadside cabinet (newer ATC designs run Linux), ticking at 10 Hz because timings are set in tenths of a second. Its outputs drive solid-state load switches that put mains voltage on the lamps. Separately, a hardware conflict monitor (in NEMA cabinets, a Malfunction Management Unit) reads the actual field voltages on every channel and compares them with a programmed compatibility card. If it sees incompatible greens or a short yellow for more than a few hundred milliseconds, it trips a relay that puts the junction into flash, independently of the CPU. Detector loops are wire coils in the pavement; a vehicle's metal changes their inductance, and the detector card reports presence within tens of milliseconds. Yellow time comes from physics: the ITE kinematic formula adds about 1 second of perception-reaction time to approach speed divided by twice a comfortable deceleration, roughly 3 to 6 seconds for common speeds.
+A field controller is a small embedded computer in a roadside cabinet (newer ATC designs run Linux), ticking at 10 Hz because timings are set in tenths of a second. Its outputs drive solid-state load switches that put mains voltage on the lamps. Separately, a hardware conflict monitor (in NEMA cabinets, a Malfunction Management Unit) reads the actual field voltages on every channel and compares them with a programmed compatibility card. If it sees incompatible greens or a short yellow for more than a few hundred milliseconds, it trips a relay that puts the junction into flash, independently of the CPU. This is not only good practice: the MUTCD requires a conflict monitor (malfunction management unit) circuit to initiate flashing, and says flashing must not end just because the controller or monitor is switched off ([MUTCD 11th ed., 4G.01](https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf)). Detector loops are wire coils in the pavement; a vehicle's metal changes their inductance, and the detector card reports presence within tens of milliseconds. Yellow time comes from physics. The FHWA timing manual gives Y = t + 1.47v / (2(a + 32.2g)), with t = 1.0 s of perception-reaction time, a = 10 ft/s² of deceleration, v in mph and g the grade ([FHWA Signal Timing Manual, ch. 5](https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter5.htm)). The MUTCD says a yellow change interval should be 3 to 6 seconds, with the longer values for faster approaches ([MUTCD 11th ed., 4F.17](https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf)). An optional red clearance of (W + 20 ft) / 1.47v covers the time to cross the intersection width W, typically 0.5 to 2 seconds ([FHWA](https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter5.htm)).
 
 ### Why it's built this way
 1. A wrong green kills people, so safety cannot depend on the general-purpose software being correct.
 2. Hence two layers: software that validates the plan before it runs, and an independent hardware monitor that checks the actual outputs and fails to flash.
 3. Demand varies by minute, so fixed cycles waste green on empty roads; detectors and gap timers turn spare green into shorter waits.
-4. Actuation alone can starve a side street behind a busy main road, so a maximum green caps every extension once someone is waiting.
+4. Actuation alone can starve a side street behind a busy main road, so a maximum green caps every extension once someone is waiting; the FHWA manual defines it as the longest a green may show while conflicting demand exists ([FHWA](https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter5.htm)).
 5. Incidents get investigated and plans get changed by engineers, so the controller is a pure function of configuration plus event log, which can be replayed and audited.
 
 ## Extensibility
 
-- **Pedestrian intervals.** A pedestrian phase adds walk and flashing don't walk intervals before yellow. Its minimum green becomes "walk plus clearance", where clearance is crossing distance divided by a walking speed (the US MUTCD uses 3.5 feet per second). That is a change to timing data plus one interval kind, not a new controller.
+- **Pedestrian intervals.** A pedestrian phase adds walk and flashing don't walk intervals before yellow. Its minimum green becomes "walk plus clearance", where clearance is crossing distance divided by a walking speed. The 11th edition of the US MUTCD says clearance time should allow 3.5 feet per second, permits up to 4 where an extended push-button press can lengthen it, says a slower speed should be considered where slow walkers or wheelchair users routinely cross, and says the walk interval should normally be at least 7 seconds ([MUTCD 11th ed., 4I.06](https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf)). That is a change to timing data plus one interval kind, not a new controller.
 - **Coordination.** Corridors run a common cycle length with offsets so platoons meet greens. Add a cycle timer and a "force-off" point per phase; the selection strategy gains a constraint, the engine stays.
 - **Adaptive control.** A central system writes new plans through the validated factory; the controller swaps plans at a cycle boundary, never mid-green.
 - **Transit priority.** A softer preemption: extend the current green a few seconds or start the bus's phase early. A new policy object, same engine.
@@ -1249,6 +1253,24 @@ func (c *Controller) Signals() map[string]string {
 - An injected monotonic clock, a single writer and transitions fired at their due time, giving a replayable, testable controller.
 - An independent hardware conflict monitor that forces flash.
 - Central systems as configuration and observation only, with plan swaps at cycle boundaries and local operation when the network drops.
+
+## Sources and further study
+**Primary**
+- [MUTCD 11th edition, Part 4 (FHWA)](https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf): yellow and red clearance guidance (4F.17), flashing and conflict monitors (4G.01), pedestrian intervals and walking speeds (4I.06).
+- [FHWA Signal Timing Manual, chapter 5](https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter5.htm): the yellow and red clearance equations and the definition of maximum green.
+- [Cloudflare: how the leap second affected DNS](https://blog.cloudflare.com/how-and-why-the-leap-second-affected-cloudflare-dns/): a negative duration from a stepping wall clock, and the fix.
+
+**Systems docs**
+- [FHWA Signal Timing Manual, chapter 4](https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter4.htm): detector placement, passage time and minimum green as tuning parameters.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral), covering State, Strategy, Observer and Command.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed.): chapter 10 (The State Pattern) and chapter 6 (The Command Pattern).
+- *Release It!*, Michael Nygard (2nd ed.): chapter 5 (Stability Patterns), on failing safe and isolating failures.
+
+**Other curricula**
+- [Refactoring.Guru: Strategy](https://refactoring.guru/design-patterns/strategy): frames interchangeable algorithms behind one interface, as with phase selection.
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): frames requests as objects that can be logged and replayed, the basis of the detector event log.
 
 ## Watch
 - [Phases and Stages, Traffic Signals Principles Part 1 (ITS Now)](https://www.youtube.com/watch?v=liT4Ex1unpw): how movements are grouped into phases and stages, the vocabulary this design is built on.

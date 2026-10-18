@@ -123,7 +123,7 @@ sequenceDiagram
 - **State, kept light.** The lifecycle has six states but only two pieces of behaviour change with state: whether a bid or a cancel is allowed. An enum for the stored terminal outcome plus a derived status function is enough. Full State-pattern classes (`OpenAuction`, `ScheduledAuction`) earn their place only if you add Dutch or sealed-bid formats whose bidding rules differ per phase.
 - **Derived versus stored state.** Scheduled, open and ended are not stored. They are computed from `now` against `startAt` and `endAt`. Only transitions that a human or the settler makes (cancelled, sold, unsold) are stored. This removes the classic bug where a cron job is late flipping `status = OPEN` and a bidder is refused at 10:00:03 on an auction that should have opened at 10:00:00.
 - **Observer** for outbid, won and sold events. The auction emits events; the hub fans them out to channels.
-- **Strategy** for the increment policy and, later, the auction format. eBay-style tiered increments ("5 on items under 100, 10 under 500") are a table lookup behind `minNext(high)`.
+- **Strategy** for the increment policy and, later, the auction format. Tiered increments are a table lookup behind `minNext(high)`. The same pattern fits the closing rule: eBay uses a fixed end time and Amazon's auctions extend until ten minutes pass without a bid ([Roth and Ockenfels](https://www.cs.princeton.edu/courses/archive/spr08/cos444/papers/roth_ockenfels02.pdf)).
 - **Façade**: callers see `AuctionHouse` only, so swapping the in-memory map for a database repository does not touch the API.
 - **Command** for the bid log. Each accepted bid is an immutable record appended in sequence; replaying the log through `place` reproduces the auction.
 
@@ -131,11 +131,15 @@ sequenceDiagram
 
 - **Two bids at the same amount.** Ann and Bob both bid 150 when the high is 140 with increment 10. Whichever acquires the auction's lock first leads; the second now needs 160 and gets "too low". There is no tie-break rule to write because the lock creates a total order. Without the lock, both could read 140, both pass the check, and both write "leader = me".
 - **Bid at the deadline.** Decide whether the end time is inclusive. The practice code treats `now >= endAt` as closed, so a bid stamped exactly at the end is rejected. Stamp the time inside the lock, from the server clock, never from the client.
-- **Late settler.** The settler may run seconds after `endAt`. In that window the auction's status is "ended": bids are refused because the clock says so, even though no outcome is stored yet. Settlement is idempotent: it only touches auctions without an outcome, so running it twice produces no second winner.
+- **Late settler.** The settler may run seconds after `endAt`. In that window the auction's status is "ended": bids are refused because the clock says so, even though no outcome is stored yet. Settlement is idempotent: it only touches auctions without an outcome, so running it twice produces no second winner. Operators do change deadlines: after a 2001 outage eBay extended auctions that were due to end during the downtime by 24 hours ([Computerworld](https://www.computerworld.com/article/1358743/hardware-problems-shut-down-ebay-for-11-hours.html)).
 - **Cancel racing a bid.** The seller presses cancel as the first bid arrives. Both operations take the same lock; whichever wins decides. If the bid wins, cancel returns "has bids". If cancel wins, the bid returns "closed".
 - **Reserve not met.** The high bid is 90 and the reserve is 120. The auction is unsold, the seller is told, and the high bidder learns the reserve was not met. Never leak the reserve amount.
 - **Self-outbidding.** A leader may raise their own bid; it sends no outbid notice.
 - **Money.** Integer minor units (cents). An increment of 0.10 in floating point eventually produces a bid of 150.00000000000003.
+
+## In the wild
+- **eBay, 2001: a 10-hour outage and a 24-hour extension.** On 3 January 2001 a hardware failure in a shared-disk backup system took eBay down from about 11:34 a.m. to 9:56 p.m. Pacific time. Auctions scheduled to end during the downtime were extended by 24 hours and refunds were promised on affected items. The deadline was a business decision made by the operator, which is why `endAt` is data that can be changed and why the settler must re-check it ([Computerworld](https://www.computerworld.com/article/1358743/hardware-problems-shut-down-ebay-for-11-hours.html)).
+- **Amazon versus eBay auctions, 2002: the ending rule changes behaviour.** In the Roth and Ockenfels study, eBay closed at a fixed time and Amazon extended until ten minutes passed with no bid. Late bids made up a much larger share of eBay auctions, and the paper finds the strategic gain from sniping is removed or reduced by automatic extension. The rule is policy, so keep it a strategy ([paper](https://www.cs.princeton.edu/courses/archive/spr08/cos444/papers/roth_ockenfels02.pdf)).
 
 ## Down the stack
 
@@ -143,7 +147,7 @@ sequenceDiagram
 `bid` returns one of accepted, too low, not open, closed or own listing, and only "accepted" changes state. An accepted bid is at least the start price (first bid) or at least the previous high plus the increment, and it was stamped strictly before `endAt`. `cancel` succeeds only for the seller, before any bid and before the end. `closeDue` assigns each ended auction exactly one terminal outcome, and a second call returns nothing for auctions already settled. Notifications are at-least-once and may lag; the auction state is the source of truth.
 
 ### Layer 2: The mechanism
-In memory, a hash map from auction id to auction, and one mutex per auction rather than one for the whole house, so a rush on one listing does not slow the others. Settlement keeps a min-heap keyed by `(endAt, creation sequence)`; `closeDue` pops while the top is due and skips anything already cancelled. In a database, the auction row carries `high_amount`, `leader_id` and a `version`, and a bid is a conditional update: `UPDATE auction SET high_amount = $1, leader_id = $2, version = version + 1 WHERE id = $3 AND version = $4 AND end_at > now()`. Zero rows updated means someone else got there first or the auction ended; reload and re-evaluate. The bid itself is inserted into a `bid` table in the same transaction, so the log and the high bid never disagree. Settlement uses `SELECT ... WHERE end_at <= now() AND outcome IS NULL FOR UPDATE SKIP LOCKED`, so several settler workers can share the queue without two of them settling the same auction.
+In memory, a hash map from auction id to auction, and one mutex per auction rather than one for the whole house, so a rush on one listing does not slow the others. Settlement keeps a min-heap keyed by `(endAt, creation sequence)`; `closeDue` pops while the top is due and skips anything already cancelled. In a database, the auction row carries `high_amount`, `leader_id` and a `version`, and a bid is a conditional update: `UPDATE auction SET high_amount = $1, leader_id = $2, version = version + 1 WHERE id = $3 AND version = $4 AND end_at > now()`. Zero rows updated means someone else got there first or the auction ended; reload and re-evaluate. This relies on the isolation level: under Read Committed a waiting `UPDATE` re-checks its `WHERE` against the newly committed row version, while under Repeatable Read it fails with "could not serialize access due to concurrent update" (SQLSTATE 40001) and the whole transaction must be retried ([Postgres docs](https://www.postgresql.org/docs/current/transaction-iso.html)). The bid itself is inserted into a `bid` table in the same transaction, so the log and the high bid never disagree. Settlement uses `SELECT ... WHERE end_at <= now() AND outcome IS NULL FOR UPDATE SKIP LOCKED`, so several settler workers can share the queue without two of them settling the same auction. Postgres documents `SKIP LOCKED` as giving an inconsistent view, unsuitable for general queries but fine for queue-like tables ([Postgres docs](https://www.postgresql.org/docs/current/sql-select.html)).
 
 ### Layer 3: The machine
 An uncontended mutex costs tens of nanoseconds. Contended, a waiting goroutine or thread sleeps on a futex and wakes in a few microseconds. A hot auction might see 50 bids per second in its last minute, which is one bid every 20 ms; the critical section (a few comparisons and an append) takes under a microsecond, so even the hottest listing keeps the lock idle more than 99.99% of the time. The database path is dominated by the commit: a write-ahead log flush is roughly 0.1 to 1 ms on NVMe. The clock matters more than the CPU: wall clocks drift and NTP can step them, so the deadline comparison should use one authoritative clock per auction (the owning server or the database's `now()`), not each app server's.
@@ -158,7 +162,7 @@ An uncontended mutex costs tens of nanoseconds. Contended, a waiting goroutine o
 ## Extensibility
 
 - **Proxy bidding:** the auction stores each bidder's maximum and computes the visible price. The `place` method changes; the façade, settlement and notifications do not. The sdi lesson walks through the arithmetic.
-- **Anti-sniping (soft close):** a bid within the last few minutes extends `endAt`. Because status is derived from `endAt`, extension is one assignment. The settler's heap now holds stale entries; on pop, re-check the auction's current `endAt` and push it back if it moved.
+- **Anti-sniping (soft close):** a bid within the last few minutes extends `endAt`. Roth and Ockenfels compared eBay's hard close with Amazon's rule of extending until ten minutes pass without a bid, and found far more last-minute bidding on eBay ([paper](https://www.cs.princeton.edu/courses/archive/spr08/cos444/papers/roth_ockenfels02.pdf)). Because status is derived from `endAt`, extension is one assignment. The settler's heap now holds stale entries; on pop, re-check the auction's current `endAt` and push it back if it moved.
 - **Sealed-bid or Dutch formats:** introduce an `AuctionFormat` strategy with `place` and `settle`. A Vickrey (second-price sealed) auction stores bids privately and settles at the second-highest amount.
 
 ## Leadership lens
@@ -1076,6 +1080,24 @@ func (h *AuctionHouse) Notifications(user string) []string {
 - Notifications through an observer or outbox, published after the lock is released, never leaking the reserve price.
 - Increment rules and auction formats as strategies, and a clear plan for soft close that only changes `endAt` and re-checks heap entries on pop.
 - Integer money, server-side timestamps and a replayable bid log for disputes.
+
+## Sources and further study
+**Primary**
+- [Roth and Ockenfels, last-minute bidding and ending rules](https://www.cs.princeton.edu/courses/archive/spr08/cos444/papers/roth_ockenfels02.pdf): the eBay hard close versus Amazon's automatic extension, with evidence.
+- [PostgreSQL: transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html): what happens to a conditional update when another transaction commits first, at each isolation level.
+
+**Systems docs**
+- [PostgreSQL: SELECT locking clause](https://www.postgresql.org/docs/current/sql-select.html): `FOR UPDATE`, `NOWAIT` and `SKIP LOCKED` for parallel settlers.
+- [Computerworld: eBay outage, January 2001](https://www.computerworld.com/article/1358743/hardware-problems-shut-down-ebay-for-11-hours.html): how an operator extended auctions after downtime.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral), covering State, Strategy, Observer and Command.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed.): chapter 2 (Observer) and chapter 1 (Strategy).
+- *Designing Data-Intensive Applications*, Martin Kleppmann (1st ed.): chapter 7 (Transactions), on lost updates and write races.
+
+**Other curricula**
+- [Refactoring.Guru: Strategy](https://refactoring.guru/design-patterns/strategy): frames interchangeable algorithms, as for increment policies and auction formats.
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): frames state objects as an answer to growing conditionals, relevant to when the auction lifecycle deserves classes.
 
 ## Watch
 - [Low Level Design Question: Design an Online Auction System (Mayur Vaid)](https://www.youtube.com/watch?v=5fdKUzfMk4E): an object-oriented walkthrough that applies Observer and Strategy to the auction model.

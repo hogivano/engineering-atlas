@@ -1122,6 +1122,7 @@ func (c *Controller) dispatch(line string) error {
 - *Clean Architecture* (Martin, 1st ed. 2017), Ch 23 Presenters and Humble Objects and Ch 31 The Web Is a Detail: keeping the view thin and the web a delivery mechanism.
 
 **Other curricula**
+- [Refactoring.Guru: Observer](https://refactoring.guru/design-patterns/observer): the subscription mechanism behind classic MVC, and its stated drawback that subscribers are notified in random order.
 
 ## Watch
 - [MVC Explained in 4 Minutes (Web Dev Simplified)](https://www.youtube.com/watch?v=DUg2SWWK18I): a quick tour of the three roles in a web application.

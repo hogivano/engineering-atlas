@@ -8,8 +8,7 @@ rests on a single course.
 **Use of AI.** The curriculum is written with AI assistance. The maintainer chose the scope, the
 structure and the standards in `lessons/STYLE.md`; lessons, exercises and research were drafted
 with Anthropic's Claude; and every lesson then goes through the checks below. A separate AI
-fact-checker reviews each writer's citations. About 100 Low-Level Design lessons have not been
-through this source upgrade yet. Human review of every lesson is ongoing, so please
+fact-checker reviews each writer's citations. Human review of every lesson is ongoing, so please
 report anything wrong.
 
 | Source type | Examples | What it is used for |

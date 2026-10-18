@@ -54,7 +54,7 @@ class ReminderService:
 
 A separate `adapters` package contains `PostgresInvoiceRepo`, `SesNotifier` and `SystemClock`, each importing the reminder module to implement its interfaces. A `main.py` (the composition root) constructs them and passes them in. The reminder module imports nothing from Postgres or AWS. The import graph now points inward, toward the policy.
 
-The clock deserves its own interface because time is the dependency most often hidden. The JDK ships the idea in `java.time.Clock`, whose stated purpose is to let alternate clocks be plugged in, which can simplify testing ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/time/Clock.html)), and Kubernetes' Go utilities publish a `clock.Clock` interface with real and fake implementations ([k8s.io/utils/clock](https://pkg.go.dev/k8s.io/utils/clock)).
+The clock deserves its own interface because time is the dependency most often hidden. The JDK ships the idea in `java.time.Clock`, whose stated purpose is to let alternate clocks be plugged in, which can simplify testing ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/time/Clock.html)), and Kubernetes' Go utilities publish a `clock.Clock` interface with a real implementation and a fake in the `clock/testing` subpackage ([k8s.io/utils/clock](https://pkg.go.dev/k8s.io/utils/clock/testing)).
 
 Tests now construct the service with a fixed clock, an in-memory repo and a recording notifier, and run in microseconds. Swapping vendors means writing a new adapter, not editing the rule. And the interfaces describe the domain (`unpaid`, `mark_reminded`) rather than the database (`execute`, `cursor`): the abstraction belongs to the policy, so it speaks the policy's language.
 

@@ -119,13 +119,18 @@ What not to put in the model: a `parent` pointer on every node unless you need u
 
 ## Concurrency and edge cases
 
-- **Moving a directory into itself.** `mv /a /a/b/c` would detach `/a` and attach it under its own descendant, creating a cycle that is unreachable from the root. Compare normalised components: if `src` is a prefix of `dst`, refuse. Compare components, not strings, or `/ab` looks like it is under `/a`.
-- **Moving onto an existing name.** Unix `rename(2)` silently replaces an existing file target. Interview designs usually refuse instead, and say so. Whatever you choose, never replace a non-empty directory.
+- **Moving a directory into itself.** `mv /a /a/b/c` would detach `/a` and attach it under its own descendant, creating a cycle that is unreachable from the root. Compare normalised components: if `src` is a prefix of `dst`, refuse. Compare components, not strings, or `/ab` looks like it is under `/a`. Linux reports this case as `EINVAL`, "an attempt was made to make a directory a subdirectory of itself" ([rename(2)](https://man7.org/linux/man-pages/man2/rename.2.html)).
+- **Moving onto an existing name.** Unix `rename(2)` silently replaces an existing target, atomically, so no process ever finds the new name missing ([rename(2)](https://man7.org/linux/man-pages/man2/rename.2.html)). Linux's `RENAME_NOREPLACE` flag exists for callers who want the refusing behaviour. Interview designs usually refuse instead, and say so. Whatever you choose, never replace a non-empty directory.
 - **Root.** `rm /` and `mv / /x` must fail. `..` at the root stays at the root, as on Unix.
 - **A file in the middle of a path.** `mkdir /a/b` when `/a` is a file must fail with "not a directory", not overwrite the file.
 - **Writing to a directory path** fails with "is a directory"; reading a directory likewise.
-- **Concurrent readers and writers.** The simplest correct design is one readers-writer lock for the whole tree: `read`, `ls` and `du` share it, mutations take it exclusively. It serialises writers, which is fine for an in-process tool. Per-directory locks scale better but turn `mv` into a two-lock operation that needs a global ordering (Linux takes a filesystem-wide rename mutex for cross-directory renames for exactly this reason) to avoid deadlock.
+- **Concurrent readers and writers.** The simplest correct design is one readers-writer lock for the whole tree: `read`, `ls` and `du` share it, mutations take it exclusively. It serialises writers, which is fine for an in-process tool. Per-directory locks scale better but turn `mv` into a two-lock operation that needs a global ordering (Linux takes a per-filesystem rename mutex, ranked below every directory lock, for cross-directory renames for exactly this reason, per the [kernel's directory locking rules](https://www.kernel.org/doc/html/latest/filesystems/directory-locking.html)) to avoid deadlock.
 - **Very deep or very wide trees.** Recursive `du` and `rm -r` can overflow the stack on pathological depth; use an explicit stack. A directory with a million entries makes sorted `ls` cost O(n log n) each call; keep children in a sorted structure if `ls` is hot.
+
+## In the wild
+- **Apache HTTP Server, 2021: a path normalisation change opens traversal.** A change to path normalisation in 2.4.49 let an attacker map URLs to files outside the directories configured by `Alias`-like directives, and with CGI enabled this became remote code execution. The first fix in 2.4.50 was insufficient (CVE-2021-42013), and the project noted exploitation in the wild. The lesson: normalise in exactly one place and test `.`, `..` and encoded variants against it ([Apache security report](https://httpd.apache.org/security/vulnerabilities_24.html)).
+- **Python 3.14: tar extraction defaults to refusing escaping paths.** `tarfile` extraction historically trusted member names, so an archive could write absolute paths or paths outside the destination. In Python 3.14 the default extraction filter changed to `data`, which rejects absolute paths, outside-destination paths and some special files (`AbsolutePathError`, `OutsideDestinationError`). The same prefix check as your `mv` cycle test, applied at the destination root ([Python docs](https://docs.python.org/3/library/tarfile.html)).
+- **runc, 2024: a leaked directory handle.** In runc 1.1.11 and earlier, an internal file descriptor leak let a container process start with a working directory inside the host's filesystem, because the path resolved relative to a handle that was never closed. The fix shipped in 1.1.12. Paths are resolved against handles, and a stale or leaked handle is a way out of the tree you meant to confine ([runc advisory](https://github.com/opencontainers/runc/security/advisories/GHSA-xr7r-f8xq-vfvv)).
 
 ## Down the stack
 
@@ -133,7 +138,7 @@ What not to put in the model: a `parent` pointer on every node unless you need u
 Every operation either succeeds completely or fails with one specific error and changes nothing. After `mv(src, dst)` returns, `src` does not resolve and `dst` resolves to the same node with the same content, and no reader ever sees both or neither. `ls` returns names in byte order. `du` equals the sum of content lengths of all files under the path at one instant. Resolution cost is proportional to path depth, not to the number of files.
 
 ### Layer 2: The mechanism
-Linux splits the same ideas into objects you can name. A **dentry** (directory entry) maps a name in a parent to an **inode**; the inode holds size, timestamps, link count and the pointers to data. The dentry cache (dcache) is a hash table keyed by (parent dentry, name), so path walking is one hash lookup per component, mostly lock-free under RCU. `rename(2)` is atomic with respect to lookups: another process sees either the old name or the new one. Linux's own tmpfs is an in-memory file system built from exactly these pieces, with page-cache pages as file content. On disk, ext4 stores large directories as an HTree, a hashed B-tree of names, so lookup in a 100,000-entry directory stays a few block reads. Our design is the same shape in miniature: the directory map plays the dentry role, the node object plays the inode role.
+Linux splits the same ideas into objects you can name. A **dentry** (directory entry) maps a name in a parent to an **inode**; the inode holds size, timestamps, link count and the pointers to data. The dentry cache (dcache) is a hash table keyed by (parent dentry, name), so path walking is one hash lookup per component, mostly lock-free under RCU. `rename(2)` is atomic with respect to lookups: another process sees either the old name or the new one. Linux's own tmpfs is an in-memory file system built from exactly these pieces, with page-cache pages as file content. On disk, ext4 stores large directories as an HTree, a hashed B-tree of names ([kernel docs](https://www.kernel.org/doc/html/latest/filesystems/ext4/directory.html)), so lookup in a 100,000-entry directory stays a few block reads. Our design is the same shape in miniature: the directory map plays the dentry role, the node object plays the inode role.
 
 ### Layer 3: The machine
 Each path component in the in-memory design costs one hash of a short string (a few ns) and one map probe, which is usually one or two cache misses at around 80 ns each from DRAM. A 6-level path resolves in well under a microsecond. Memory per entry is dominated by overhead: a Go map entry plus string header plus node struct is roughly 100 to 200 bytes before any content, so a million empty files cost on the order of 150 MB. An uncontended `sync.RWMutex` read lock costs tens of nanoseconds, but on many cores the shared reader counter becomes a contended cache line, which is why the kernel uses RCU for path walks instead of a reader lock.
@@ -147,7 +152,7 @@ Each path component in the in-memory design costs one hash of a short string (a 
 
 ## Extensibility
 
-- **Symbolic links:** a third node type holding a target path. Resolution follows it with a hop limit (Linux uses 40) to break loops. Composite keeps `du` and `rm` working; only resolution changes.
+- **Symbolic links:** a third node type holding a target path. Resolution follows it with a hop limit to break loops; Linux allows at most 40 symlink resolutions in one pathname and returns `ELOOP` beyond that ([path_resolution(7)](https://man7.org/linux/man-pages/man7/path_resolution.7.html)). Composite keeps `du` and `rm` working; only resolution changes.
 - **Hard links:** allow two directory entries to point at one node and add a link count on the node. `rm` decrements the count and frees the node at zero. This works only because names are not stored on nodes.
 - **Permissions:** add owner and mode bits to the node and check them during resolution (execute permission on every directory you traverse) and at the final node. The check sits in the facade, not scattered in callers.
 - **Persistence:** add a write-ahead log of mutations (`mkdir`, `write`, `mv`) and replay it at startup, or snapshot the tree periodically. The facade already funnels every mutation through one place, which is where the log hook goes.
@@ -1107,6 +1112,24 @@ func (f *FileSystem) Du(path string) (int, error) {
 - `mv` with a component-wise cycle check, an existing-target policy and detach-then-attach under one lock.
 - A locking plan that starts with a readers-writer lock and evolves to per-directory locks with a global order for cross-directory renames, or copy-on-write roots.
 - Symlink resolution with a hop limit, and recursive operations written once against the node interface.
+
+## Sources and further study
+**Primary**
+- [path_resolution(7) (Linux man-pages)](https://man7.org/linux/man-pages/man7/path_resolution.7.html): the exact algorithm for walking a path, including `..`, symlinks and the 40-link limit.
+- [Directory locking (Linux kernel docs)](https://www.kernel.org/doc/html/latest/filesystems/directory-locking.html): the lock ordering that keeps concurrent renames deadlock-free.
+- [tarfile extraction filters (Python docs)](https://docs.python.org/3/library/tarfile.html): a standard library's rules for refusing paths that escape the destination.
+
+**Systems docs**
+- [ext4 directory entries (Linux kernel docs)](https://www.kernel.org/doc/html/latest/filesystems/ext4/directory.html): linear directories versus the hashed HTree.
+- [tmpfs (Linux kernel docs)](https://www.kernel.org/doc/html/latest/filesystems/tmpfs.html): the kernel's own in-memory file system and its size limits.
+- [Apache HTTP Server 2.4 vulnerabilities](https://httpd.apache.org/security/vulnerabilities_24.html): the path-normalisation traversal bug and its incomplete fix.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 4 (Structural), the Composite and Facade patterns.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 9 (Iterator and Composite) and chapter 7 (Adapter and Facade).
+
+**Other curricula**
+- [Refactoring.Guru: Facade](https://refactoring.guru/design-patterns/facade): frames the facade as one simple entry point over a complex subsystem, the role `FileSystem` plays here.
 
 ## Watch
 - [Google Coding Interview Question, Leetcode 588 (WorkWithGoogler)](https://www.youtube.com/watch?v=SJmYTJEVa_U): the classic interview form of this problem, with the tree structure built step by step.

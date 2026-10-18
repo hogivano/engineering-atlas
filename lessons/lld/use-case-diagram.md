@@ -26,17 +26,17 @@ Three relationships connect elements to each other, and they are the part most t
 
 `<<include>>` is a dashed arrow from the base to the included use case. Book appointment includes Verify insurance: every booking verifies. Inclusion factors out shared behaviour the way a function does, and Verify insurance needs no actor of its own.
 
-`<<extend>>` is a dashed arrow from the optional extension to the base, the opposite direction. Apply late fee extends Cancel appointment at an extension point called "within 24 hours of the visit". The base is complete without the extension and does not know it exists, which is the open-closed principle drawn as a picture.
+`<<extend>>` is a dashed arrow from the optional extension to the base, the opposite direction ([UML 2.5.1, clause 18](https://www.omg.org/spec/UML/2.5.1/PDF)). Apply late fee extends Cancel appointment at an extension point called "within 24 hours of the visit". The base is complete without the extension and does not know it exists, which is the open-closed principle drawn as a picture.
 
 **Generalization** (solid line, hollow triangle) works on actors and use cases. Billing Admin specializes Front Desk: it can do everything Front Desk can, plus issue refunds. Specialized actors inherit their parent's associations, the same way a subclass inherits methods.
 
 A good rule for spotting misuse: if you would describe the relationship with "sometimes" or "if", it is extend; with "always", it is include; with "first X, then Y", it does not belong on this diagram at all. Sequencing goes on an activity or sequence diagram.
 
 ### The text behind each oval
-Every oval should point at a short written specification: goal, primary actor, preconditions, the main success scenario as numbered steps, extensions (what happens when step 3 fails), and postconditions, as in Alistair Cockburn's template. The diagram is the index and the text is the content; teams that keep only the diagram lose the failure cases, where most design work lives.
+Every oval should point at a short written specification: goal, primary actor, preconditions, the main success scenario as numbered steps, extensions (what happens when step 3 fails), and postconditions, as in Alistair Cockburn's template. The diagram is the index and the text is the content; teams that keep only the diagram lose the failure cases, where most design work lives. Fowler goes further and says the diagrams are of little value next to the text, which UML does not standardise ([Fowler, UseCase](https://martinfowler.com/bliki/UseCase.html)).
 
 ### Drawing it in Mermaid
-Mermaid has no use case diagram type, so a flowchart stands in: a `subgraph` for the boundary, stadium nodes `(["..."])` for use cases, and labelled dotted edges for include and extend. PlantUML supports the notation directly with `actor`, `usecase` and `rectangle`.
+Mermaid 12.0.0 added a native use case diagram, started with the `usecase-beta` keyword. It has actors, use cases, system boundaries and explicit include, extend and generalization operators, and include and extend must join two use cases ([Mermaid docs](https://mermaid.js.org/syntax/usecase.html), [12.0.0 release](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0)). The diagram below uses a flowchart stand-in, which renders on any Mermaid version: a `subgraph` for the boundary, stadium nodes `(["..."])` for use cases, and labelled dotted edges for include and extend. PlantUML supports the notation directly with `actor`, `usecase` and `rectangle`.
 
 ### Reviewing agent-written diagrams
 Agents make the human mistakes faster: CRUD ovals that mirror tables, extend arrows pointing the wrong way, and actors from the org chart ("Manager") that match no role in the identity provider. Ask for the matrix the diagram implies (actor, use case, endpoint, permission) and check it against the code, which the practice task automates.
@@ -50,16 +50,16 @@ A use case diagram is a coverage claim, the *trust but verify* shape. An auditor
 The diagram makes three testable promises. A principal holding an associated actor's role can complete the use case end to end, inclusions included. Included use cases run whenever the base does, so the base actor needs whatever they need. And an actor with no line to a use case cannot perform it; that negative promise is the one auditors test. Nothing is promised about ordering, timing or data.
 
 ### Layer 2: The mechanism
-Actors become principals and roles: a `scope` or `roles` claim in an OAuth 2.0 JWT, a Kubernetes `Role` and `RoleBinding`, an AWS IAM role. Actor generalization becomes role inheritance.
+Actors become principals and roles (the OWASP API Security Top 10 asks for a central, deny-by-default module that grants functions by role, [API5:2023](https://api-security.owasp.org/editions/2023/en/0xa5-broken-function-level-authorization)): a `scope` or `roles` claim in an OAuth 2.0 JWT, a Kubernetes `Role` and `RoleBinding`, an AWS IAM role. Actor generalization becomes role inheritance.
 
 Use cases become entry points: REST routes, gRPC methods, GraphQL mutations or queue consumers. Mature teams record the link, for example with an OpenAPI `x-use-case` extension, so tooling can join the two.
 
 Include becomes an internal call on the same request path, and its permission propagates up: if `POST /appointments` calls the eligibility service with the caller's token, that token needs the eligibility scope. Extend becomes a conditional hook (a feature flag, a policy rule, a handler for `AppointmentCancelled`) the base never references. The boundary becomes the authorization perimeter, usually a gateway or mesh.
 
-Tooling does the drawing. PlantUML parses its text into an element graph and hands use case and class diagrams to Graphviz's `dot`. Mermaid parses flowchart text with a Jison-generated grammar into a graph of nodes, edges and subgraphs, then lays it out with dagre by default (ELK is an option). Both layout engines use the layered method from Sugiyama and colleagues: break cycles, assign each node a rank, order nodes within ranks to reduce edge crossings, then assign coordinates.
+Tooling does the drawing. PlantUML parses its text into an element graph and hands use case and class diagrams to Graphviz's `dot`. Mermaid parses flowchart text with a Jison-generated grammar into a graph of nodes, edges and subgraphs, then lays it out with ELK, the default since v12.0.0 (set `layout: dagre` for the old engine) ([Mermaid layouts](https://mermaid.js.org/config/layouts.html)). Dagre and ELK's layered algorithm both use the layered method from Sugiyama and colleagues: break cycles, assign each node a rank, order nodes within ranks to reduce edge crossings, then assign coordinates.
 
 ### Layer 3: The machine
-Each association costs something on every request. A scope check on a validated JWT is a set lookup costing well under a microsecond, but validating the token costs more: an RS256 signature check is roughly tens of microseconds on a modern core, which is why gateways cache validated tokens by hash. Scope strings ride in a header on every call. A role model with one scope per use case and 60 use cases adds over a kilobyte to the token, base64 adds a third more, and nginx's default `large_client_header_buffers 4 8k` rejects any single header line above 8 KB with a 400. Calling an external policy engine such as OPA over the network adds a millisecond or so per decision; embedding it keeps decisions in the tens of microseconds.
+Each association costs something on every request. A scope check on a validated JWT is a set lookup costing well under a microsecond, but validating the token costs more: an RS256 signature check is roughly tens of microseconds on a modern core, which is why gateways cache validated tokens by hash. Scope strings ride in a header on every call. A role model with one scope per use case and 60 use cases adds over a kilobyte to the token, base64 adds a third more, and nginx's default `large_client_header_buffers 4 8k` rejects any single header field above one 8 KB buffer with a 400 ([nginx docs](https://nginx.org/en/docs/http/ngx_http_core_module.html#large_client_header_buffers)). Calling an external policy engine such as OPA over the network adds a millisecond or so per decision; embedding it keeps decisions in the tens of microseconds.
 
 Layout has its own limit. Minimising edge crossings in a layered drawing is NP-hard, so engines sweep barycenter or median heuristics. With a few hundred edges the result becomes unreadable long before it becomes slow: split the diagram by actor or subsystem.
 
@@ -107,6 +107,10 @@ The clinic's first release has 9 use cases, 14 endpoints and 5 roles. For the se
 4. Reschedule appointment has no endpoint: design assumed cancel-and-rebook, product assumed a dedicated flow. Settled in 20 minutes, before launch.
 
 At 14 endpoints this is a spreadsheet. A year later, at 120 endpoints and 30 roles, the same check runs in CI on every change to the spec or the roles.
+
+## In the wild
+- **OWASP, 2023: broken function level authorization is a top API risk.** The API Security Top 10 (2023 edition) lists it as API5. The pattern is exactly the audit finding in this lesson: an administrative or privileged function that an ordinary caller can reach by guessing a URL or changing the HTTP method, because admin endpoints often sit under ordinary paths. The recommended fix is a central authorization module that denies by default and grants functions by role, reviewed against the business logic ([OWASP API5:2023](https://api-security.owasp.org/editions/2023/en/0xa5-broken-function-level-authorization)). A use case to role to endpoint matrix is one way to produce that review.
+- **Mermaid, 2026: use case diagrams become a built-in diagram type.** Version 12.0.0 added UML use case diagrams, with boundaries, actors and include, extend and generalization operators, so the notation can live as reviewable text beside the code ([release notes](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0), [syntax docs](https://mermaid.js.org/syntax/usecase.html)). The syntax carries a beta keyword, so pin the Mermaid version your docs build uses.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -695,6 +699,22 @@ func Check(m Model) []string {
 - Include permissions propagating to the base actor, or an explicit service identity for the inner call.
 - Break glass as an extension with its own audited permission, never a silent grant on the base role.
 - A CI check for orphan endpoints, uncovered use cases, missing grants and over-grants, plus periodic review of the generated diagram.
+
+## Sources and further study
+**Primary**
+- [UML 2.5.1 specification, PDF (OMG)](https://www.omg.org/spec/UML/2.5.1/PDF): clause 18 defines UseCase, Actor, Include and Extend, including extension points.
+- [Mermaid 12.0.0 release notes](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0): the release that introduced native use case diagrams.
+
+**Systems docs**
+- [Mermaid use case diagram syntax](https://mermaid.js.org/syntax/usecase.html): actors, boundaries and the include, extend and generalization operators.
+- [OWASP API5:2023 Broken Function Level Authorization](https://api-security.owasp.org/editions/2023/en/0xa5-broken-function-level-authorization): the security failure that an actor-to-use-case matrix is meant to catch.
+- [nginx: ngx_http_core_module](https://nginx.org/en/docs/http/ngx_http_core_module.html): `large_client_header_buffers` and the 400 and 414 limits that large scope lists can hit.
+
+**Books**
+- *Software Engineering at Google*, Winters, Manshreck and Wright, chapter 10 "Documentation": keeping requirement and design documents small, owned and current.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): starts every worked design from use cases and constraints, a short list of who does what, without the diagram notation.
 
 ## Watch
 - [UML Use Case Diagram Tutorial (Lucid Software)](https://www.youtube.com/watch?v=zid-MVo7M-E): actors, boundaries, include and extend with a worked example.

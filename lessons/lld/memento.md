@@ -1018,6 +1018,7 @@ func (c *CheckpointStore) Find(label string) (*Snapshot, bool) {
 - A versioned, persisted snapshot format for named versions, with tests that restore old versions after schema changes.
 
 ## Sources and further study
+
 **Primary**
 - [Go slices package](https://pkg.go.dev/slices): `Clone` is a shallow copy, which is why a Go memento of nested slices needs care.
 - [Go blog: Go slices, usage and internals](https://go.dev/blog/slices-intro): a slice is a descriptor of an array segment, so copying the struct that holds it shares the storage.
@@ -1031,6 +1032,7 @@ func (c *CheckpointStore) Find(label string) (*Snapshot, bool) {
 - *Head First Design Patterns* (2nd ed. 2020), Ch 6 on Command: the inverse-operation undo that this lesson compares with snapshots.
 
 **Other curricula**
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): shows undo as a history of commands, optionally paired with mementos that save state just before each command, the same combination this lesson recommends.
 
 ## Watch
 - [Memento Design Pattern (Derek Banas)](https://www.youtube.com/watch?v=jOnxYT8Iaoo): the originator, memento and caretaker roles built step by step in Java.

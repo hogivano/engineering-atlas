@@ -22,7 +22,7 @@ Functional:
 
 Non-functional:
 - No false negatives, ever, including across save and load.
-- About `1.44 × log2(1/p)` bits per key, so 1% costs under 10 bits per key.
+- About `1.44 × log2(1/p)` bits per key, so 1% costs under 10 bits per key (RedisBloom's docs give 9.585 bits and 7 hash functions for 1%, [Redis docs](https://redis.io/docs/latest/commands/bf.reserve/)).
 - Add and query in well under a microsecond for in-memory filters.
 - A byte format that a Go service can write and a Python job can read.
 
@@ -133,7 +133,7 @@ Checking before inserting stops duplicates from consuming the newest layer's cap
 - **Value objects.** `FilterParams` and the serialised header describe a filter immutably, so compatibility checks for merge or load are an equality test.
 
 ## Concurrency and edge cases
-Add is monotonic: it only sets bits. Two threads can OR bits into the same word, and as long as each OR is atomic neither loses the other's bit. Guava's `LockFreeBitArray` does exactly this with a compare-and-swap loop over an `AtomicLongArray`, and Go 1.23 added `atomic.OrUint64`. A reader racing with a writer may see some of a key's bits and not others, so `mightContain` can return false for a key whose `add` has not returned yet. That is fine: the guarantee is "no false negatives for completed adds". The count is a separate atomic and is approximate under races.
+Add is monotonic: it only sets bits. Two threads can OR bits into the same word, and as long as each OR is atomic neither loses the other's bit. Guava's `LockFreeBitArray` does exactly this with a compare-and-swap loop over an `AtomicLongArray` ([Guava source](https://github.com/google/guava/blob/master/guava/src/com/google/common/hash/BloomFilterStrategies.java)), and Go 1.23 added `atomic.OrUint64` ([Go docs](https://pkg.go.dev/sync/atomic)). A reader racing with a writer may see some of a key's bits and not others, so `mightContain` can return false for a key whose `add` has not returned yet. That is fine: the guarantee is "no false negatives for completed adds". The count is a separate atomic and is approximate under races.
 
 The scalable filter is harder. "Check every layer, maybe append a layer, add to the last" must be atomic, or two threads both append a layer, or both add the same key and count it twice. The simple answer is a read-write lock. A faster design publishes an immutable list of layers through an atomic pointer and locks only to grow: the classic **contention** fix of a lock-free common path and a serialised rare structural change.
 
@@ -144,6 +144,11 @@ Edge cases to cover:
 - Overfilling a plain filter. The rate climbs steeply; expose `count` and an `expectedFpp()` estimate so callers can alarm on it.
 - Empty keys, long keys and non-ASCII text, which must be encoded to bytes one defined way (UTF-8).
 
+## In the wild
+- **Apache Cassandra: one filter per SSTable, tuned by a single knob.** Each SSTable carries its own Bloom filter so a read can skip files that cannot hold the key. The documented default `bloom_filter_fp_chance` is 0.01, or 0.1 under leveled compaction, and the filters live off-heap, so operators trade RAM against wasted disk reads ([Cassandra docs](https://cassandra.apache.org/doc/latest/cassandra/managing/operating/bloom_filters.html)).
+- **RocksDB: filters built for cache lines.** RocksDB moved from per-block filters to one full filter per SST file with probes confined to a cache line, and added a Ribbon filter that saves about 30% of filter space at roughly 3 to 4 times the CPU cost. At 9.9 bits per key the false-positive rate is about 1% ([RocksDB wiki](https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter)).
+- **Bitcoin Core, 2019: BIP 37 bloom filters switched off by default.** Light clients sent Bloom filters to full nodes, which scanned blocks for matches. Bitcoin Core 0.19.0.1 set `-peerbloomfilters` to false by default "to eliminate well-known denial-of-service vectors", especially for nodes on spinning disks (PR #16152). A client-controlled filter was an unbounded work request ([release notes](https://github.com/bitcoin/bitcoin/blob/master/doc/release-notes/release-notes-0.19.0.1.md)).
+
 ## Down the stack
 
 ### Layer 1: The contract
@@ -152,12 +157,12 @@ After `add(x)` returns, `mightContain(x)` is true forever, in this process and a
 ### Layer 2: The mechanism
 Each layer derives its probes from two hashes, `(h1 + i × h2) mod m`, the Kirsch and Mitzenmacher construction, so one hash call serves all `k` probes. The derived probes are only as good as their spread: if `h2 mod m` shares a factor with `m`, the `k` probes cycle through a few positions and the false-positive rate rises. Rounding each layer's `m` up to a power of two and forcing `h2` odd makes them coprime, at a cost of up to 2x memory; the alternatives are a prime `m` or enhanced double hashing, which adds a cubic term to each probe. The Practice measures this: with arbitrary `m` the same keys gave about twice the target rate.
 
-The scalable design follows Almeida, Baquero, Preguiça and Hutchison (2007). Layer `i` has capacity `c0 × s^i` (growth `s`, usually 2 or 4) and error `p0 × r^i` (tightening `r`, 0.5 to 0.9), with `k_i = ceil(log2(1 / p_i))` probes and about `c_i × k_i / ln 2` bits, half set at capacity. Layers grow geometrically, so growing from 1,000 to 1,000,000 keys adds only about 10 layers for queries to check. RedisBloom implements this behind `BF.RESERVE key error_rate capacity EXPANSION 2`.
+The scalable design follows Almeida, Baquero, Preguiça and Hutchison (2007). Layer `i` has capacity `c0 × s^i` (growth `s`, usually 2 or 4) and error `p0 × r^i` (tightening `r`, 0.5 to 0.9), with `k_i = ceil(log2(1 / p_i))` probes and about `c_i × k_i / ln 2` bits, half set at capacity. Layers grow geometrically, so growing from 1,000 to 1,000,000 keys adds only about 10 layers for queries to check. RedisBloom implements this behind `BF.RESERVE key error_rate capacity EXPANSION 2`, where each new sub-filter is the last one's size times the expansion factor and 2 is the default. Its docs also say query cost grows linearly with the number of sub-filters, so reserving a realistic capacity beats relying on growth, and `NONSCALING` returns an error at capacity instead of growing ([Redis docs](https://redis.io/docs/latest/commands/bf.reserve/)).
 
-The serialised form is a header plus the raw bits. Guava writes a strategy ordinal byte, the number of hash functions, the word count and then the 64-bit words. The format in Practice uses a magic string, big-endian `m`, `k` and count, a length-prefixed hasher ID, and bit `j` at bit `j mod 8` of byte `j / 8`. Whatever you pick, write it down: endianness and bit order are the details that make a filter written by a Go service unreadable by a Python job.
+The serialised form is a header plus the raw bits. Guava writes a strategy ordinal byte, a byte for the number of hash functions, an int word count and then the 64-bit words ([Guava source](https://github.com/google/guava/blob/master/guava/src/com/google/common/hash/BloomFilter.java)); its default strategy derives probes as `hash1 + i × hash2` from a Murmur3 128-bit hash ([BloomFilterStrategies](https://github.com/google/guava/blob/master/guava/src/com/google/common/hash/BloomFilterStrategies.java)). The format in Practice uses a magic string, big-endian `m`, `k` and count, a length-prefixed hasher ID, and bit `j` at bit `j mod 8` of byte `j / 8`. Whatever you pick, write it down: endianness and bit order are the details that make a filter written by a Go service unreadable by a Python job.
 
 ### Layer 3: The machine
-A filter for 10 million keys at 1% is about 12 MB: larger than most L2 caches, so each probe that misses costs a DRAM access of roughly 80 to 100 ns, and a positive query pays all `k` of them. Blocked layouts that keep a key's probes in one 64-byte line cut that to one miss. An uncontended atomic OR on x86 is a `lock or` instruction costing on the order of 10 to 20 ns; under heavy contention on the same cache line it becomes a cache-line ping-pong between cores, which is why hot filters shard by key hash across several bit arrays.
+A filter for 10 million keys at 1% is about 12 MB: larger than most L2 caches, so each probe that misses costs a DRAM access of roughly 80 to 100 ns, and a positive query pays all `k` of them. Blocked layouts that keep a key's probes in one 64-byte line cut that to one miss. RocksDB's full filters do this, so a lookup costs about one cache miss per filter, and its wiki reports the price: an example with 10 bits per key and 6 probes gave about 0.95% false positives against 0.84% for a standard layout ([RocksDB wiki](https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter)). An uncontended atomic OR on x86 is a `lock or` instruction costing on the order of 10 to 20 ns; under heavy contention on the same cache line it becomes a cache-line ping-pong between cores, which is why hot filters shard by key hash across several bit arrays.
 
 Serialised, those 12 MB can be loaded with `mmap` and shared between processes through the page cache, but only if the file layout equals the in-memory layout: another reason to fix byte order. Hashing a 32-byte key with FNV-1a is one multiply and XOR per byte, around 30 to 50 ns; Murmur3 and xxHash process 4 or 8 bytes per step and are several times faster on long keys.
 
@@ -179,6 +184,7 @@ Serialised, those 12 MB can be loaded with `mmap` and shared between processes t
 - Decide the format and hasher before the first filter is persisted. Changing either later means rebuilding every stored filter, which for a crawler or a storage engine can mean days of reprocessing.
 - In review, look for `hash()`, `hashCode()` or `Math.random()` near a filter. These produce filters that work in tests and fail after a restart or in another service.
 - Ask what a false positive costs the business, and put that number next to `p`. A 1% rate is cheap for "skip a disk read" and unacceptable for "skip charging a new customer".
+- Pick `p` from measured cost, not habit. Cassandra defaults `bloom_filter_fp_chance` to 0.01, or 0.1 for leveled compaction, and its docs say 0.01 needs roughly three times the memory of 0.1 ([Cassandra docs](https://cassandra.apache.org/doc/latest/cassandra/managing/operating/bloom_filters.html)).
 - Prefer a tested library (Guava, bits-and-blooms, RedisBloom). Build your own only for a cross-language format or unusual growth policy, and then own the compatibility tests.
 
 ## Check yourself
@@ -1183,6 +1189,25 @@ func (s *ScalableBloom) FilterParams() [][3]int {
 - Stacked layers with geometric growth and tightening, `p0 = P(1 - r)`, and the observation that layer count grows only logarithmically.
 - Lock-free atomic OR for plain adds, a lock or copy-on-write for growing layers, and sharding when one cache line becomes hot.
 - An honest statement of semantics: false positives skip new keys, no deletes, and the cost of a false positive decides `p`.
+
+## Sources and further study
+**Primary**
+- [Guava BloomFilter.java](https://github.com/google/guava/blob/master/guava/src/com/google/common/hash/BloomFilter.java): `create(funnel, expected, fpp)`, `putAll` merging and the serialised layout.
+- [Guava BloomFilterStrategies.java](https://github.com/google/guava/blob/master/guava/src/com/google/common/hash/BloomFilterStrategies.java): double-hash probing and the lock-free bit array.
+- [Go sync/atomic](https://pkg.go.dev/sync/atomic): `OrUint64` and `AndUint64`, added in Go 1.23.
+
+**Systems docs**
+- [Redis BF.RESERVE](https://redis.io/docs/latest/commands/bf.reserve/): sizing formulas, `EXPANSION` and `NONSCALING`, and the cost of sub-filters.
+- [RocksDB Bloom Filter wiki](https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter): cache-local layout, bits-per-key table and Ribbon filters.
+- [Cassandra: bloom filters](https://cassandra.apache.org/doc/latest/cassandra/managing/operating/bloom_filters.html): `bloom_filter_fp_chance` defaults and the memory trade-off.
+- [Bitcoin Core 0.19.0.1 release notes](https://github.com/bitcoin/bitcoin/blob/master/doc/release-notes/release-notes-0.19.0.1.md): why client-supplied Bloom filters were disabled by default.
+
+**Books**
+- *Designing Data-Intensive Applications*, Kleppmann, 1st ed., chapter 3 "Storage and Retrieval": Bloom filters as the way LSM-trees avoid reading files that lack a key.
+- *Database Internals*, Petrov, chapter 7 "Log-Structured Storage": filters in LSM read paths.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): its README has no Bloom filter entry at all, so the sizing, format and concurrency questions here have no counterpart there.
 
 ## Watch
 - [Bloom Filters, Algorithms You Should Know #2 (ByteByteGo)](https://www.youtube.com/watch?v=V3pzxngeLqw): the structure and where production systems use it.

@@ -105,7 +105,7 @@ sequenceDiagram
 
 The **token bucket** starts each key full. Every call adds `elapsed × rate` tokens, caps the total at `capacity`, and spends one token if at least one is there. Capacity sets the largest burst and the rate sets the long-run average. A bucket with capacity 10 and 5 tokens per second allows a burst of 10 and then 5 per second.
 
-The **sliding-window counter** splits time into fixed windows but smooths the edge between them. It estimates the count over the last `windowMs` as `previousCount × (windowMs − elapsedInCurrent) / windowMs + currentCount`. Take a limit of 4 per second. A key that made 4 requests in the previous second and is now 500 ms into the current one has an estimate of 4 × 0.5 = 2. Two more requests fit. A plain fixed window would let 4 more through right after the boundary, which doubles the rate across the edge. A sliding log fixes that exactly by storing every timestamp, but it costs O(L) memory per key. The counter version costs two integers and is accurate to within a few percent when traffic is spread fairly evenly across the window.
+The **sliding-window counter** splits time into fixed windows but smooths the edge between them. It estimates the count over the last `windowMs` as `previousCount × (windowMs − elapsedInCurrent) / windowMs + currentCount`. Take a limit of 4 per second. A key that made 4 requests in the previous second and is now 500 ms into the current one has an estimate of 4 × 0.5 = 2. Two more requests fit. A plain fixed window would let 4 more through right after the boundary, which doubles the rate across the edge. A sliding log fixes that exactly by storing every timestamp, but it costs O(L) memory per key. The counter version costs two integers and is accurate when traffic is spread fairly evenly across the window. Cloudflare measured it over 400 million requests from 270,000 sources: 0.003% of requests were wrongly allowed or limited, and the average gap between true and estimated rate was 6% ([Cloudflare](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/)).
 
 ## Design patterns used and why
 - **Strategy.** `RateLimiter` is the strategy interface. Token bucket, sliding-window counter, sliding log, fixed window and leaky bucket are interchangeable. The choice is policy (bursty or smooth), and the caller shouldn't care.
@@ -126,13 +126,18 @@ Edge cases worth naming:
 - **Floating-point drift.** Fractional tokens are fine, but compare against 1 and cap at capacity so drift can't grow over time.
 - **Invalid configuration.** A capacity below 1, or a rate or window of zero or less, should fail at construction, not on the first request.
 
+## In the wild
+- **Stripe, 2017: four layers of limiting in production.** Stripe runs a per-user token-bucket request limiter backed by Redis, a concurrent-request limiter, a fleet-usage load shedder that reserves capacity for critical calls, and a worker-utilisation shedder. In one month the request limiter rejected millions of requests, often runaway test-mode scripts, the concurrency limiter fired about 12,000 times and the worker shedder rejected about 100. Each was dark-launched first and given a kill switch ([Stripe](https://stripe.com/blog/rate-limiters)).
+- **Cloudflare: sliding-window counter at the edge.** To count requests per client across a whole network, Cloudflare chose the two-window approximation over a log of timestamps. In its measurement, only 3 sources out of 270,000 were wrongly allowed, each less than 15% above the threshold, and none were wrongly blocked ([Cloudflare](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/)).
+- **Healthchecks.io, 2025-11: a limiter that consumed the resource it protected.** A client pinged one check about 300 times a second. HAProxy's tarpit rate limiting held each rejected connection open for a second, which used up connection slots. The load balancers began rejecting connections at 23:39 UTC and traffic returned to normal at 01:06 UTC, roughly an hour and a half later. The fix was immediate 429 responses, request timeouts, a higher `maxconn` and alerts on session counts ([Healthchecks.io](https://blog.healthchecks.io/2025/11/post-mortem-outage-on-november-1/)). Rejecting must cost less than serving.
+
 ## Down the stack
 
 ### Layer 1: The contract
 For a token bucket with capacity C and rate R, any interval of length T admits at most C + R×T requests per key. Each call is O(1), with no background work and no allocation after the key's first request. For the sliding-window counter, the guarantee is approximate. It never admits more than L in a single fixed window, and it smooths the boundary using an estimate that assumes requests were spread evenly across the previous window.
 
 ### Layer 2: The mechanism
-Lazy refill is the central trick. Instead of a timer adding tokens every 1/R seconds, which means one timer per key and millions of wakeups, the bucket stores the time of its last update and catches up arithmetically. Go's `golang.org/x/time/rate.Limiter` works this way: it stores `tokens`, `last` and `lastEvent` under a mutex, and also offers `Reserve` and `Wait` for callers that want to queue instead of being rejected. Envoy's local rate limit filter is a token bucket configured with `max_tokens`, `tokens_per_fill` and `fill_interval`. The sliding-window counter is the approach Cloudflare described for counting requests across a large edge network, because it needs two counters per key instead of a log.
+Lazy refill is the central trick. Instead of a timer adding tokens every 1/R seconds, which means one timer per key and millions of wakeups, the bucket stores the time of its last update and catches up arithmetically. Go's `golang.org/x/time/rate.Limiter` works this way: it stores `tokens`, `last` and `lastEvent` under a `sync.Mutex`, and also offers `Reserve` and `Wait` for callers that want to queue instead of being rejected ([rate.go](https://github.com/golang/time/blob/master/rate/rate.go)). Envoy's local rate limit filter is a token bucket configured with `max_tokens`, `tokens_per_fill` and `fill_interval`. By default one bucket is shared across all worker threads, so the limit applies per Envoy process, and the `Retry-After` header on a 429 is off unless `enable_retry_after_header` is set ([Envoy docs](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/local_rate_limit_filter)). Stripe also runs its request limiter as a token bucket, with the buckets stored in Redis ([Stripe](https://stripe.com/blog/rate-limiters)). The sliding-window counter is the approach Cloudflare described for counting requests across a large edge network, keeping counters in Twemcache and using only `GET`, `SET` and atomic `INCR`, because it needs two counters per key instead of a log ([Cloudflare](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/)).
 
 ### Layer 3: The machine
 A bucket is about 16 bytes of payload: a float64 and an int64. In Go, a `map[string]*bucket` entry adds the key string, a pointer and map overhead, so roughly 80–100 bytes per active key. A million keys costs about 100 MB, which is why eviction matters. An uncontended `sync.Mutex` lock and unlock costs around 10–20 ns. Under contention the cache line holding the mutex bounces between cores, at around 100 ns per transfer, and goroutines may park. That is why striping helps once you pass a few million calls per second on one process. Reading a monotonic clock through the vDSO costs about 20 ns, cheap enough to do on every call.
@@ -146,14 +151,14 @@ A bucket is about 16 bytes of payload: a float64 and an int64. In Go, a `map[str
 ## Extensibility
 - **Distributed limits.** When ten servers must share one budget per user, move the state to a shared store. In Redis, a Lua script performs the token-bucket read-modify-write atomically on one key, at the cost of one round trip (about 0.2–1 ms in the same zone) per request. To cut that cost, allocate a local slice of the budget to each server and sync it periodically, accepting a small over-admit. Or run a central limit service, as Envoy's global rate limiting does. The interface does not change. A `RedisTokenBucket` is one more `RateLimiter`.
 - **Weighted requests.** Add `allow(key, cost)` so an expensive query spends 10 tokens.
-- **Retry hints.** Return a decision object with `allowed`, `remaining` and `retryAfterMs`, so the middleware can set `Retry-After` and the `RateLimit` headers being standardised by the IETF.
+- **Retry hints.** Return a decision object with `allowed`, `remaining` and `retryAfterMs`, so the middleware can set `Retry-After` and the `RateLimit` and `RateLimit-Policy` header fields from the IETF HTTPAPI working group's draft, which was still an Internet-Draft (version 11, May 2026) when this was written ([IETF datatracker](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/)).
 - **Queue instead of reject.** A leaky bucket or `Reserve`-style API delays work instead of dropping it, which suits outbound calls to a partner API.
 
 ## Leadership lens
 - Decide early what the limit protects: your capacity (a global and per-instance concern) or fairness between tenants (a per-key concern). The answer chooses the key, the algorithm and whether you need distribution at all.
 - Prefer local, in-process limiting as the first line. It is fast, has no extra dependency and degrades gracefully. Add a shared limiter only where the business needs an exact global quota, such as a paid API tier.
 - Make rejections observable. Emit allowed and rejected counts per key class, and alert on sudden spikes. A misconfigured limiter looks exactly like an outage to customers.
-- Agree on fail-open versus fail-closed with product and security before launch, and test it. A rate limiter that takes the site down when Redis blips has made things worse.
+- Agree on fail-open versus fail-closed with product and security before launch, and test it. A rate limiter that takes the site down when Redis blips has made things worse. Stripe's advice is to fail open, dark-launch each limiter in observe-only mode, and keep a kill switch ([Stripe](https://stripe.com/blog/rate-limiters)). Return 429 for a client over its limit and 503 for server overload, so clients know whether to slow down or just retry later.
 
 ## Check yourself
 1. A token bucket has capacity 10 and refills at 2 tokens per second. A key has been idle for an hour. How many requests can it make in the next 3 seconds?
@@ -839,6 +844,25 @@ func (sw *SlidingWindow) Allow(key string) bool {
 - An injected monotonic clock, with tests that advance a fake clock, plus explicit handling of a clock that moves backwards.
 - Atomic read-modify-write per call (a mutex, lock striping or compare-and-swap), and idle-key eviction to bound memory.
 - A path to distribution: Redis with an atomic script, a central limit service, or local budget slices, with the round-trip cost, accuracy trade-off and fail-open policy stated.
+
+## Sources and further study
+**Primary**
+- [IETF draft: RateLimit header fields for HTTP](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/): the `RateLimit` and `RateLimit-Policy` fields for telling clients their quota.
+- [RFC 6585, section 4: 429 Too Many Requests](https://www.rfc-editor.org/rfc/rfc6585#section-4): the status code a rejected client receives.
+
+**Systems docs**
+- [golang.org/x/time/rate source](https://github.com/golang/time/blob/master/rate/rate.go): the `Limiter` struct with `tokens`, `last` and `lastEvent` guarded by a mutex.
+- [Envoy local rate limit filter](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/local_rate_limit_filter): token bucket fields, per-process scope and the optional `Retry-After`.
+- [Stripe: scaling your API with rate limiters](https://stripe.com/blog/rate-limiters): four limiter types, Redis token buckets and rollout practice.
+- [Cloudflare: counting things](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/): the sliding-window counter and its measured error.
+- [Healthchecks.io post-mortem, 2025-11](https://blog.healthchecks.io/2025/11/post-mortem-outage-on-november-1/): a rate-limiting configuration that backfired.
+
+**Books**
+- *System Design Interview*, Alex Xu, vol. 1, chapter 4 "Design A Rate Limiter": the interview-scale view with the same algorithms, framed around a shared store.
+- *Release It!*, Nygard, 2nd ed., chapter 5 "Stability Patterns": load shedding and fail-fast patterns that sit around a limiter.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): its real-world architecture table points to Stripe's rate-limiter post for "Design an API rate limiter" and gives no algorithm or code, so this lesson supplies the data structures.
 
 ## Watch
 - [Design Rate Limiter (LLD): Token Bucket, Fixed and Sliding Window with Thread Safety (Shubh Patel)](https://www.youtube.com/watch?v=7y0KWxaUn-E): a class-level design with interchangeable strategies and locking.

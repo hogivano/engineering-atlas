@@ -19,10 +19,10 @@ A **decision** (diamond, one input) picks exactly one outgoing edge, each labell
 
 A **fork** (thick bar, one input) starts concurrent flows: after Receive order, charging and picking run in parallel. A **join** (thick bar, several inputs) waits until every incoming flow has arrived.
 
-There are two ends. The **activity final** (bullseye) stops the whole activity, including any flows still running elsewhere. The **flow final** (circle with an X) ends only the flow that reaches it. Using an activity final at the end of one branch of a fork silently kills the other branches, which is sometimes intended (cancel everything on fraud) and often not.
+There are two ends. The **activity final** (bullseye) stops the whole activity, including any flows still running elsewhere. The **flow final** (circle with an X) ends only the flow that reaches it ([UML 2.5.1, 15.3.3.2](https://www.omg.org/spec/UML/2.5.1/PDF)). Using an activity final at the end of one branch of a fork silently kills the other branches, which is sometimes intended (cancel everything on fraud) and often not.
 
 ### Tokens
-The UML specification defines activity semantics as token flow. The initial node places a token on its outgoing edge. An action fires when a token arrives, and when it completes it offers a token on its outgoing edges. A decision routes its token down one edge; a fork copies it onto every edge; a merge passes each token through as it arrives; a join waits until it holds one token from each incoming edge, then emits one.
+The UML specification defines activity semantics as token flow ([UML 2.5.1, clause 15](https://www.omg.org/spec/UML/2.5.1/PDF)). The initial node places a token on its outgoing edge. An action fires when a token arrives, and when it completes it offers a token on its outgoing edges. A decision routes its token down one edge; a fork copies it onto every edge; a merge passes each token through as it arrives; a join waits until it holds one token from each incoming edge, then emits one.
 
 This is the Petri net model, where places hold tokens and transitions consume and produce them. Questions such as "can it deadlock?" or "can an action run twice for one order?" become questions about where tokens can end up.
 
@@ -37,7 +37,7 @@ Two bugs follow directly. If a decision inside one fork branch sends its token s
 Use an activity diagram for control flow: branches, loops, parallelism and who does what. Use a sequence diagram for which component calls which, in what order. A checkout often needs both.
 
 ### Drawing it in Mermaid
-Mermaid has no activity diagram type, so a flowchart stands in: diamonds `{"..."}` for decisions, labelled edges for guards, and plain nodes named "fork" and "join" for the bars. PlantUML's activity syntax has `fork`, `fork again` and `end fork` keywords, swimlanes with `|Lane|`, and `kill` and `detach` for the two finals.
+Mermaid still has no activity diagram type, so a flowchart stands in (a separate swimlane diagram type, added in v11.16.0 and marked as new, draws lanes by owner, [Mermaid swimlanes](https://mermaid.js.org/syntax/swimlanes.html)): diamonds `{"..."}` for decisions, labelled edges for guards, and plain nodes named "fork" and "join" for the bars. PlantUML's activity syntax has `fork`, `fork again` and `end fork` keywords, swimlanes with `|Lane|`, and `kill` and `detach` for the two finals.
 
 ### Reviewing agent-written workflows
 Agents generating workflow definitions or `Promise.all` code make the token bugs above: a decision in a parallel branch that skips the join, a merge where a join was needed, an early `return` that leaves other branches running. Ask where every token goes on every path, or run the model through an executor like the practice task's.
@@ -51,16 +51,16 @@ Fork and join are the *fan-out* shape: scatter, then gather under a policy (all,
 A well-formed activity promises: an action runs once per token it receives; a decision emits exactly one token, so its guards must cover every case (an `[else]` edge guarantees it); a join emits only after receiving a token on every incoming edge; an activity final terminates all flows immediately, and a flow final consumes one token and nothing else. The activity is complete when a token reaches an activity final, or when no tokens remain. If tokens remain and nothing can fire, the activity is deadlocked.
 
 ### Layer 2: The mechanism
-Workflow engines implement this contract directly. BPMN 2.0, the process notation from the same standards body as UML, has an exclusive gateway (decision), a parallel gateway (fork when it has several outputs, join when it has several inputs) and an inclusive gateway (fire some outputs, then wait only for those). Camunda's Zeebe engine records, per process instance, which incoming sequence flows of a joining parallel gateway have been taken, and activates the gateway when all of them have.
+Workflow engines implement this contract directly. BPMN 2.0, the process notation from the same standards body as UML, has an exclusive gateway (decision), a parallel gateway (fork when it has several outputs, join when it has several inputs) and an inclusive gateway (fire some outputs, then wait only for those). Camunda's Zeebe engine records, per process instance, which incoming sequence flows of a joining parallel gateway have been taken, and activates the gateway when all of them have. The paths run concurrently, not as parallel threads, because all records of one process instance go to a single partition and one stream processor ([Camunda docs](https://docs.camunda.io/docs/components/modeler/bpmn/parallel-gateways/)).
 
-AWS Step Functions models fork and join as a `Parallel` state with a `Branches` array. It starts every branch, waits for all of them, and passes on an array of their outputs; if any branch fails, the whole state fails and the other branches are stopped, unless a `Catch` handles it. Airflow expresses joins as trigger rules on a task: `all_success` (the default), `all_done`, `one_success`, `none_failed`. Temporal leaves it to code: start activities as futures, then wait on all of them.
+AWS Step Functions models fork and join as a `Parallel` state with a `Branches` array. It starts every branch, waits for all of them, and passes on an array of their outputs; if any branch fails, the whole state fails and the other branches are stopped, unless a `Catch` handles it. Stopped does not mean undone: Lambda functions already invoked keep running, and activity workers holding a task token are not stopped, so branches need idempotent actions or compensation ([Step Functions docs](https://docs.aws.amazon.com/step-functions/latest/dg/state-parallel.html)). Airflow expresses joins as trigger rules on a task: `all_success` (the default), `all_done`, `one_success`, `none_failed`. Temporal leaves it to code: start activities as futures, then wait on all of them.
 
 In code, a Go fork is `go f()` and a join is `sync.WaitGroup.Wait` or `errgroup.Group.Wait`, which also cancels a shared context on the first error. `Promise.all` is a fail-fast join and `Promise.allSettled` waits for all. Java's `ForkJoinPool` adds work-stealing deques per worker thread.
 
 ### Layer 3: The machine
 In-process forks are cheap. A goroutine starts with a 2 KB stack and is created in well under a microsecond; an OS thread reserves megabytes of virtual stack and takes tens of microseconds to create, which is why thread pools exist. A join on a WaitGroup is an atomic counter decrement per branch plus, for the waiter, a futex sleep and wakeup costing a few microseconds.
 
-Durable engines persist every token move so the process survives crashes. Step Functions Standard workflows bill each state transition (on the order of $25 per million), Zeebe appends each move to a replicated log, and Temporal caps a workflow's event history, so long loops use continue-as-new. At 50 transitions per instance and 2 million instances a month, that is 100 million transitions, a real line item.
+Durable engines persist every token move so the process survives crashes. Step Functions Standard workflows bill each state transition, retries included ([pricing](https://aws.amazon.com/step-functions/pricing/)), Zeebe appends each move to a replicated log, and Temporal caps a workflow's event history at 51,200 events or 50 MB, with a warning at 10,240 events or 10 MB ([Temporal limits](https://docs.temporal.io/cloud/limits)), so long loops use continue-as-new. At 50 transitions per instance and 2 million instances a month, that is 100 million transitions, a real line item.
 
 ### Why it's built this way
 1. Business processes branch, run in parallel and span teams, so the notation needs decisions, forks and lanes, not just sequence.
@@ -90,6 +90,11 @@ A retailer runs order fulfilment on a workflow engine at 40,000 orders a day. Th
 About 3 percent of cards are declined, 1,200 orders a day. In each, the payment branch's token is consumed by the flow final and the picking branch's token waits at the join forever. The engine shows 1,200 new instances a day stuck "active". Each holds a picked tote on a shelf, and after a week 8,400 totes block the packing area. Nobody gets an error, because a waiting join is a legal state.
 
 An activity final would stop the picking branch but could leave it half done. The team instead routed Cancel order into an interrupting event that also runs Return items to stock, and added a review rule: every fork branch must reach the join, an activity final, or a compensating interrupt. A token-flow executor in CI now runs each process definition under every guard combination, which takes milliseconds.
+
+## In the wild
+- **Knight Capital, 2012: one missed step in a release.** On 1 August 2012 Knight lost more than $460 million. In late July it had incorrectly deployed new code to an automated equity router, which triggered a defective function left over from a 2005 change. Knight later agreed to a $12 million penalty and an independent review of its controls ([SEC press release](https://www.sec.gov/newsroom/press-releases/2013-222)). A release is an activity: a fork over servers needs a join that proves every branch finished, which is the join discipline in this lesson.
+- **Temporal, documented limit: histories are bounded.** A workflow execution's event history is capped at 51,200 events or 50 MB, with warnings at 10,240 events or 10 MB, so a process that loops forever must restart itself with continue-as-new ([Temporal limits](https://docs.temporal.io/cloud/limits), [continue-as-new](https://docs.temporal.io/workflow-execution/continue-as-new)). The activity diagram needs an explicit loop boundary for the same reason.
+- **AWS Step Functions, documented behaviour: a stopped branch is not an undone branch.** When one `Parallel` branch fails the other branches are stopped, but Lambda functions already invoked continue to run ([docs](https://docs.aws.amazon.com/step-functions/latest/dg/state-parallel.html)). Compensation has to be drawn as its own action.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -668,6 +673,25 @@ func Run(nodes map[string]string, edges []Edge, vars map[string]bool, limit int)
 - `[else]` on every decision, every branch reaching the join or an interrupt, and an alert on instances stuck longer than the expected human turnaround.
 - A durable engine (BPMN or Step Functions) because the process spans days, needs an audit trail, and must survive deploys; cost estimated per transition.
 - Idempotent actions, since engines retry steps after crashes.
+
+## Sources and further study
+**Primary**
+- [UML 2.5.1 specification, PDF (OMG)](https://www.omg.org/spec/UML/2.5.1/PDF): clause 15 defines token semantics, fork, join, merge and the two kinds of final node.
+- [SEC press release on Knight Capital](https://www.sec.gov/newsroom/press-releases/2013-222): the regulator's summary of the 2012 router failure.
+
+**Systems docs**
+- [Camunda: parallel gateways](https://docs.camunda.io/docs/components/modeler/bpmn/parallel-gateways/): fork and join in a BPMN engine, concurrent but not threaded.
+- [AWS Step Functions: Parallel state](https://docs.aws.amazon.com/step-functions/latest/dg/state-parallel.html): failure semantics for branches.
+- [Temporal: limits](https://docs.temporal.io/cloud/limits): event history caps that shape long workflows.
+- [Temporal: continue-as-new](https://docs.temporal.io/workflow-execution/continue-as-new): restarting a long workflow with a fresh history.
+- [Mermaid swimlanes](https://mermaid.js.org/syntax/swimlanes.html): the diagram type for ownership lanes.
+
+**Books**
+- *Release It!*, Michael Nygard (2nd edition): the stability patterns for timeouts, bulkheads and circuit breakers that every fork branch needs.
+- *Designing Data-Intensive Applications*, Martin Kleppmann: the material on fault tolerance and distributed transactions behind join policies.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): treats asynchronism and queues as boxes and arrows, with no token semantics.
 
 ## Watch
 - [UML 2.0 Activity Diagrams (Derek Banas)](https://www.youtube.com/watch?v=XFTAIj2N2Lc): the notation, including forks, joins, swimlanes and signals, with worked examples.

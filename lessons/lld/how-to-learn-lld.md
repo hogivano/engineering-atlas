@@ -43,7 +43,7 @@ Reading gives recognition, which feels like understanding and is not. For each t
 5. **Port it to a second language.** It shows which parts were the idea and which were the language: Go has no inheritance, TypeScript checks shapes rather than names.
 
 ### Spacing and retrieval
-Two findings from learning research matter here. Retrieving something from memory strengthens it more than re-reading it (the testing effect), and retrieval spread over growing gaps beats the same amount crammed together (the spacing effect). A practical schedule: after first learning a topic, review it 1, 3, 7, 14 and 30 days later. A review is not rereading; it is redoing a five-minute version of step 2 from a blank file, or answering the lesson's Check yourself questions without looking. If you fail a review, restart that topic's schedule from today. The practice task in this lesson builds exactly this scheduler.
+Two findings from learning research matter here. Retrieving something from memory strengthens it more than re-reading it (the testing effect), and study spread over time beats the same amount crammed together (the spacing effect). A large review of ten study techniques rated practice testing and distributed practice highest and rereading low ([Association for Psychological Science summary of Dunlosky et al., 2013](https://www.psychologicalscience.org/news/releases/which-study-strategies-make-the-grade.html)). A meta-analysis of 317 experiments found that the best gap between study sessions grows with the delay until the test ([Cepeda et al., 2006](https://www.yorku.ca/ncepeda/publications/CPVWR2006.html)). So the schedule is a heuristic, not a law: with an interview in eight weeks, widen the gaps toward that date. A practical schedule: after first learning a topic, review it 1, 3, 7, 14 and 30 days later. A review is not rereading; it is redoing a five-minute version of step 2 from a blank file, or answering the lesson's Check yourself questions without looking. If you fail a review, restart that topic's schedule from today. The practice task in this lesson builds exactly this scheduler.
 
 ### Learning with an AI assistant
 Use an assistant as a sparring partner, not an author. Ask it to play an interviewer who keeps changing requirements, to critique your diagram against a named principle, or to generate a design in which you find three problems before reading its own critique. Asking for "the design of a parking lot" and reading the answer only trains recognition. Agents tend to over-produce structure (an interface and a factory for everything), so reviewing generated designs is excellent practice for YAGNI and KISS.
@@ -57,10 +57,10 @@ Ordering topics by prerequisites is the **ordering** problem shape: a directed a
 "Knowing LLD" should be testable. A reasonable contract: given a two-paragraph requirement, within 45 minutes you produce a class diagram, the key call sequence, and working code for the core operations with tests for the invariants; when given a change request, you can predict which classes change before touching them, and be right. Each lesson's Practice and Mock interview are small instances of it.
 
 ### Layer 2: The mechanism
-Experts do not store patterns as definitions; they store **chunks**: "a thing with modes that change behaviour" maps to State, "many listeners, one source" maps to Observer. Chunks form from many worked instances, not from one long chapter. Interleaving helps chunks form: mixing Strategy, State and Command problems in one session forces you to decide which applies, which blocked practice never asks. Each spaced review is a retrieval that strengthens a chunk; a failed review means the chunk never formed and needs a fresh worked example.
+Experts do not store patterns as definitions; they store **chunks**: "a thing with modes that change behaviour" maps to State, "many listeners, one source" maps to Observer. Chunks form from many worked instances, not from one long chapter. Interleaving plausibly helps chunks form: mixing Strategy, State and Command problems in one session forces you to decide which applies, which blocked practice never asks. Treat this as a reasoned bet, not a result of the same strength as the two techniques above. Each spaced review is a retrieval that strengthens a chunk; a failed review means the chunk never formed and needs a fresh worked example.
 
 ### Layer 3: The machine
-Every design becomes memory and instructions, and "elegant" designs sometimes cost real performance. In CPython, an ordinary object carries a 16-byte header plus an attribute dict (classes with `__slots__` drop the dict), so a million small objects can cost on the order of 100 MB. A Go struct has no header at all; wrapping it in an interface makes a two-word value (an itab pointer and a data pointer), and storing a non-pointer value in an interface usually forces a heap allocation. V8 gives objects that are constructed the same way a shared hidden class, so field access becomes a fixed offset; adding fields in different orders creates different hidden classes and slows property access. An interface call costs a few nanoseconds and usually blocks inlining, which matters only in hot loops; deep object graphs mean pointer chasing at about 100 ns per cache miss. The pattern lessons each end with these costs.
+Every design becomes memory and instructions, and "elegant" designs sometimes cost real performance. In CPython 3.12 I measured about 88 MB for a million instances with two integer attributes, and about 56 MB when the class uses `__slots__`. A Go struct has no header at all; wrapping it in an interface makes a two-word value (an itab pointer and a data pointer, per [Russ Cox](https://research.swtch.com/interfaces)), and storing a non-pointer value in an interface usually forces a heap allocation. V8 gives objects that are constructed the same way a shared hidden class, so field access becomes a fixed offset; adding properties in a different order branches to a different hidden class ([V8 docs](https://v8.dev/docs/hidden-classes)), so objects of the "same" shape stop sharing one. An interface call costs a few nanoseconds and usually blocks inlining, which matters only in hot loops; deep object graphs mean pointer chasing at about 100 ns per cache miss ([latency table](https://colin-scott.github.io/personal_website/research/interactive_latency.html)). The pattern lessons each end with these costs.
 
 ### Why it's built this way
 1. Design skill is judgement under change, so the path ends in design problems with change requests, not in a catalogue.
@@ -99,6 +99,10 @@ Priya has five hours a week and an interview loop in eight weeks: 40 hours. The 
 
 That is 31 hours. The 31 topics with three five-minute reviews each (1, 3 and 7 days) add 7.75 hours, for a total just under 40. The practice scheduler below produces her daily agenda: a typical day in week 3 shows two new topics and four reviews.
 
+## In the wild
+- **Duolingo, 2016: half-life regression for review timing.** Duolingo's first version used the Leitner box system. Its researchers replaced it with a model that estimates a half-life of memory for each learner and word, using practice history and word features, and published it with data. Prediction error was nearly half the Leitner baseline's, and A/B tests lifted daily activity by about 12% ([Duolingo blog](https://blog.duolingo.com/how-we-learn-how-you-learn); [Settles and Meeder, ACL 2016](https://aclanthology.org/P16-1174/)). It is a production scheduler in the spirit of this lesson's practice task.
+- **Anki, documented defaults: a failed review resets the card.** In Anki's classic scheduler a card starts with ease 2.50, so a 10-day interval becomes about 25 after a "Good" answer, and a forgotten review card goes back to a minimum 1-day interval by default (new interval 0%). The newer FSRS option instead targets a desired retention, 90% by default ([Anki manual](https://docs.ankiweb.net/deck-options.html)). The "restart the schedule on a lapse" rule in this lesson matches the default.
+
 ## Trade-offs
 
 | Approach | Strengths | Weaknesses | Choose when |
@@ -127,7 +131,7 @@ That is 31 hours. The 31 topics with three five-minute reviews each (1, 3 and 7 
 2. You reread the Observer lesson three times and still cannot write it from scratch. What should you change?
    **Answer:** Switch to retrieval: write the smallest Observer from a blank file, check it against the lesson, and retry a few days later; repeated failure calls for a new worked example, not another reading.
 3. Why does interleaving Strategy, State and Command problems help more than ten Strategy problems in a row?
-   **Answer:** Mixed practice forces you to decide which pattern applies, which is the skill you need in real design and interviews; blocked practice skips that decision.
+   **Answer:** Mixed practice forces you to decide which pattern applies, which is the skill you need in real design and interviews; blocked practice skips that decision. (This is a reasoned argument; the evidence for interleaving is thinner than for testing and spacing.)
 
 ## Practice
 **Task:** Build the scheduler that plans your LLD study. `StudyPlan(topics, prereqs, per_day, intervals, start)` takes topic names, `(topic, required)` pairs meaning `topic` needs `required` first, the maximum new topics per day, review intervals in days (strictly increasing positive integers), and the start day (an integer, the injected clock). Starting at `start`, each day learns up to `per_day` topics whose prerequisites were all learned on an earlier day, choosing alphabetically. Reject unknown topics, duplicate topics, cycles, `per_day < 1` and bad intervals. `learn_day(topic)` returns the day a topic is learned. A topic is due for review on `anchor + i` for each interval `i`, where the anchor starts as its learn day; `lapse(topic, day)` records a failed review and resets the anchor to `day` (rejecting unknown topics and days before the learn day). `agenda(day)` returns the topics learned that day and the topics due for review, both sorted.
@@ -675,6 +679,25 @@ func (p *StudyPlan) Lapse(topic string, day int) error {
 - Spaced, interleaved retrieval, with failed reviews answered by new worked examples.
 - A clear policy for assistants: produce first, then compare and critique.
 - A measure of progress: timed mock designs scored with a rubric each week.
+
+## Sources and further study
+**Primary**
+- [Cepeda et al., 2006: distributed practice in verbal recall tasks](https://www.yorku.ca/ncepeda/publications/CPVWR2006.html): 317 experiments; the best gap grows with the retention interval.
+- [Settles and Meeder, 2016: a trainable spaced repetition model](https://aclanthology.org/P16-1174/): half-life regression, the model behind Duolingo's review timing.
+
+**Systems docs**
+- [Anki manual: deck options](https://docs.ankiweb.net/deck-options.html): how a widely used scheduler sets intervals, ease and lapses.
+- [V8: hidden classes](https://v8.dev/docs/hidden-classes): how object shape and property order affect runtime layout.
+- [Duolingo blog: how we learn how you learn](https://blog.duolingo.com/how-we-learn-how-you-learn): the engineering side of replacing Leitner boxes.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 1, including the two principles ("program to an interface", "favor composition over inheritance") that the patterns build on.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 1, an intro that teaches by changing requirements, the same loop this lesson recommends.
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 2, Principles in Refactoring, on changing design safely in small steps.
+
+**Other curricula**
+- [roadmap.sh: software design and architecture](https://roadmap.sh/software-design-architecture): a visual checklist of topics; it orders what to learn but has no practice or review loop.
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): a study guide with Anki flash cards for system design, which supports spaced review but not LLD problems.
 
 ## Watch
 - [Simple Made Easy (Rich Hickey, Strange Loop 2011)](https://www.youtube.com/watch?v=SxdOUGdseq4): a vocabulary for judging designs that outlasts any pattern catalogue.

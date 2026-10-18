@@ -136,12 +136,17 @@ sequenceDiagram
 
 ## Concurrency and edge cases
 
-- **Bank reply lost after the hold.** The ATM sent the hold, the network dropped the reply, and it times out. It does not know whether funds are reserved. Send a release for that transaction id anyway; the bank must treat a release for an unknown or already-released id as a no-op. This is why every message carries the ATM's transaction id: it is the idempotency key.
-- **Dispense fault after the hold.** Some notes may have been picked before the jam. They go to the reject bin, not to the customer, so the customer is not charged and the cassette counts drop. Reconciliation at the next cash replenishment counts the reject bin to prove it.
+- **Bank reply lost after the hold.** The ATM sent the hold, the network dropped the reply, and it times out. It does not know whether funds are reserved. Send a release for that transaction id anyway; the bank must treat a release for an unknown or already-released id as a no-op. This is why every message carries the ATM's transaction id: it is the idempotency key, the same device payment APIs use so that a retry returns the first result instead of repeating the action ([Stripe engineering](https://stripe.com/blog/idempotency)).
+- **Dispense fault after the hold.** Some notes may have been picked before the jam. They go to the reject bin, not to the customer, so the customer is not charged and the cassette counts drop. Reconciliation at the next cash replenishment counts the reject bin to prove it. The law also expects this path to work: in the US, receiving an incorrect amount from an electronic terminal is an "error" the bank must investigate within 10 business days, or within 45 days if it credits the customer provisionally in the meantime ([Regulation E, 12 CFR 1005.11](https://www.ecfr.gov/current/title-12/chapter-X/part-1005/subpart-A/section-1005.11)). The journal and reject-bin counts are the bank's evidence.
 - **Customer does not take the cash.** Many ATMs retract presented notes after a timeout and reverse the withdrawal: one more state between dispense and commit.
-- **Power cut mid-transaction.** On restart, read the journal. Any transaction with a hold but no final outcome gets a release (or a commit if the dispenser's sensors confirm notes were presented). The journal must be written before the hold is sent, not after.
+- **Power cut mid-transaction.** On restart, read the journal. Any transaction with a hold but no final outcome gets a release (or a commit if the dispenser's sensors confirm notes were presented). The journal must be written before the hold is sent, not after. It also settles disputes: Ross Anderson's study of retail banking found customers who denied withdrawals being told they were mistaken or lying, and that US rules instead made banks refund disputed transactions unless they could prove customer fraud ([Anderson, Why Cryptosystems Fail](https://www.cl.cam.ac.uk/~rja14/wcf.html)). A bank that cannot show a complete record loses that argument.
 - **Daily limit at midnight.** Compute the day from the injected clock, in the bank's time zone. A limit tracked in the ATM is only a first line of defence; the bank enforces the real one across all machines.
 - **Wrong PIN count.** The count here is per session; the bank also keeps a per-card count across machines.
+
+## In the wild
+- **Stripe, 2017: retries that cannot double-charge.** Stripe's engineers describe the same hold-then-act uncertainty for card charges: when a network failure leaves it unclear whether a request arrived, the client retries with a unique idempotency key and the server replays the stored result. The ATM's transaction id plays that role for holds, commits and releases ([source](https://stripe.com/blog/idempotency)).
+- **Retail banking, early 1990s: the disputed withdrawal.** Anderson's paper describes UK customers disputing ATM debits, a large High Court class action that began in 1992, and the contrast with US regulation that put the burden of proof on the bank. Lesson for the design: the journal, trace numbers and reject-bin counts are not housekeeping, they are the evidence ([source](https://www.cl.cam.ac.uk/~rja14/wcf.html)).
+- **Twilio, 2013: a billing store that was read-only.** When a Redis master became read-only with balances at zero, auto-recharges could not update the balance and charges were attempted repeatedly; 1.4% of customers were affected and charges were refunded. Twilio added fail-safes that block charges when balances are missing or unwritable, the same rule as "no hold if the journal cannot be written" ([source](https://www.twilio.com/en-us/blog/company/communications/billing-incident-post-mortem-breakdown-analysis-and-root-cause-html)).
 
 ## Down the stack
 
@@ -149,7 +154,7 @@ sequenceDiagram
 `withdraw(amount)` either returns a note plan whose total equals `amount`, with the customer debited exactly `amount` once, or fails with a reason and leaves the customer's balance and the daily total unchanged. Cassette counts drop only when notes physically leave a cassette (dispensed or rejected). For every transaction id the bank receives at most one final message, commit or release, and repeated releases are harmless. Card retention happens on the third wrong PIN in a session and ends the session.
 
 ### Layer 2: The mechanism
-On the network, a withdrawal is an ISO 8583 financial request (message type 0200) carrying the card number, amount, a terminal id, a system trace audit number and an encrypted PIN block; the host answers with 0210 and a response code, where `00` means approved and `51` means insufficient funds. If the ATM cannot complete, it sends a reversal (0420 reversal advice) with the original trace number, and keeps resending it from a store-and-forward queue until acknowledged. The PIN never leaves the encrypting PIN pad in clear: the pad builds an ISO 9564 PIN block, encrypts it with a key loaded under dual control, and the bank's hardware security module translates and verifies it. In the cabinet, the dispenser picks notes one at a time from each cassette, measures thickness to detect two notes stuck together, and diverts anything suspicious to the reject bin before stacking the rest for presentation.
+On the network, a withdrawal is an ISO 8583 financial request (message type 0200) carrying the card number, amount, a terminal id, a system trace audit number and an encrypted PIN block; the host answers with 0210 and a response code, where `00` means approved and `51` means insufficient funds ([ISO 8583 overview](https://en.wikipedia.org/wiki/ISO_8583)). If the ATM cannot complete, it sends a reversal with the original trace number: 0400 is the end-to-end reversal request, and 0420 is the point-to-point advice, whose delivery is guaranteed link by link rather than immediately, with repeat variants for when the advice itself times out ([ISO 8583 overview](https://en.wikipedia.org/wiki/ISO_8583)). Keep the reversal in a durable queue and resend it until it is acknowledged. The PIN never leaves the encrypting PIN pad in clear: the pad builds an ISO 9564 PIN block, encrypts it with a key loaded under dual control, and the bank's hardware security module translates and verifies it. In the cabinet, the dispenser picks notes one at a time from each cassette, measures thickness to detect two notes stuck together, and diverts anything suspicious to the reject bin before stacking the rest for presentation.
 
 ### Layer 3: The machine
 The bank round trip is the slow part: the ATM's network link, the acquirer switch, the card scheme and the issuer host add up to roughly 200 ms to 2 s, and hosts commonly time out a request after around 30 seconds. The dispenser picks several notes per second, so a 10-note withdrawal takes a few seconds of mechanical time. The fewest-notes search over three or four denominations takes microseconds. Durability matters more than speed: the electronic journal is written to local flash or disk and flushed before the hold is sent, because after a power cut it is the only record of what was in flight. An `fsync` on flash costs on the order of milliseconds, which disappears against a network round trip.
@@ -1233,6 +1238,25 @@ func (a *ATM) Service() error {
 - A durable journal written before the hold, used for recovery and reconciliation, and a reject bin that explains missing notes.
 - Hardware and bank behind interfaces, with fakes that can jam and time out, so failure paths are tested.
 - Awareness of the real stack: ISO 8583 requests and reversals, PIN blocks in an encrypting PIN pad, and device control through XFS.
+
+## Sources and further study
+**Primary**
+- [ISO 8583 overview](https://en.wikipedia.org/wiki/ISO_8583): message type indicators 0200, 0210, 0400 and 0420, response codes, and the difference between end-to-end requests and point-to-point advices.
+- [Regulation E, 12 CFR 1005.11](https://www.ecfr.gov/current/title-12/chapter-X/part-1005/subpart-A/section-1005.11): the US error-resolution clock (10 business days, or 45 with provisional credit) that applies when a terminal pays the wrong amount.
+- [Anderson, Why Cryptosystems Fail](https://www.cl.cam.ac.uk/~rja14/wcf.html): how real ATM disputes turn on records and who carries the burden of proof.
+
+**Systems docs**
+- [Stripe: designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency): idempotency keys and retry with backoff, the model for ATM transaction ids.
+- [Twilio billing incident post-mortem](https://www.twilio.com/en-us/blog/company/communications/billing-incident-post-mortem-breakdown-analysis-and-root-cause-html): repeated charges when a balance store failed, and the fail-safes added.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral, including State, Command and Template Method) and chapter 4 (Structural, including Facade and Adapter).
+- *Head First Design Patterns*, Freeman and Robson (2nd ed.): chapter 10 (The State Pattern) and chapter 6 (The Command Pattern).
+- *Release It!*, Michael Nygard (2nd ed.): chapter 5 (Stability Patterns, including Timeouts), the thinking behind treating a lost reply as unknown.
+
+**Other curricula**
+- [Refactoring.Guru: Template Method](https://refactoring.guru/design-patterns/template-method): frames it as a fixed algorithm skeleton with overridable steps, matching validate, authorise, act, complete or reverse.
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): frames requests as objects that can be queued, logged and undone, the basis of the journal.
 
 ## Watch
 - [State Pattern, Design Patterns ep 17 (Christopher Okhravi)](https://www.youtube.com/watch?v=N12L5D78MAA): the pattern behind the session states, with a careful explanation of when it pays off.

@@ -8,7 +8,7 @@ minutes: 15
 - The standard design pairs a hash map (key to node, for O(1) lookup) with a doubly linked list (nodes in recency order, for O(1) move and remove). Each structure alone is too slow at one of the two jobs.
 - Sentinel head and tail nodes remove every "is this the first or last node" branch, which is where most hand-written versions break.
 - TTL is a second, independent reason to drop an entry. Inject the clock so expiry is testable, and check expiry lazily on read.
-- A read on an LRU is also a write (it moves a node), so concurrent LRUs need a lock on every `get`. That one fact explains why Redis samples, why Caffeine buffers reads and why big caches shard.
+- A read on an LRU is also a write (it moves a node), so concurrent LRUs need a lock on every `get`. That one fact explains why Redis samples, why Caffeine buffers reads and why big caches shard ([Caffeine design](https://github.com/ben-manes/caffeine/wiki/Design)).
 
 ## Requirements
 
@@ -106,11 +106,17 @@ sequenceDiagram
 ## Concurrency and edge cases
 - **Reads mutate.** `get` relinks a node. Two goroutines calling `get` without a lock can corrupt the list (a node whose `prev.next` no longer points to it). A read-write lock does not help, because a hit needs the write side. Use a plain `sync.Mutex`, as the Go solution does.
 - **Lock scope.** Hold the lock for the map and list work only. Never call user code (a loader, an eviction callback) while holding it, or a slow callback stalls every reader.
+- **Thread-safe is not once-only.** Python's `functools.lru_cache` keeps its structure coherent under threads, yet the docs warn the wrapped function can still run more than once if two threads miss on the same key before either result is stored ([Python docs](https://docs.python.org/3/library/functools.html)). Avoiding that duplicate work is the single-flight extension below.
 - **Capacity of zero or less.** Reject it at construction. A cache of capacity zero would evict the item it just inserted, which is almost always a configuration bug.
 - **Updating a key.** Must not count as a new entry, and must reset the TTL. Forgetting either is the most common test failure.
 - **Expiry boundary.** Decide whether an entry is dead at exactly `expiresAt`. This design treats `now >= expiresAt` as expired, so a TTL of 100 ms gives exactly 100 ms of life.
-- **Expired but not evicted.** Lazy expiry means dead entries can occupy slots until touched or until they reach the tail. That is a deliberate trade: O(1) operations instead of a background sweep. Redis and Memcached combine lazy checks with a periodic sampler for the same reason.
+- **Expired but not evicted.** Lazy expiry means dead entries can occupy slots until touched or until they reach the tail. That is a deliberate trade: O(1) operations instead of a background sweep. Redis and Memcached combine lazy checks with a background crawler or sampler for the same reason ([Memcached LRU notes](https://github.com/memcached/memcached/blob/master/doc/new_lru.txt)).
 - **Clock going backwards.** Use a monotonic clock in production. A wall clock adjusted by NTP can make entries live longer or die early.
+
+## In the wild
+- **Slack, 2022: an empty cache turned into a database outage.** A Consul agent upgrade reached 25% of hosts at peak traffic. Restarts deregistered cache nodes, and the cache control plane replaced them with empty ones. Client boot then ran a scatter query across every shard to find group-DM members, a query the cache normally absorbed. Most queries timed out, so the cache could not refill, and client retries kept misses high. Slack throttled client boot, then changed the query to read from a table sharded by channel so it no longer fans out ([Slack Engineering](https://slack.engineering/slacks-incident-on-2-22-22/)).
+- **Redis, since 3.0: approximate LRU as a documented design choice.** Redis states that true LRU costs more memory, so it samples a few keys and tracks a candidate pool instead. Version 4.0 added approximated LFU for workloads where frequency predicts reuse better than recency ([Redis docs](https://redis.io/docs/latest/develop/reference/eviction/)).
+- **Caffeine, W-TinyLFU: a production cache that avoids the LRU lock.** Reads go to lossy ring buffers and policy work is batched under one lock holder, with a frequency-based admission filter in front of the main space ([Caffeine design](https://github.com/ben-manes/caffeine/wiki/Design)).
 
 ## Down the stack
 
@@ -123,7 +129,7 @@ sequenceDiagram
 ### Layer 2: The mechanism
 `unlink(n)` sets `n.prev.next = n.next` and `n.next.prev = n.prev`. `pushFront(n)` sets `n.next = head.next`, `n.prev = head`, `head.next.prev = n`, `head.next = n`. A hit is one hash lookup plus these eight pointer writes.
 
-Real implementations follow the same shape or deliberately depart from it. CPython's C `functools.lru_cache` keeps a dict plus a circular doubly linked list with one root link acting as both sentinels. Go's `groupcache/lru` composes a map with `container/list`. Redis does not keep a list at all: each object header has a 24-bit LRU clock field, and on eviction Redis samples `maxmemory-samples` keys (default 5) into a 16-entry candidate pool and evicts the oldest. Memcached splits its LRU into hot, warm and cold segments and bumps an item at most once per interval. The Linux kernel keeps active and inactive page lists, and newer kernels use multi-generational LRU.
+Real implementations follow the same shape or deliberately depart from it. CPython's reference `functools.lru_cache` keeps a dict plus a circular doubly linked list with one root link acting as both sentinels, and guards the list with an `RLock` because list updates are not thread-safe ([functools.py](https://github.com/python/cpython/blob/main/Lib/functools.py)). Its default `maxsize` is 128, and `maxsize=None` turns eviction off so the cache grows without bound ([Python docs](https://docs.python.org/3/library/functools.html)). Go's `groupcache/lru` composes a map with `container/list`. Redis does not keep a list at all: each object header has a 24-bit LRU clock field ([object.h](https://github.com/redis/redis/blob/unstable/src/object.h)), and on eviction Redis samples `maxmemory-samples` keys (default 5), merges them into a 16-entry candidate pool ([evict.c](https://github.com/redis/redis/blob/unstable/src/evict.c)) and evicts the oldest. Raising the sample size to 10 gets very close to true LRU at some CPU cost, and Redis says a power-law workload sees little difference ([Redis docs](https://redis.io/docs/latest/develop/reference/eviction/)). Memcached, when `lru_maintainer` is enabled, splits each slab class into hot, warm and cold LRUs, so an item hit twice counts as active and moves only when it reaches the bottom of a segment ([Memcached LRU notes](https://github.com/memcached/memcached/blob/master/doc/new_lru.txt)). The Linux kernel keeps active and inactive page lists, and newer kernels offer multi-generational LRU ([kernel docs](https://www.kernel.org/doc/html/latest/admin-guide/mm/multigen_lru.html)).
 
 ### Layer 3: The machine
 A node with a string key, a value, an expiry and two pointers is about 56 to 64 bytes in Go, plus the map's bucket entry, so a million entries costs roughly 100 MB before counting the values. Nodes are scattered across the heap, so walking or relinking them is pointer chasing: each node not in CPU cache costs a main-memory access of about 100 ns. Worse, every hit writes to the neighbours' cache lines. On a multi-core server, when two cores touch the same nodes or the same mutex, the 64-byte lines bounce between cores at tens of nanoseconds per transfer. A mutex acquire that is uncontended costs about 20 ns; under heavy contention, threads park in the kernel (`futex` on Linux) and the cost jumps to microseconds. For a garbage-collected runtime, a million pointer-rich nodes also add to every GC mark phase.
@@ -132,14 +138,14 @@ A node with a string key, a value, an expiry and two pointers is about 56 to 64 
 1. Lookups must be O(1), so the index is a hash map.
 2. Eviction needs the least recently used item in O(1), and hits must reorder in O(1), so recency is a doubly linked list keyed by node pointers.
 3. Moving nodes on every read turns reads into writes, so a concurrent cache needs a lock on reads.
-4. Locks and cache-line bouncing limit throughput on many cores, so large caches shard, sample (Redis), segment (Memcached) or buffer reads and replay them in batches (Caffeine).
+4. Locks and cache-line bouncing limit throughput on many cores, so large caches shard, sample (Redis), segment (Memcached) or buffer reads and replay them in batches. Caffeine records reads in lossy striped ring buffers and drains them under the lock in one batch, because a dropped read only costs a little hit rate ([Caffeine design](https://github.com/ben-manes/caffeine/wiki/Design)).
 5. Exact LRU is just an approximation of "keep what will be used next", so production caches accept approximate recency when it buys throughput.
 
 ## Extensibility
 - **Weighted capacity.** Replace the entry count with a byte budget. `put` evicts from the tail until the new entry fits, and refuses entries larger than the whole budget.
 - **Eviction listener.** Call a callback with the evicted key and value, after releasing the lock, so callers can close file handles or write back dirty data.
 - **Loader with single-flight.** `get_or_load(key, fn)` runs `fn` once per missing key even if 100 callers ask at the same moment. This prevents a stampede on the backing store after a mass expiry.
-- **Better policies.** LRU loses to a single large scan: one pass over cold keys flushes the hot set. Segmented LRU or W-TinyLFU (Caffeine) keeps a frequency sketch and admits new keys only if they are likely to be hit again.
+- **Better policies.** LRU loses to a single large scan: one pass over cold keys flushes the hot set. Segmented LRU or W-TinyLFU (Caffeine) keeps a 4-bit count-min frequency sketch and admits a new key only if its estimated frequency beats the entry it would displace ([Caffeine design](https://github.com/ben-manes/caffeine/wiki/Design)). Python's docs add the precondition: LRU works best when recent calls predict upcoming calls ([Python docs](https://docs.python.org/3/library/functools.html)).
 - **Sharding.** Hash keys into 16 or 64 independent caches, each with its own mutex. Recency becomes per-shard, which is a fine approximation in practice.
 
 ## Leadership lens
@@ -898,6 +904,24 @@ func (c *Cache[K, V]) Keys() []K {
 - Recognition that `get` mutates, so a read-write lock does not help, and remedies: sharding, sampled or approximate LRU, or buffered reads.
 - Single-flight loading or jittered TTLs to stop stampedes.
 - Scan resistance with segmented LRU or W-TinyLFU, and measuring hit ratio before and after.
+
+## Sources and further study
+**Primary**
+- [CPython functools.py](https://github.com/python/cpython/blob/main/Lib/functools.py): the reference `lru_cache` with its root sentinel, lock and dict.
+- [Memcached new_lru.txt](https://github.com/memcached/memcached/blob/master/doc/new_lru.txt): the design note for hot, warm and cold segments and the scan-protection goal.
+
+**Systems docs**
+- [Redis key eviction](https://redis.io/docs/latest/develop/reference/eviction/): policies, sampling and the approximation trade-off.
+- [Redis evict.c](https://github.com/redis/redis/blob/unstable/src/evict.c): the 16-entry eviction pool in source form.
+- [Python functools.lru_cache](https://docs.python.org/3/library/functools.html): `maxsize`, thread-safety wording and when LRU suits a function.
+- [Caffeine design wiki](https://github.com/ben-manes/caffeine/wiki/Design): read and write buffers, W-TinyLFU and hill-climbing window size.
+
+**Books**
+- *Head First Design Patterns*, Freeman and Robson: the Strategy and Decorator chapters behind the eviction-policy and memoising-wrapper extension points.
+- *Cracking the Coding Interview*, McDowell, 6th ed.: the interview framing of cache design among the object-oriented design problems.
+
+**Other curricula**
+- [donnemartin/system-design-primer: query cache](https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/query_cache/query_cache_snippets.py): a hash map plus linked list LRU in a larger design, with no TTL or concurrency.
 
 ## Watch
 - [LRU Cache, Leetcode 146 (NeetCode)](https://www.youtube.com/watch?v=7ABFKPK2hD4): a clear walk through the hash map plus doubly linked list solution with sentinel nodes.

@@ -65,10 +65,10 @@ In practice rounds, an assistant can generate a full parking-lot class hierarchy
 The interview's contract is the use-case list you wrote in step 1. Your design promises that each use case is reachable through a public method on an owning class, that each stated invariant holds after any sequence of public calls, and that each error case returns a specific error rather than corrupting state. Stated that way, the contract is testable: you can write a test per use case and a property test per invariant, which is exactly what strong candidates sketch at the end.
 
 ### Layer 2: The mechanism
-The method underneath is responsibility assignment. CRC cards (Class, Responsibilities, Collaborators), introduced by Beck and Cunningham in 1989, put each class on an index card with what it knows, what it does and who it talks to; if a card overflows, the class does too much. GRASP adds named rules: information expert (the class with the data does the work), creator (the class that contains or aggregates B creates B), controller (one class receives system events), low coupling and high cohesion. Tell, don't ask is the code-level form: call `ticket.close(now)` rather than reading `ticket.status` and writing it from outside. The use-case-to-owner table is a mapping from requirements to methods, and the three checks (no unowned use case, no orphan, no god class) are graph properties of that mapping plus the class relationships.
+The method underneath is responsibility assignment. CRC cards (Class, Responsibilities, Collaborators), introduced by Beck and Cunningham in 1989, put each class on an index card with its responsibilities on the left and its collaborators on the right. Their paper's advice: when a responsibility is not covered, add it to an existing object or create a new object for it, and when a card gets cluttered, copy it to a new card and look for a more concise wording ([OOPSLA '89 paper](https://c2.com/doc/oopsla89/paper.html)). [GRASP](https://en.wikipedia.org/wiki/GRASP_(object-oriented_design)) adds named rules: information expert (the class with the data does the work), creator (the class that contains or aggregates B creates B), controller (one class receives system events), low coupling and high cohesion. [Tell, don't ask](https://martinfowler.com/bliki/TellDontAsk.html) is the code-level form: call `ticket.close(now)` rather than reading `ticket.status` and writing it from outside. The use-case-to-owner table is a mapping from requirements to methods, and the three checks (no unowned use case, no orphan, no god class) are graph properties of that mapping plus the class relationships.
 
 ### Layer 3: The machine
-Interviewers probe the runtime when they ask about scale and concurrency, so know what your object graph costs. A parking lot with 10,000 spots modelled as objects is about 10,000 small heap objects; in Go or Java that is a few hundred kilobytes, trivial. A map from ticket id to ticket costs one hash and usually one cache miss (about 100 ns from main memory) per lookup. An uncontended mutex in Go or Java costs about 20 to 50 ns; under contention a waiting goroutine parks and wakes in microseconds, so a single lock around `park()` handles thousands of entries per second, far beyond any real building. A per-request lock across a network call (charging a card inside the lock) is the real hazard: it holds the lock for 200 ms and serialises every entrance. The machine-level answer is to keep lock scopes to in-memory state changes and do I/O outside them.
+Interviewers probe the runtime when they ask about scale and concurrency, so know what your object graph costs. A parking lot with 10,000 spots modelled as objects is about 10,000 small heap objects; in Go or Java that is a few hundred kilobytes, trivial. A map from ticket id to ticket costs one hash and usually one cache miss (about 100 ns from main memory) per lookup. An uncontended mutex in Go or Java costs about 20 to 50 ns (17 ns on [Colin Scott's latency table](https://colin-scott.github.io/personal_website/research/interactive_latency.html)); under contention a waiting goroutine parks and wakes in microseconds, so a single lock around `park()` handles thousands of entries per second, far beyond any real building. A per-request lock across a network call (charging a card inside the lock) is the real hazard: it holds the lock for 200 ms and serialises every entrance. The machine-level answer is to keep lock scopes to in-memory state changes and do I/O outside them.
 
 ### Why it's built this way
 1. Requirements arrive as sentences, and code needs owners for each behaviour, so the first job is mapping sentences to methods.
@@ -107,6 +107,11 @@ Minutes 18 to 38. Code `Library.borrow`, `Library.return_copy`, `Loan.fine` and 
 
 Minutes 38 to 45. Probes: two members borrow the last copy at once (a lock around the copy's status change in `borrow`, or a compare-and-set on the status); fine rules differ for students (a `FinePolicy` interface, introduced now because the requirement is real); a second branch (a `Branch` above `Library`, with copies owned by branches and transfers as a new use case).
 
+## In the wild
+- **Knight Capital, 2012-08: code with no owner.** The "Power Peg" trading logic had not been used since 2003 but was still deployed. New order-routing code reused its flag, and a technician deployed that code to 7 of 8 servers. On the eighth, the flag woke the defunct logic, which sent orders without tracking fills: over 4 million executions in 154 stocks in about 45 minutes and a loss of more than $460M. The SEC cited the missing second-person review of the deploy and the lack of written procedures ([SEC order](https://www.sec.gov/litigation/admin/2013/34-70694.pdf)). It is the orphan-class check at company scale: nobody owned the dead path, so nobody removed it.
+- **NASA, 1999-09: Mars Climate Orbiter.** Ground software wrote thruster impulse data in pound-force seconds where the interface specification required newton-seconds, so the effects were underestimated by a factor of 4.45 and the spacecraft was lost at Mars orbit insertion. The review board named the units error as the root cause ([NASA review board report](https://llis.nasa.gov/llis_lib/pdf/1009464main1_0641-mr.pdf)). An interface where nobody owned the unit made it a bare number, which is what a `Money` or `Distance` value object prevents.
+- **CRC cards, 1989: responsibility assignment as a documented practice.** Beck and Cunningham's OOPSLA paper, written while Cunningham was at Wyatt Software and Beck at Apple, describes teaching object thinking with index cards that list a class's responsibilities and collaborators ([paper](https://c2.com/doc/oopsla89/paper.html)). The use-case-to-owner table in this lesson is the same idea applied to use cases.
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -118,7 +123,7 @@ Minutes 38 to 45. Probes: two members borrow the last copy at once (a lock aroun
 
 ## Pitfalls in production
 - **Jumping to code before the use cases are agreed.** You build the wrong system well. Fix: spend the first five minutes on the list and get a nod.
-- **Manager and Helper classes.** `ParkingManager` owns everything and entities become data bags. Fix: move each rule to the class that has its data, and keep the controller thin.
+- **Manager and Helper classes.** `ParkingManager` owns everything and entities become data bags, which Fowler calls an [anemic domain model](https://martinfowler.com/bliki/AnemicDomainModel.html). Fix: move each rule to the class that has its data, and keep the controller thin.
 - **Mutable state with public setters.** `spot.setOccupied(true)` lets any caller break the free-count invariant. Fix: expose operations (`occupy(ticket)`), not fields.
 - **Pattern tourism.** Singleton, Factory and Observer added with no requirement behind them. Fix: name the variation each pattern absorbs, or delete it.
 - **Ignoring time and concurrency.** Calling the system clock inside methods and no story for two simultaneous requests. Fix: inject the clock; name the lock and what it protects.
@@ -596,6 +601,25 @@ func CheckModel(classes map[string][]string, useCases map[string]string, relatio
 - Invariants stated and enforced: no overlapping bookings per resource, quota never exceeded, cancellation only before the cutoff.
 - A `PlanPolicy` interface added when the enterprise plan appears, with approval as a new booking state rather than a flag checked everywhere.
 - A per-resource lock (or one lock for the whole service, justified by the low request rate) around the overlap check and insert, with no I/O inside it.
+
+## Sources and further study
+**Primary**
+- [Beck and Cunningham, A Laboratory for Teaching Object-Oriented Thinking (1989)](https://c2.com/doc/oopsla89/paper.html): the origin of CRC cards and their size and overflow rules.
+- [NASA Mars Climate Orbiter mishap investigation board report](https://llis.nasa.gov/llis_lib/pdf/1009464main1_0641-mr.pdf): a primary report on an interface whose owner and unit were not pinned down.
+- [SEC order against Knight Capital Americas](https://www.sec.gov/litigation/admin/2013/34-70694.pdf): the regulator's account of the dead-code deployment failure.
+
+**Systems docs**
+- [Latency numbers (Colin Scott)](https://colin-scott.github.io/personal_website/research/interactive_latency.html): mutex and network costs for the "no I/O inside the lock" advice.
+
+**Books**
+- *Cracking the Coding Interview*, Gayle Laakmann McDowell: chapter 7, Object-Oriented Design, a step list for the same interview, with less on ownership checks and concurrency.
+- *Domain-Driven Design*, Eric Evans (1st ed.): chapters 5 and 6, entities, value objects, aggregates and repositories.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 1, on starting from changing requirements before reaching for patterns.
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 3, Bad Smells in Code, including large classes that own too much.
+
+**Other curricula**
+- [donnemartin/system-design-primer: object-oriented design](https://github.com/donnemartin/system-design-primer): worked class sketches with little on ownership checks, invariants or locking.
+- [Refactoring.Guru: design patterns](https://refactoring.guru/design-patterns): a pattern catalogue that lists the problem, solution and pros and cons for each pattern, which helps with the "only where something varies" test.
 
 ## Watch
 - [Designing A Chess Game: Object Oriented Design (Mayur Vaid)](https://www.youtube.com/watch?v=9soBz9lhZek): a walk from approach to class design to code for a common OOD prompt, useful to compare against the steps above.

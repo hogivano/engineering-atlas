@@ -40,12 +40,12 @@ class InvoiceReminder:
 Tests pass an in-memory repository, a recording mailer and a fixed clock. Production code builds the real ones once, in `main`. This is the mechanism behind the [Dependency Inversion Principle](dip.md): the policy owns the interfaces, and the composition root decides which adapters plug in. It is also how you get a [Singleton](singleton.md) without a global, by creating one instance in `main` and passing it down.
 
 ### The three forms
-- **Constructor injection** makes dependencies mandatory and visible, and lets the object be immutable after construction. Use it by default.
+- **Constructor injection** makes dependencies mandatory and visible, and lets the object be immutable after construction. Use it by default; the Spring reference makes the same recommendation because it allows immutable components and guarantees required dependencies ([Spring docs](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html)).
 - **Setter or property injection** suits optional collaborators with a sensible default (a logger that defaults to a no-op) and frameworks that must construct objects before wiring them. The cost is a window in which the object exists half-configured.
 - **Parameter injection** passes the dependency to the method that uses it: `handle(request, clock)`. Good when only one method needs it or when the value changes per call, like a request-scoped transaction.
 
 ### The composition root
-Mark Seemann named the single place where the graph is assembled the composition root. It is `main`, the web framework's startup hook, or a Lambda handler's module scope. Only the composition root knows concrete types, reads configuration and decides lifetimes. Everything below it receives finished objects. When code deep in the domain calls `Container.get(Mailer)`, the container has become a **service locator**: dependencies are hidden again, just behind a nicer API, and tests must configure a global container.
+Mark Seemann named the single place where the graph is assembled the [composition root](https://blog.ploeh.dk/2011/07/28/CompositionRoot/), to be placed as close as possible to the application's entry point. It is `main`, the web framework's startup hook, or a Lambda handler's module scope. Only the composition root knows concrete types, reads configuration and decides lifetimes. Everything below it receives finished objects. When code deep in the domain calls `Container.get(Mailer)`, the container has become a **service locator**: dependencies are hidden again, just behind a nicer API, and tests must configure a global container.
 
 ### Containers and lifetimes
 A container is a registry from a service key (a type, an interface or a name) to a recipe: a factory or constructor, its dependencies, and a lifetime. Resolving a key walks the dependency graph depth-first, building leaves first. Three lifetimes cover almost every case:
@@ -54,12 +54,12 @@ A container is a registry from a service key (a type, an interface or a name) to
 - **Scoped**: built once per scope, usually one HTTP request or one message being processed. Database sessions or units of work, the current user, a per-request cache.
 - **Transient**: built fresh on every resolution. Small stateless helpers.
 
-Lifetimes impose a rule: a longer-lived object must not hold a shorter-lived one. A singleton constructed with a scoped `DbSession` keeps that first request's session forever; every later request uses a session whose transaction, identity map and user context belong to someone else. The same happens indirectly through a transient: singleton to transient to scoped is still captive. .NET's container checks this when `ValidateScopes` is on (the default in the Development environment) and throws when a scoped service is resolved from the root provider or captured by a singleton.
+Lifetimes impose a rule: a longer-lived object must not hold a shorter-lived one. A singleton constructed with a scoped `DbSession` keeps that first request's session forever; every later request uses a session whose transaction, identity map and user context belong to someone else. The same happens indirectly through a transient: singleton to transient to scoped is still captive. .NET's container checks this when `ValidateScopes` is on, which the default host builder enables only in the Development environment ([ASP.NET Core docs](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/web-host)). It then throws `InvalidOperationException` ("Cannot consume scoped service 'Bar' from singleton 'Foo'") when a scoped service is resolved from the root provider or captured by a singleton ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines)).
 
 ### How containers find dependencies
 - **Reflection at runtime**: Spring reads constructor signatures and annotations, .NET reads constructor parameter types, NestJS and Angular read TypeScript decorator metadata. Flexible, but missing bindings surface at startup or on first use.
-- **Code generation at build time**: Dagger (Java and Android) generates factory classes with an annotation processor, and Google Wire generates plain Go constructors from provider functions. A missing binding is a compile error, and the generated code is ordinary calls you can read and step through.
-- **Signature inspection per request**: FastAPI's `Depends` reads a handler's parameters, resolves each dependency once per request by default, and runs the teardown half of `yield` dependencies after the response.
+- **Code generation at build time**: Dagger (Java and Android) generates factory classes with an annotation processor, and Google Wire generates plain Go constructors from provider functions ([Wire guide](https://github.com/google/wire/blob/main/docs/guide.md)). A missing binding is reported when the code is generated, before the program runs, and the generated code is ordinary calls you can read and step through.
+- **Signature inspection per request**: FastAPI's `Depends` reads a handler's parameters, resolves each dependency once per request by default (`use_cache=False` opts out, per the [FastAPI docs](https://fastapi.tiangolo.com/tutorial/dependencies/sub-dependencies/)), and runs the teardown half of `yield` dependencies after the response.
 
 ### Reviewing agent-written code
 Agents reproduce the code around them. In a codebase with a container they will often inject the container itself and call `get` inside methods, or register a new service as a singleton because the neighbour was a singleton, regardless of what it holds. In a codebase without one they write `self.client = httpx.Client()` inside a constructor. In review, check that new classes declare dependencies in their constructor, that only the composition root touches the container, that the lifetime of each new registration matches its state (anything holding a session, transaction or user is scoped), and that the change came with a test that injects fakes rather than patching modules.
@@ -73,7 +73,7 @@ DI is an instance of **ownership and lifetime** decided by whoever creates the c
 For a valid graph, resolving a service returns a fully constructed object whose dependencies are all present; a container never returns a half-built object. A singleton factory runs at most once per container, even under concurrent first resolution. A scoped factory runs at most once per scope. Objects created within a scope are disposed when the scope ends, in reverse order of creation, so nothing is closed while something that depends on it is still open. A container that offers validation promises to report missing bindings and lifetime violations before serving traffic, naming the chain of services involved.
 
 ### Layer 2: The mechanism
-Spring keeps `BeanDefinition`s in a `DefaultListableBeanFactory`, and its singleton registry has three maps: `singletonObjects` for finished beans, `earlySingletonObjects` for partially built ones exposed to break setter-injection cycles, and `singletonFactories` that produce those early references. Spring Boot has rejected circular references by default since 2.6, because the early-reference trick hands out objects before their initialisation completes. Request-scoped beans injected into singletons are handled with a scoped proxy: the singleton holds a CGLIB or JDK proxy, and every call looks up the current request's real object.
+Spring keeps `BeanDefinition`s in a `DefaultListableBeanFactory`, and its singleton registry has three maps: `singletonObjects` for finished beans, `earlySingletonObjects` for partially built ones exposed to break setter-injection cycles, and `singletonFactories` that produce those early references ([Spring source](https://github.com/spring-projects/spring-framework/blob/main/spring-beans/src/main/java/org/springframework/beans/factory/support/DefaultSingletonBeanRegistry.java)). Spring Boot has rejected circular references by default since 2.6 ([release notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.6-Release-Notes)), because the early-reference trick hands out objects before their initialisation completes. Request-scoped beans injected into singletons are handled with a scoped proxy: the singleton holds a CGLIB or JDK proxy, and every call looks up the current request's real object.
 
 .NET describes each registration as a `ServiceDescriptor` (service type, implementation or factory, lifetime). The root `ServiceProvider` caches singletons; each `IServiceScope` caches its scoped instances and tracks every disposable it created, disposing them in reverse order when the scope ends. Dagger's annotation processor emits a `Factory` class per binding and a component that calls them in dependency order, so at runtime there is no reflection at all. Wire's generated `wire_gen.go` is the same idea in Go: a function that calls your providers in order and returns cleanup functions.
 
@@ -112,6 +112,11 @@ A payments API on .NET registered `FraudRules` as a singleton because it loaded 
 Symptoms appeared in three ways. Memory grew by about 80 MB per hour, because the context's change tracker kept every account it ever loaded; pods were recycled by the out-of-memory killer every 9 hours. Concurrent requests used the same context from different threads, producing intermittent "a second operation was started on this context" exceptions at around 0.3% of requests. Worst, fraud checks read account balances cached since the pod started, so limits raised during the day were ignored until the next restart.
 
 The fix took three lines: inject an `IServiceScopeFactory` into `FraudRules` and create a short scope per check, or make `FraudRules` scoped and move the rules file into a separate singleton `RulesSnapshot`. The team chose the second, turned on `ValidateOnBuild` and `ValidateScopes` in every environment, and added a test that builds the provider with validation on. Startup grew by 40 ms; the next captive dependency failed the build instead of production.
+
+## In the wild
+- **Spring Boot 2.6, 2021: circular references become an error by default.** Spring used to hide cycles between beans by handing out early, half-initialised references. From 2.6 an application with a cycle fails at start-up with `BeanCurrentlyInCreationException`, and the release notes tell teams to break the cycle, with `spring.main.allow-circular-references` as a temporary escape ([release notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.6-Release-Notes)).
+- **.NET, documented misconfiguration: the captive dependency.** Microsoft's DI guidelines define it as a longer-lived service holding a shorter-lived one, give a singleton `Foo` that takes a scoped `Bar`, and say scope validation turns the mistake into an `InvalidOperationException` instead of silent misbehaviour. The guidance names the term's author, Mark Seemann ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines)).
+- **FastAPI, documented behaviour: per-request resolution with caching.** A dependency shared by several parameters is called once per request and its value reused, so a database session is one object per request, not one per parameter ([FastAPI docs](https://fastapi.tiangolo.com/tutorial/dependencies/sub-dependencies/)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -990,6 +995,21 @@ func (s *Scope) Dispose() []string {
 - Captive-dependency risk explained concretely (tenant or session leaking across users), with startup validation or tests that build the graph.
 - A migration path: introduce constructor parameters with defaults that fall back to the old globals, move wiring into the composition root module by module, then delete the defaults and the patches.
 - Trade-offs between pure DI and a container, including startup cost, debuggability and how agents and new joiners discover where objects come from.
+
+## Sources and further study
+**Primary**
+- [Spring Boot 2.6 release notes](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.6-Release-Notes): the change that made circular references an error.
+- [DefaultSingletonBeanRegistry (Spring source)](https://github.com/spring-projects/spring-framework/blob/main/spring-beans/src/main/java/org/springframework/beans/factory/support/DefaultSingletonBeanRegistry.java): the three singleton caches.
+
+**Systems docs**
+- [Spring: dependency injection](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html): constructor versus setter injection, and circular dependencies.
+- [ASP.NET Core web host](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/web-host): when scope validation is switched on by default.
+- [FastAPI: sub-dependencies](https://fastapi.tiangolo.com/tutorial/dependencies/sub-dependencies/): per-request caching of dependencies.
+
+**Books**
+- *Effective Java* (3rd ed.), Bloch: chapter 2, Item 5, Prefer dependency injection to hardwiring resources.
+- *Clean Architecture*, Martin: chapter 11, DIP: The Dependency Inversion Principle, and chapter 26, The Main Component.
+- *Software Engineering at Google*, Winters, Manshreck and Wright: chapter 13, Test Doubles, on why injectable seams make tests fast and honest.
 
 ## Watch
 - [Dependency Injection, The Best Pattern (CodeAesthetic)](https://www.youtube.com/watch?v=J1f5b4vcxCQ): a clear visual walk from hard-coded dependencies to injected ones, with the testing payoff.

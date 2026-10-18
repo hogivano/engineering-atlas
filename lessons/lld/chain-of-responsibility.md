@@ -50,7 +50,7 @@ The Gang of Four version links handlers: each holds a `next` pointer and calls `
 The list form keeps handlers ignorant of each other. A driver loop owns the walk, the stop condition and the end-of-chain outcome. For selection and escalation, it is almost always better: the walk lives in one place, records a trail of who was asked, and skips unavailable handlers without any handler knowing.
 
 ### Chain versus middleware
-The Decorator lesson builds a middleware stack where every layer wraps the next and all of them run. That is a pipeline: retry, cache and metrics each add behaviour to one core call. A chain of responsibility is a selection: many candidates, at most one answer. Express's `next()` blurs the two, because a middleware can either respond (stop) or call `next` (pass). When reviewing, ask: "Is every handler supposed to run, or exactly one?" If the answer is "every", you want decorators or a pipeline; if it is "the first that can", you want a chain, and the chain needs a defined fallthrough.
+The Decorator lesson builds a middleware stack where every layer wraps the next and all of them run. That is a pipeline: retry, cache and metrics each add behaviour to one core call. A chain of responsibility is a selection: many candidates, at most one answer. Express's `next()` blurs the two, because a middleware can either end the request-response cycle (stop) or call `next` (pass), and one that does neither leaves the request hanging ([Express docs](https://expressjs.com/en/guide/writing-middleware.html)). When reviewing, ask: "Is every handler supposed to run, or exactly one?" If the answer is "every", you want decorators or a pipeline; if it is "the first that can", you want a chain, and the chain needs a defined fallthrough.
 
 ### Where you already use it
 - **Exception handling.** A thrown exception walks up the stack; the first frame with a matching `catch` handles it. Reaching the top is the end-of-chain case, and the default is to crash.
@@ -75,12 +75,12 @@ A chain is the *finding things fast* shape solved the slow way: a linear scan fo
 The chain promises: handlers are asked in their configured order; the first handler that claims the request decides, and no later handler sees it; a handler that declines leaves no side effects that change the outcome; and if no handler claims the request, the caller receives a distinct, explicit "unhandled" result, not a default approval and not `None` mistaken for success. A good chain also promises an audit trail (which handlers were consulted, which decided) because escalation systems are judged after the fact. Each handler's own contract is narrow: given a request, return claim or pass, quickly and deterministically for the same input.
 
 ### Layer 2: The mechanism
-Real systems mostly use an array plus a loop. Python's import machinery is literally `for finder in sys.meta_path: spec = finder.find_spec(name, path, target)`, stopping at the first non-`None` spec. glibc's NSS keeps a parsed list of service entries per database with an action table per status (`SUCCESS`, `NOTFOUND`, `UNAVAIL`, `TRYAGAIN`), so the "pass or stop" decision is configurable per link without changing any service module. Netfilter stores each iptables chain as a contiguous blob of rule entries; the kernel walks entries, and a non-terminating jump target pushes a return position so evaluation resumes in the calling chain afterwards. C++ and Rust exceptions use table-driven unwinding: the compiler emits per-function tables (`.eh_frame` plus a language-specific data area), and the unwinder walks frames, asking each frame's personality routine whether it has a matching handler.
+Real systems mostly use an array plus a loop. Python's import machinery queries the finders on `sys.meta_path` in order ([Python docs](https://docs.python.org/3/reference/import.html)); in effect `for finder in sys.meta_path: spec = finder.find_spec(name, path, target)`, stopping at the first non-`None` spec. glibc's NSS keeps a parsed list of service entries per database, and `nsswitch.conf` lets each entry carry actions of the form `[STATUS=ACTION]` where status is `success`, `notfound`, `unavail` or `tryagain` and action is `return`, `continue` or `merge`, so the "pass or stop" decision is configurable per link without changing any service module ([nsswitch.conf(5)](https://man7.org/linux/man-pages/man5/nsswitch.conf.5.html)). Netfilter stores each iptables chain as a contiguous blob of rule entries; the kernel walks entries, and a non-terminating jump target pushes a return position so evaluation resumes in the calling chain afterwards. C++ and Rust exceptions use table-driven unwinding: the compiler emits per-function tables (`.eh_frame` plus a language-specific data area), and the unwinder walks frames, asking each frame's personality routine whether it has a matching handler.
 
 ### Layer 3: The machine
 A list-form chain of N handlers costs up to N indirect calls per request. In Go each is an interface call through an itab, roughly 1 to 2 ns when predicted, so a 6-handler chain costs well under 50 ns. In CPython each hop is a bound-method call of 50 to 100 ns. The linked form adds pointer chasing, since each `next` is a separate heap object, possibly on another cache line; an array of interface values (16 bytes each in Go: a type word and a data pointer) is walked sequentially.
 
-The cost that matters is linear growth. kube-proxy's iptables mode programmed every Service as rules that packets walked in sequence; with tens of thousands of Services, evaluation and updates became slow, and IPVS mode replaced the walk with hash lookups. nftables sets do the same inside one rule. Application chains follow the same rule: fine at tens of handlers, and at hundreds the front of the chain should become an index (by category or amount band).
+The cost that matters is linear growth. kube-proxy's iptables mode programs every Service as rules that packets walk in sequence, so the time to match a packet is O(n) in the number of Services, and the Kubernetes docs say iptables struggles to scale to tens of thousands of Services ([Kubernetes blog](https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/)). IPVS mode was the first fix, using hash lookups, but it is now deprecated: Kubernetes marks it deprecated since v1.35, disabled by default from v1.40 and removed in v1.43, and recommends the nftables mode instead ([Kubernetes docs](https://kubernetes.io/docs/reference/networking/virtual-ips/)). The nftables mode replaces the walk with a single rule that uses a verdict map to dispatch by address. Application chains follow the same rule: fine at tens of handlers, and at hundreds the front of the chain should become an index (by category or amount band).
 
 A chain built at startup is read-only and needs no locking. Mutable state such as an approver's availability should be read under a lock or swapped in as a new immutable chain, so a request never sees half a reconfiguration.
 
@@ -113,6 +113,11 @@ A 900-person company processes about 4,000 expense claims a month. The old route
 The rewrite used a list-form chain (`policy`, `lead`, `manager`, `director`, `cap`) with an explicit unhandled outcome that sends the claim to a human queue, and stored the trail with every decision. In the first month 71 percent of claims stopped at the lead, 24 percent at the manager, 4 percent at the director, 0.6 percent were rejected by policy, and 14 claims (0.35 percent) reached the unhandled queue, all during director absences. Before, those 14 had been silently approved by the forgotten fallback.
 
 Adding a VP tier later was one handler inserted between manager and director plus one test pinning the full order. Routing cost about 3 microseconds per claim in Python against a 40 ms request.
+
+## In the wild
+- **Cloudflare, 2022: a catch-all placed too early.** A change to spine-router BGP policy put an explicit reject term (`REJECT-THE-REST`) ahead of the terms that advertise site-local prefixes. Those prefixes were withdrawn at 19 data centers, about 4% of locations but about 50% of requests, and the outage lasted about 75 minutes. Cloudflare redesigned the policy to prevent term-ordering mistakes and added staged rollout and automatic commit-confirm rollback ([Cloudflare](https://blog.cloudflare.com/cloudflare-outage-on-june-21-2022/)). This is the shadowing pitfall below, in a router.
+- **Kubernetes, 2025: long rule chains give way to maps.** kube-proxy's iptables mode checks a packet against Service rules in order, so matching cost grows with the number of Services. The project tried IPVS, deprecated it from v1.35, and now recommends an nftables mode that dispatches with one verdict-map rule ([Kubernetes blog](https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/), [docs](https://kubernetes.io/docs/reference/networking/virtual-ips/)).
+- **Express, ongoing: forgetting `next()`.** The documentation states that a middleware which does not end the cycle must call `next()`, or the request is left hanging. It is the linked-handler failure mode that the list-plus-driver form removes ([Express docs](https://expressjs.com/en/guide/writing-middleware.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -931,6 +936,24 @@ func (c *Chain) Route(r Request) (Decision, error) {
 - A per-ticket trail of handlers consulted, for audits and tuning.
 - Availability read from a capacity snapshot, never blocking calls inside `decide`.
 - Indexing first (by product and language) into short per-bucket chains instead of one 400-link walk, with tests pinning each bucket's order.
+
+## Sources and further study
+**Primary**
+- [Python: the import system](https://docs.python.org/3/reference/import.html): `sys.meta_path` finders queried in order.
+- [nsswitch.conf(5)](https://man7.org/linux/man-pages/man5/nsswitch.conf.5.html): per-source `[STATUS=ACTION]` rules that decide whether a miss passes on.
+
+**Systems docs**
+- [Kubernetes: virtual IPs and service proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/): the iptables, IPVS and nftables modes, with IPVS deprecation dates.
+- [Kubernetes blog: NFTables mode for kube-proxy](https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/): the O(n) rule walk and the verdict-map replacement.
+- [Express: writing middleware](https://expressjs.com/en/guide/writing-middleware.html): stop or `next()`, and what happens when a handler does neither.
+- [MDN: event bubbling](https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/Event_bubbling): a chain along the DOM tree.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 5 "Behavioral Patterns": the original Chain of Responsibility, including the linked form and its risk of unhandled requests.
+
+**Other curricula**
+- [Refactoring.Guru: Chain of Responsibility](https://refactoring.guru/design-patterns/chain-of-responsibility): frames it as handlers that decide to process or pass on, and notes that some requests may reach the end unhandled.
+- [SourceMaking: Chain of Responsibility](https://sourcemaking.com/design_patterns/chain_of_responsibility): a classic walkthrough with the same linked structure.
 
 ## Watch
 - [The Chain of Responsibility Pattern Explained and Implemented (Geekific)](https://www.youtube.com/watch?v=FafNcoBvVQo): the classic linked-handler structure built in Java, useful to contrast with the list-plus-driver form.

@@ -8,7 +8,7 @@ minutes: 21
 - Legal moves are pseudo-legal moves minus the ones that leave your own king attacked. Generate, try, test. Pins, discovered checks, double checks and "you must get out of check" all fall out of that one filter without special cases.
 - A move is a value with enough information to undo it: from, to, piece, captured piece, promotion, and the castling rights, en passant square and halfmove clock it replaced. That one record gives you undo, history, notation, repetition detection and replay.
 - The game can end in more ways than checkmate: stalemate, threefold repetition, the fifty-move rule, insufficient material, resignation, time and agreement. Model the status as an explicit state and reject moves once it is terminal.
-- Test with perft, not with a few hand-written positions. Counting the leaf nodes of the move tree from known positions (20, 400, 8,902, 197,281 from the start) catches move-generation bugs that no example game will.
+- Test with perft, not with a few hand-written positions. Counting the leaf nodes of the move tree from known positions (20, 400, 8,902, 197,281 from the start, per the [published results](https://www.chessprogramming.org/Perft_Results)) catches move-generation bugs that no example game will.
 
 This lesson is about the object model and in-process rules for one game. The distributed side (one owner per game, clocks and lag, matchmaking) is covered in [Design Online Chess](../sdi/design-chess.md).
 
@@ -126,7 +126,7 @@ sequenceDiagram
 - **Command** for moves. A move object carries what it needs to apply and to undo itself. History is a list of commands, undo pops and reverses, and notation export walks the list.
 - **Memento** for position state that is cheap to save whole: castling rights, en passant square and halfmove clock fit in a few bytes, so each move stores the previous values instead of recomputing them on undo.
 - **State** for the game status, as an enum with guarded transitions. Only `ACTIVE` and `CHECK` accept moves; every other status is terminal.
-- **Factory** for setup. `Game.standard()` and `Game.fromFEN(text)` build positions; tests use FEN strings so a bug report is one line of text.
+- **Factory** for setup. `Game.standard()` and `Game.fromFEN(text)` build positions ([FEN](https://www.chessprogramming.org/Forsyth-Edwards_Notation)); tests use FEN strings so a bug report is one line of text.
 - **Strategy** for players. A human UI, an engine and a network peer all implement `chooseMove`. The game loop does not care which one it is talking to.
 - **Observer** for the UI, a sound player and a clock. The game publishes "move played" and "status changed" events after the state is consistent.
 
@@ -139,8 +139,14 @@ Resist making `Board` or `Game` a singleton. A server runs thousands of games, a
 - **Castling.** Legal only if neither the king nor that rook has moved, the squares between them are empty, the king is not in check, and the king does not pass through or land on an attacked square. Store castling rights as four flags and clear them when a king or rook moves or a rook is captured on its home square.
 - **En passant.** Available for exactly one move after a two-square pawn push, and the capture can expose the capturer's king along the rank (both pawns leave the rank at once). The legality filter catches that case only if it applies the move fully, including removing the captured pawn from its real square.
 - **Promotion.** The player chooses queen, rook, bishop or knight; underpromotion to a knight sometimes gives mate. A move to the last rank without a choice is incomplete, not "default to queen", in a rated game.
-- **Draws.** Threefold repetition compares full positions (pieces, side to move, castling rights and en passant possibilities), not just piece placement. Under FIDE rules a player may claim a draw at threefold repetition or after 50 moves by each side without a capture or pawn move, and the arbiter ends the game automatically at fivefold repetition or 75 moves.
+- **Draws.** Threefold repetition compares full positions (pieces, side to move, castling rights and en passant possibilities), not just piece placement. Under FIDE rules a player may claim a draw at threefold repetition or after 50 moves by each side without a capture or pawn move, and the game is drawn automatically at fivefold repetition or 75 moves by each side without a pawn move or capture, unless the last move was checkmate ([FIDE Laws, article 9](https://handbook.fide.com/chapter/E012023)).
 - **Concurrency.** One game is a single-owner object: two players must never mutate it at once. In process, put it behind one lock or one actor; across a network, route every move for a game to one owner and number moves so retries are idempotent. That is the design in [Design Online Chess](../sdi/design-chess.md), and the reasoning is in [How to handle Concurrency Scenarios](handling-concurrency.md).
+
+## In the wild
+- **Chess.com, 2023: the chess boom outgrows the database.** Traffic had nearly doubled since early December 2022, and the site averaged about 16,000 chess moves per second. Servers struggled most at peak hours, around noon to 4 p.m. ET, because the database could not write fast enough, so users saw 502 errors and game timeouts. The plan was more hardware, separating and sharding database tables, and splitting off the database holding users and gameplay. The rules library was not the bottleneck; the write path was ([Chess.com blog](https://www.chess.com/blog/CHESScom/chess-is-booming-and-our-servers-are-struggling)).
+- **Lichess, 2022: lag compensation under debate.** Lichess gives each player a quota of clock credit for network lag, and its LagTracker caps the gain per move by time control. In December 2022 an issue proposed a simpler formula for fast time controls because players felt laggers were being rewarded; it was merged, and later a maintainer noted the old thresholds were chosen deliberately so players worldwide could compete in hyperbullet. The clock is part of the rules the server must get exactly right ([lila issue 12097](https://github.com/lichess-org/lila/issues/12097), [LagTracker source](https://github.com/lichess-org/scalachess/blob/master/core/src/main/scala/LagTracker.scala)).
+- **Engine authors, ongoing: perft as the regression test.** The chess programming community publishes node counts for the start position and for tricky test positions, and move generators are checked against them and bisected with divide when a count is off ([Perft](https://www.chessprogramming.org/Perft), [results](https://www.chessprogramming.org/Perft_Results)).
+
 
 ## Down the stack
 
@@ -148,9 +154,9 @@ Resist making `Board` or `Game` a singleton. A server runs thousands of games, a
 `legalMoves(square)` returns exactly the moves the laws of chess allow for the piece on that square, for the side to move, and an empty list otherwise. `play` either applies a legal move and returns the new status, or rejects it and changes nothing. Undoing a move restores every part of the position, including castling rights, en passant square and clocks, so that `play` followed by `undo` is the identity. The status after a move is a pure function of the position and the history.
 
 ### Layer 2: The mechanism
-Board representations trade simplicity for speed. An 8 by 8 array is the clearest and fine for an application. A 10 by 12 **mailbox** pads the board with sentinel squares so that a knight jump off the edge lands on "off board" instead of needing bounds checks. **0x88** uses a 128-entry array where `square & 0x88` is non-zero exactly when a move left the board, a one-instruction bounds test. **Bitboards** use one 64-bit integer per piece kind and colour; move generation becomes shifts, masks and table lookups, and sliding attacks use precomputed "magic" multiplication tables.
+Board representations trade simplicity for speed. An 8 by 8 array is the clearest and fine for an application. A 10 by 12 **mailbox** ([Chess Programming Wiki](https://www.chessprogramming.org/Board_Representation)) pads the board with sentinel squares so that a knight jump off the edge lands on "off board" instead of needing bounds checks. **0x88** uses a 128-entry array where `square & 0x88` is non-zero exactly when a move left the board, a one-instruction bounds test. **Bitboards** use one 64-bit integer per piece kind and colour; move generation becomes shifts, masks and table lookups, and sliding attacks use precomputed "magic" multiplication tables.
 
-Legality is the generate-then-test loop. Engines avoid copying the board by **make/unmake**: apply the move in place, test, then reverse it using the saved undo record. Repetition detection uses **Zobrist hashing**: a random 64-bit key per (piece, square) plus keys for side, castling and en passant, XORed together, updated incrementally on each move with a couple of XORs. Comparing the current hash against earlier positions since the last capture or pawn move finds repetitions quickly. **Perft** counts leaf nodes of the legal-move tree to a fixed depth from known positions; published counts exist for tricky positions with castling, en passant and promotions, and a mismatch pinpoints a bug by splitting the count per first move.
+Legality is the generate-then-test loop. Engines avoid copying the board by **make/unmake**: apply the move in place, test, then reverse it using the saved undo record. Repetition detection uses **Zobrist hashing**: a random 64-bit key per (piece, square) plus keys for side, castling and en passant, XORed together, updated incrementally on each move with a couple of XORs ([Chess Programming Wiki](https://www.chessprogramming.org/Zobrist_Hashing)). Comparing the current hash against earlier positions since the last capture or pawn move finds repetitions quickly. **Perft** counts leaf nodes of the legal-move tree to a fixed depth from known positions ([Chess Programming Wiki](https://www.chessprogramming.org/Perft)); published counts exist for tricky positions with castling, en passant and promotions, and a mismatch pinpoints a bug by splitting the count per first move.
 
 ### Layer 3: The machine
 An 8 by 8 board of one-byte codes is 64 bytes, exactly one cache line, so copying the whole board per candidate move (as the practice does) costs a few nanoseconds and is simpler than make/unmake. The practice code checks each candidate by scanning every enemy piece's moves, roughly 30 candidates times 16 attackers per position, tens of thousands of simple operations: well under a millisecond, fine for validating human moves. Engines need millions of positions per second, so they move to bitboards, where "is this square attacked by a knight" is one AND of a precomputed 64-bit mask with the knight bitboard, and counting pieces is the `POPCNT` instruction. Zobrist keys need a table of 12 x 64 keys (6 KB) that stays hot in L1 cache.
@@ -1199,6 +1205,25 @@ func (g *Game) Move(from, to string) (Status, error) {
 - Draw rules with the correct position identity for repetition (placement, side, castling, en passant), using Zobrist hashes.
 - Perft against published counts, plus divide to localise bugs, as the correctness strategy.
 - One shared rules implementation with the server authoritative, and the network concerns handed to the online chess design.
+
+## Sources and further study
+**Primary**
+- [FIDE Laws of Chess, article 9](https://handbook.fide.com/chapter/E012023): claimed draws at threefold and 50 moves, automatic draws at fivefold and 75 moves.
+
+**Systems docs**
+- [Chess Programming Wiki: Perft](https://www.chessprogramming.org/Perft): the perft function, bulk counting and divide for isolating bugs.
+- [Chess Programming Wiki: Perft results](https://www.chessprogramming.org/Perft_Results): reference node counts for the start position and tricky positions.
+- [Chess Programming Wiki: Zobrist hashing](https://www.chessprogramming.org/Zobrist_Hashing): incremental position keys for repetition detection.
+- [Lichess scalachess](https://github.com/lichess-org/scalachess): an open-source rules library used by a large production site.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Command, Memento, State, Strategy, Observer) and chapter 3 (Factory Method).
+- *Head First Design Patterns*, Freeman and Robson: chapter 6 (Command, with undo), chapter 10 (State) and chapter 4 (Factory).
+
+**Other curricula**
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): frames undo as stored commands, matching the move record here.
+- [Wikipedia: Rules of chess](https://en.wikipedia.org/wiki/Rules_of_chess): a readable summary of the laws for checking edge cases.
+
 
 ## Watch
 - [Coding Adventure: Chess (Sebastian Lague)](https://www.youtube.com/watch?v=U4ogK0MIzqk): board representation, legal move generation, and testing with perft, built step by step.

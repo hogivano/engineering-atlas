@@ -20,7 +20,7 @@
 
 AI agents now write much of the code. The skills that last are knowing how systems really work,
 finding root causes, and staying calm when production breaks. Engineering Atlas teaches those
-skills in depth, for free, with claims linked to sources you can check.
+skills in depth, for free, with every claim linked to a source you can check.
 
 One idea runs through every lesson: **most software problems are the same few problems in
 different domains.** Two riders matched to one driver and two withdrawals racing on one balance
@@ -142,8 +142,7 @@ the work; lessons, exercises and checks were drafted and researched with Anthrop
 lesson is checked against the primary sources it cites, by automated checks and by a separate AI
 fact-checking pass, and practice code is tested in all three languages.
 
-The source-backed upgrade (inline citations, real incidents, Sources and further study) covers every
-course except part of Low-Level Design, where about 100 lessons are still being upgraded. Human review of all 457 lessons is still in progress, so mistakes are possible. If you find one,
+Human review of all 457 lessons is still in progress, so mistakes are possible. If you find one,
 please [open an issue](https://github.com/hogivano/engineering-atlas/issues) with a link to a source.
 
 ## Acknowledgements

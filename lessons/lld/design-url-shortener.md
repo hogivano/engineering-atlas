@@ -123,9 +123,9 @@ sequenceDiagram
 
 ## Design patterns used and why
 
-- **Strategy** for code generation. A counter encoded in base62 gives short, collision-free codes but reveals volume and ordering. Random 7-character base62 gives about 3.5 trillion codes and leaks nothing, but needs a collision check. A keyed permutation of the counter (the trick the paste-service lesson uses) gets both.
+- **Strategy** for code generation. A counter encoded in base62 gives short, collision-free codes but reveals volume and ordering. Random 7-character base62 gives about 3.5 trillion codes and leaks no ordering, but needs a collision check. Random is not the same as secret: researchers scanned random 6-character bit.ly tokens and found about 42% of them valid, so a short code must never be the only thing protecting a private document ([Georgiev and Shmatikov](https://arxiv.org/abs/1604.02734)). A keyed permutation of the counter (the trick the paste-service lesson uses) gets both.
 - **Repository** for storage. The service speaks in links and one conditional insert; whether that is a hash map, a Postgres table with a unique index or DynamoDB with a condition expression is the repository's business. `insertIfAbsent` is the key method: it is the only place uniqueness is enforced, so it is the only thing that must be atomic.
-- **Value objects** for codes and URLs. Validation runs once, when the value is built: only `http` and `https` targets (a `javascript:` target would be cross-site scripting served from your domain), and aliases normalised to lowercase so `Spring-Sale` and `spring-sale` cannot become two links.
+- **Value objects** for codes and URLs. Validation runs once, when the value is built, because an unchecked redirect target is a classic abuse route ([OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html)): only `http` and `https` targets (a `javascript:` target would be cross-site scripting served from your domain), and aliases normalised to lowercase so `Spring-Sale` and `spring-sale` cannot become two links.
 - **State**, kept light: an enum (`ACTIVE`, `DISABLED`, `DELETED`) plus a derived "expired" check against the clock. Expiry is not a stored state, because then a background job would have to flip it on time, and correctness would depend on that job.
 - **Facade**: `LinkService` is the only entry point for controllers. It hides the alias policy, the retry loop and the idempotency index. A caching repository can later wrap the real one as a **Decorator**, which is how the cache in the distributed design attaches without changing this model.
 
@@ -139,15 +139,19 @@ What not to use: a `Singleton` service, or a `Link` class hierarchy (`AliasLink`
 - **Reserved words.** Aliases such as `api`, `admin`, `login` and `static` would shadow your own routes. Keep a reserved list in the alias policy and reject them at creation.
 - **Case.** Generated base62 codes are case-sensitive; aliases are not. Resolution therefore tries the exact code first and then the lowercase form, accepting the second only if it belongs to an alias.
 - **Expiry boundary.** Decide whether a link that expires at time T works at T. The practice code treats `now >= expiresAt` as expired. Store UTC epoch seconds.
-- **Deleted links.** Keep a tombstone. If you delete the row, a later random draw can reissue the code, and a QR code printed last year now advertises someone else's site.
+- **Deleted links.** Keep a tombstone. If you delete the row, a later random draw can reissue the code, and a QR code printed last year now advertises someone else's site. Even Google, which stopped creating goo.gl links in 2018, kept serving existing links for years and in 2025 chose to preserve those still in use after announcing a shutdown ([Google Developers Blog](https://developers.googleblog.com/en/google-url-shortener-links-will-no-longer-be-available/)).
+
+## In the wild
+- **Microsoft OneDrive and Google Maps, 2016: scanning short URLs.** Researchers sampled 100 million random 6-character bit.ly tokens and got 42,229,055 valid links, about 42% density; 7-character tokens were about 29% dense. OneDrive 1drv.ms links used the same token space, so scans exposed shared documents, and over 7% of the OneDrive accounts found allowed anyone to write. Google moved new Maps short links to 11 or 12 characters from 21 September 2015, and Microsoft removed OneDrive's shorten-link option in March 2016 ([arXiv](https://arxiv.org/abs/1604.02734)).
+- **Google, 2018 to 2025: retiring goo.gl.** Google stopped accepting new goo.gl links in 2018 but kept serving existing ones. In July 2024 it announced a shutdown for 25 August 2025 because over 99% of links had no activity in the last month, then on 1 August 2025 narrowed it to links that showed no activity in late 2024, to preserve links embedded in documents and videos. A short link outlives the product that made it, which is why this design never reissues a code ([Google Developers Blog](https://developers.googleblog.com/en/google-url-shortener-links-will-no-longer-be-available/)).
 
 ## Down the stack
 
 ### Layer 1: The contract
-`shorten` either returns a code that resolves to exactly the submitted URL, or fails with a specific reason (bad URL, bad alias, reserved alias, alias taken, no free code) and changes nothing. A code, once issued, is never bound to a different target. `resolve` returns 302 with the target for a live link and increments its counter by exactly one; 404 for a code that never existed; and 410 for one that is disabled, deleted or expired. Calling `shorten` twice with the same owner and URL and no options returns the same code while that link is live.
+`shorten` either returns a code that resolves to exactly the submitted URL, or fails with a specific reason (bad URL, bad alias, reserved alias, alias taken, no free code) and changes nothing. A code, once issued, is never bound to a different target. `resolve` returns 302 with the target for a live link and increments its counter by exactly one; 404 for a code that never existed; and 410 for one that is disabled, deleted or expired. HTTP defines 302 as a temporary move, so clients keep using the short URL, and 410 as a condition "likely to be permanent" ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html)). Calling `shorten` twice with the same owner and URL and no options returns the same code while that link is live.
 
 ### Layer 2: The mechanism
-In memory, the repository is a hash map from code to link plus a second map from `owner + "\x00" + url` to code. Both are updated under one mutex, so "check index, generate, insert" is atomic. Ten million links in a Go map cost on the order of a gigabyte once strings and map overhead are counted, which is why production keeps links in a database and caches only hot codes. In Postgres the same contract is `INSERT INTO link (code, ...) VALUES (...) ON CONFLICT (code) DO NOTHING RETURNING code`: a row coming back means you won; no row means retry with the next candidate. Aliases use a unique index on `lower(code)`, which is how the case rule becomes a database guarantee instead of a hope.
+In memory, the repository is a hash map from code to link plus a second map from `owner + "\x00" + url` to code. Both are updated under one mutex, so "check index, generate, insert" is atomic. Ten million links in a Go map cost on the order of a gigabyte once strings and map overhead are counted, which is why production keeps links in a database and caches only hot codes. In Postgres the same contract is `INSERT INTO link (code, ...) VALUES (...) ON CONFLICT (code) DO NOTHING RETURNING code`: a row coming back means you won; no row means retry with the next candidate, because `RETURNING` reports only rows actually inserted ([Postgres docs](https://www.postgresql.org/docs/current/sql-insert.html)). Aliases use a unique index on `lower(code)`, which is how the case rule becomes a database guarantee instead of a hope.
 
 ### Layer 3: The machine
 A hash lookup on a warm map is 20 to 100 ns, dominated by one or two cache misses (each about 80 ns to DRAM). Hashing a 7-byte key is a few nanoseconds. An uncontended Go mutex is around 20 ns. The redirect response is a few hundred bytes: status line, `Location` header and some cache headers, which fits in one TCP segment. The real latency is the network round trip (tens of milliseconds on mobile) and TLS setup on a cold connection. If the counter-based generator persists its next value, it must `fsync` it or lease blocks; an `fsync` on NVMe is 0.1 to 1 ms, which is why real systems lease a block of 1,000 codes per fsync instead of one.
@@ -170,7 +174,7 @@ A hash lookup on a warm map is 20 to 100 ns, dominated by one or two cache misse
 
 - Build first: the conditional insert and the status-to-HTTP mapping, with tests for alias races, collisions and expiry boundaries. Code generation can change later; a reused code cannot be taken back.
 - Ask in review: where is uniqueness enforced; can a deleted code ever be reissued; what does resolve return for each status and why; which clock decides expiry; how are reserved aliases maintained.
-- Choose 302 over 301 deliberately and write it down. A permanent redirect is cached by browsers, which removes your ability to count clicks or disable an abusive link.
+- Choose 302 over 301 deliberately and write it down. A permanent redirect may be reused by clients without asking you again, which removes your ability to count clicks or disable an abusive link (RFC 9110 makes a 301 heuristically cacheable, while a 302 is not unless you send explicit cache headers).
 - Ownership: the abuse team will want to disable links in seconds. Give them an operator path into the same `disable` method rather than a direct database edit that bypasses the cache and the audit log.
 
 ## Check yourself
@@ -958,6 +962,23 @@ func (s *LinkService) Clicks(code string) (int, error) {
 - Code generation as a strategy with bounded retries, and a clear statement that codes are never reused, backed by tombstones.
 - Alias policy as its own class: normalisation to lowercase, a character and length rule, and a reserved list that protects the app's own routes.
 - Idempotent shortening scoped to identical requests, and a reason for choosing 302 over 301.
+
+## Sources and further study
+**Primary**
+- [Georgiev and Shmatikov, "Gone in Six Characters" (2016)](https://arxiv.org/abs/1604.02734): the measured density of short-token spaces and what enumeration exposes.
+- [Google Developers Blog: goo.gl links](https://developers.googleblog.com/en/google-url-shortener-links-will-no-longer-be-available/): a shortener's life cycle from deprecation to a narrowed shutdown.
+
+**Systems docs**
+- [OWASP: Unvalidated Redirects and Forwards](https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html): why a redirect service must treat the target as untrusted input.
+- [PostgreSQL: INSERT](https://www.postgresql.org/docs/current/sql-insert.html): `ON CONFLICT` and `RETURNING` semantics behind the conditional insert.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Strategy, State) and chapter 4 (Facade, Decorator).
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 1 (Strategy) and chapter 3 (Decorator).
+- *Designing Data-Intensive Applications* (1st ed.), Kleppmann: chapter 7 (Transactions), on why uniqueness checks race without an atomic constraint.
+
+**Other curricula**
+- [donnemartin/system-design-primer: pastebin](https://github.com/donnemartin/system-design-primer/blob/master/solutions/system_design/pastebin/README.md): the same hash-and-collision problem treated as a distributed design with storage and caching.
 
 ## Watch
 - [High-Level vs Low-Level Design with URL Shortener Explained (Lazy Programmer)](https://www.youtube.com/watch?v=84m4h_xxNBg): contrasts the class-level view of a shortener with the architecture view.

@@ -4,7 +4,7 @@ minutes: 17
 ---
 
 ## In one minute
-- The principle, from the Gang of Four book in 1994: favour object composition over class inheritance. Build behaviour by giving an object collaborators that it calls through their interfaces, rather than by extending a class and overriding parts of it.
+- The principle, from the Gang of Four book in 1994 (chapter 1): favour object composition over class inheritance. Build behaviour by giving an object collaborators that it calls through their interfaces, rather than by extending a class and overriding parts of it.
 - Inheritance is white-box reuse: the subclass sees, and comes to depend on, how the parent works inside. Composition is black-box reuse: the outer object depends only on the published contract of its parts, so either side can change its internals safely.
 - Composition handles combinations. Three independent features done by inheritance need up to eight subclasses; done by composition they need three small parts that can be attached in any mix, and changed at runtime.
 - The costs are forwarding code, an extra object and pointer per part, and the "self problem": a wrapped object hands out references to itself, not to its wrapper. Language features (Go embedding, Kotlin `by`) remove most of the boilerplate.
@@ -39,6 +39,8 @@ class Unit:
 A shield spell is `unit.attach(Shield(30))` and its expiry is `unit.detach("shield")`. A fire vulnerability is a new class with an `absorb` that doubles damage; `Unit` does not change. Every combination exists automatically because combinations are made at runtime, not declared as classes. This is the [Strategy](strategy.md) idea applied to several collaborators at once, and the same structure that [Decorator](decorator.md) uses when the parts wrap each other instead of sitting in a list.
 
 ### Why inheritance breaks under change
+The JDK carries two well-known scars. `Stack` extends `Vector`, so a stack exposes every list operation, and its own Javadoc now tells you to prefer `Deque` ([Stack docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html)). `Properties` extends `Hashtable`, so `put` accepts non-string values, and the docs say its use is strongly discouraged ([Properties docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html)). Both reused an implementation by inheriting it and thereby published the parent's whole interface. Refactoring.Guru's description of the repair, Replace Inheritance with Delegation, fits: a subclass that uses only part of its parent will eventually have a forbidden parent method called ([Refactoring.Guru](https://refactoring.guru/replace-inheritance-with-delegation)); Fowler's catalogue lists the same move as [Replace Superclass with Delegate](https://refactoring.com/catalog/replaceSuperclassWithDelegate.html).
+
 A subclass depends on more than its parent's public methods. It depends on which of the parent's methods call which others, in what order, and with what state. The [Inheritance](inheritance.md) lesson calls this the fragile base class problem and shows a store whose subclass silently stopped auditing bulk writes after the parent was optimised. Composition avoids it because the outer object only calls the part's public methods. When the part's author changes how `absorb` works inside, nothing outside notices, as long as the contract holds.
 
 Inheritance also fixes the relationship at compile time. An object cannot become an `ArmoredUnit` after construction, but it can gain an `Armor` part.
@@ -47,7 +49,7 @@ Inheritance also fixes the relationship at compile time. An object cannot become
 Composition usually needs some methods of the part to appear on the whole. There are three ways:
 
 - **Explicit forwarding.** Write `def size(self): return self.inner.size()` for each method. Clear and greppable, but tedious for wide interfaces.
-- **Language support.** Kotlin's `class Logged(inner: Store) : Store by inner` generates every forwarding method at compile time, and you override the ones you need. Go's struct embedding promotes the embedded type's methods to the outer type. Neither gives the inner object a way to call back into the outer one, which is exactly what stops the fragile base class problem.
+- **Language support.** Kotlin's `class Logged(inner: Store) : Store by inner` generates every forwarding method at compile time, and you override the ones you need; overridden members are not called from the delegate's own members, which only see their own implementations ([Kotlin docs](https://kotlinlang.org/docs/delegation.html)). Go's struct embedding promotes the embedded type's methods to the outer type, and the receiver stays the inner value, not the outer one ([Effective Go](https://go.dev/doc/effective_go#embedding)). Neither gives the inner object a way to call back into the outer one, which is exactly what stops the fragile base class problem.
 - **Dynamic forwarding.** Python's `__getattr__` is called only when normal attribute lookup fails, so a wrapper can forward everything it does not define. It is short, but it hides the interface from type checkers and readers.
 
 Strictly, "delegation" in the original object-oriented literature meant forwarding where `self` stays bound to the original receiver, as in prototype-based languages. In everyday use the two words mean the same thing, and the distinction matters only when you hit the self problem.
@@ -66,7 +68,7 @@ Implementing an interface is not the problem. Inheriting implementation from a c
 Agents mirror the codebase they see, and a codebase with a deep hierarchy gets another level. Look for subclasses whose names combine features (`CachedRetryingClient`, `AdminReadOnlyUser`), subclasses that override a method only to call `super()` and add one line, and `isinstance` checks against feature subclasses. Steer toward a part with an interface, attached at construction or at runtime, and a test that attaches the parts in more than one combination.
 
 ### The same shape elsewhere
-Composing features from parts is the answer to combinatorial explosion wherever it shows up. Game engines such as Unity attach components (renderer, collider, script) to game objects instead of subclassing them. Linux builds a network path from netfilter hooks and qdiscs chained per interface. Kubernetes pods compose containers (an app plus a sidecar proxy) rather than baking the proxy into each image. Unix pipelines compose small programs. In each case independent features combine at deployment or runtime, not in a class declaration.
+Composing features from parts is the answer to combinatorial explosion wherever it shows up. React's documentation recommends composition over inheritance for reusing code between components ([React docs](https://legacy.reactjs.org/docs/composition-vs-inheritance.html)). Game engines such as Unity attach components (renderer, collider, script) to game objects instead of subclassing them. Linux builds a network path from netfilter hooks and qdiscs chained per interface. Kubernetes pods compose containers (an app plus a sidecar proxy) rather than baking the proxy into each image. Unix pipelines compose small programs. In each case independent features combine at deployment or runtime, not in a class declaration.
 
 ## Down the stack
 
@@ -74,9 +76,9 @@ Composing features from parts is the answer to combinatorial explosion wherever 
 A composed object promises what its own interface says and nothing about its parts' internals. Each part promises its own interface contract, for example that `absorb(amount)` returns a value between 0 and some bound and never makes health negative. The whole promises a defined order for consulting its parts, because order changes results: a shield before flat armour absorbs differently from armour before a shield. Attaching, detaching and duplicate handling are part of the contract too, and should fail loudly, not silently replace a part.
 
 ### Layer 2: The mechanism
-In Go, `type Logged struct { Store; count int }` embeds an interface value; the compiler generates wrapper methods on `Logged` that load the embedded interface and call through it. A method `Logged.Put` that you write takes precedence, and calls from inside the inner store go to the inner store's methods, never to `Logged`'s. Kotlin's `by` emits real forwarding methods into the class file, one per interface method. Python looks up `obj.size` through the type's MRO and the instance dictionary, and only on failure calls `__getattr__`, so dynamic forwarding pays for a failed lookup on every call. Rust has no implementation inheritance at all: a struct holds other structs and implements traits, and default trait methods are the only shared implementation.
+In Go, `type Logged struct { Store; count int }` embeds an interface value; the compiler generates wrapper methods on `Logged` that load the embedded interface and call through it. A method `Logged.Put` that you write takes precedence, and calls from inside the inner store go to the inner store's methods, never to `Logged`'s. Kotlin's `by` emits real forwarding methods into the class file, one per interface method. Python looks up `obj.size` through the type's MRO and the instance dictionary, and only on failure calls `__getattr__`, so dynamic forwarding pays for a failed lookup on every call. Rust has no struct inheritance: a struct holds other structs and implements traits, and default trait methods are the only shared implementation ([The Rust Book](https://doc.rust-lang.org/book/ch18-01-what-is-oo.html)).
 
-Game engines take composition furthest. An entity-component-system stores each component type in its own dense array, and an entity is just an index. Systems iterate the arrays of the components they need. Bevy, for example, stores components in tables keyed by the set of component types an entity has.
+Game engines take composition furthest. An entity-component-system stores each component type in its own dense array, and an entity is just an index. Systems iterate the arrays of the components they need. Bevy, for example, stores components in tables by default, which makes iteration fast and cache friendly but adding and removing components slower, and offers sparse sets for components that change often ([bevy_ecs docs](https://docs.rs/bevy_ecs/latest/bevy_ecs/)).
 
 ### Layer 3: The machine
 Composition by reference costs memory and a pointer chase. In Java every part is a separate heap object with a 12 to 16 byte header plus a 4 or 8 byte reference in the owner. If the part is not in cache, following the reference is a main memory access of about 80 to 100 ns, against about 1 ns for an L1 hit. Go can embed a struct by value, which lays its fields inline in the owner with no header and no pointer, so composition by value costs nothing in memory over inheritance.
@@ -114,6 +116,11 @@ A mobile strategy game had 46 unit classes, most of them combinations: `ArmoredH
 The rewrite gave every unit a `Health`, a movement part and a list of modifiers ordered by an integer priority. The 46 classes became 9 base unit types plus 14 modifier classes. Freeze became one modifier with an `order` of 0 that zeroes movement and has a turn counter; it shipped in two days. Balance designers began tuning combinations in data files, since attaching parts needed no code.
 
 Performance was checked on the worst case, a 400-unit battle. Each hit walks about three modifiers through an interface; at 2,000 hits per turn that is 6,000 indirect calls, roughly 10 microseconds per turn on a mid-range phone, against a 16 ms frame budget. The one regression was memory churn: each spell allocated a new shield object, and the garbage collector paused for 4 ms during large battles. Pooling shield objects per unit removed the pauses.
+
+## In the wild
+- **Java, 1990s onward: `Stack` and `Properties` inherit too much.** `java.util.Stack` extends `Vector`, so callers can insert and remove at any index, and the current Javadoc points to `Deque` instead ([Stack docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html)). `Properties` extends `Hashtable`, so `put` and `putAll` let callers store non-string keys and values that `store` then trips over, which is why the docs strongly discourage them ([Properties docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html)). Neither can be fixed without breaking callers, because the inherited methods are part of the public type.
+- **React: composition as the official reuse model.** The React team states that they recommend composition instead of inheritance for sharing code between components, and the `children` prop and passing components as props cover the cases where newcomers reach for subclassing ([React docs](https://legacy.reactjs.org/docs/composition-vs-inheritance.html)).
+- **Bevy, ongoing: composition taken to the data layout.** Its entity-component-system stores each kind of component in tables (or sparse sets) rather than in a class per entity type, with the documented trade-off between iteration speed and the cost of adding or removing components ([bevy_ecs docs](https://docs.rs/bevy_ecs/latest/bevy_ecs/)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -715,6 +722,26 @@ func (u *Unit) Alive() bool { return u.hp > 0 }
 - Runtime changes by swapping a held part (or a per-tenant policy lookup), which a subclass cannot do.
 - An explicit extension point (an interface for the step they want to change) instead of an open hierarchy, so the library's internals stay free to change.
 - Awareness of costs: forwarding code, the self problem with callbacks, and keeping the number of layers visible in one place.
+
+## Sources and further study
+**Primary**
+- [The Rust Book: characteristics of object-oriented languages](https://doc.rust-lang.org/book/ch18-01-what-is-oo.html): what a language gives up when it drops implementation inheritance.
+- [Effective Go: embedding](https://go.dev/doc/effective_go#embedding): promotion of methods and why the receiver stays the inner type.
+
+**Systems docs**
+- [Java `Stack` documentation](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html) and [`Properties` documentation](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html): the JDK's own warnings about inherited interfaces.
+- [React: composition vs inheritance](https://legacy.reactjs.org/docs/composition-vs-inheritance.html): a major framework's stated position.
+- [bevy_ecs documentation](https://docs.rs/bevy_ecs/latest/bevy_ecs/): table and sparse-set component storage.
+- [Kotlin: delegation](https://kotlinlang.org/docs/delegation.html): compiler-generated forwarding and its limits.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 1, the "favor object composition over class inheritance" principle; chapter 4 for Decorator and Bridge.
+- *Head First Design Patterns*, Freeman and Robson: chapter 1 (Strategy, composition over inheritance) and chapter 3 (Decorator).
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 12 "Dealing with Inheritance" (Replace Subclass with Delegate, Replace Superclass with Delegate).
+
+**Other curricula**
+- [Refactoring.Guru: Replace Inheritance with Delegation](https://refactoring.guru/replace-inheritance-with-delegation): when a subclass uses only part of its parent and inheritance should go.
+- [Refactoring.Guru: Bridge](https://refactoring.guru/design-patterns/bridge): frames the pattern as the way to avoid a class explosion by switching from inheritance to composition.
 
 ## Watch
 - [The Flaws of Inheritance (CodeAesthetic)](https://www.youtube.com/watch?v=hxGOiiR9ZKg): a short, concrete walk from an inheritance tree to composed interfaces.

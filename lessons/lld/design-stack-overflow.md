@@ -6,7 +6,7 @@ minutes: 22
 ## In one minute
 - The hard part is not storing questions and answers; it is the rules engine around them. Votes, accepted answers and reputation interact, and every one of them can be changed or undone later.
 - Store one vote per (voter, post) as a direction: up, down or none. A vote change is then "remove the old effect, add the new one", so undo and up-to-down switches are exact and cannot drift.
-- Reputation is a projection: 1 plus the sum of the effects of every vote and acceptance that currently stands. Apply it incrementally for speed, but keep the inputs so it can always be recomputed and checked.
+- Reputation is a projection (the idea behind [event sourcing](https://martinfowler.com/eaaDev/EventSourcing.html)): 1 plus the sum of the effects of every vote and acceptance that currently stands. Apply it incrementally for speed, but keep the inputs so it can always be recomputed and checked.
 - Privileges are thresholds on reputation (upvote at 15, comment anywhere at 50, downvote at 125). Put the numbers in one policy object, not scattered `if rep >= 125` checks.
 - The problem shape is **contention** on hot rows (a viral answer's score and its author's reputation) plus **trust but verify** (recompute reputation from the vote log to catch drift).
 
@@ -17,7 +17,7 @@ minutes: 22
 - Users vote a post up or down, change their vote, or withdraw it. Nobody votes on their own post.
 - Reputation rules for this design: an upvote gives the post's author +10; a downvote costs the author 2 and the voter 1. Accepting an answer gives its author +15 and the asker +2, unless the asker accepted their own answer.
 - The asker can accept one answer, switch to another, or unaccept.
-- Privileges by reputation: upvote at 15, comment on other people's posts at 50, downvote at 125. Anyone can comment on their own posts.
+- Privileges by reputation: upvote at 15, comment on other people's posts at 50, downvote at 125. Anyone can comment on their own posts. The 50-point comment gate is kept here because it makes a good threshold example and the practice tests use it; Stack Overflow itself removed it in October 2025, when commenting became available to all registered users ([Stack Overflow blog](https://stackoverflow.blog/2025/10/08/a-new-look-for-comments/)). A threshold that disappears is one more argument for keeping the numbers in a policy object.
 - Show each post's score and each user's reputation.
 
 ### Non-functional
@@ -120,7 +120,7 @@ Accepting works the same way: reverse the previous acceptance's effect, then app
 
 ## Design patterns used and why
 
-**Strategy (a policy object)** for reputation and privileges. Point values have changed over the site's life: question upvotes went from +5 to +10 in 2019, and the real site charges the voter only for downvoting answers, not questions. When the numbers live in one `ReputationPolicy`, a rule change is a one-file diff plus a backfill job, and tests can run with a toy policy.
+**Strategy (a policy object)** for reputation and privileges. Point values have changed over the site's life: question upvotes went from +5 to +10 on 13 November 2019, applied retroactively to past votes ([Stack Overflow blog](https://stackoverflow.blog/2019/11/13/were-rewarding-the-question-askers/)), and the real site charges the voter only for downvoting answers, not questions ([Stack Overflow for Teams help](https://stackoverflowteams.com/help/whats-reputation/), which mirrors the public rules). When the numbers live in one `ReputationPolicy`, a rule change is a one-file diff plus a backfill job, and tests can run with a toy policy.
 
 **Inheritance for Post**, used sparingly. Questions and answers really do share identity, authorship, score, voting and comments, and voting code should not care which one it got. The subclasses add only data (title, accepted id, question link). The "is-a" relation genuinely holds here.
 
@@ -131,7 +131,7 @@ Accepting works the same way: reverse the previous acceptance's effect, then app
 ## Concurrency and edge cases
 
 ### Exactly one vote per user per post
-Two clicks from the same user arrive at once (a double tap, or a retry after a timeout). With the vote keyed by (post, voter) and the read-compare-write done under one lock, the second request sees the direction already stored and is a no-op. In a database, a primary key on `(post_id, user_id)` plus `INSERT ... ON CONFLICT (post_id, user_id) DO UPDATE` gives the same guarantee, and the delta logic runs in the same transaction.
+Two clicks from the same user arrive at once (a double tap, or a retry after a timeout). With the vote keyed by (post, voter) and the read-compare-write done under one lock, the second request sees the direction already stored and is a no-op. In a database, a primary key on `(post_id, user_id)` plus `INSERT ... ON CONFLICT (post_id, user_id) DO UPDATE` gives the same guarantee: Postgres promises an atomic insert-or-update outcome even under high concurrency ([Postgres docs](https://www.postgresql.org/docs/current/sql-insert.html)), and the delta logic runs in the same transaction.
 
 ### Hot rows
 A viral answer receives hundreds of votes a minute, and every one updates the same score row and the same author's reputation row. Row locks serialise them; that is correct but makes latency grow with popularity. Keep the transaction tiny (one insert, two increments), always lock in the same order (post, then author, then voter) so two transactions cannot deadlock, and use `score = score + delta` instead of read-then-write. If still too hot, log votes and fold them into the score asynchronously.
@@ -143,7 +143,12 @@ Privileges gate new actions; a user who falls below 125 keeps the downvotes alre
 Only the asker can accept, only an answer to that question can be accepted, and accepting the already accepted answer is a no-op. Self-accepts are allowed but earn nothing, which closes the obvious farming loop of answering your own question and accepting it.
 
 ### Caps and floors are policy
-The real site floors reputation at 1 and caps vote reputation at 200 per day. Both break the "sum of effects" model (with a floor, undoing a downvote can return more than was taken), so they need the event log recomputed in time order with an injected clock.
+The real site floors reputation at 1 and caps reputation from votes and suggested edits at 200 per day; accepted answers, bounties and association bonuses are exempt from the cap ([help](https://stackoverflowteams.com/help/whats-reputation/)). Both break the "sum of effects" model (with a floor, undoing a downvote can return more than was taken), so they need the event log recomputed in time order with an injected clock.
+
+## In the wild
+- **Stack Overflow, 2019: a reputation rule change applied to history.** On 13 November 2019 the site raised the value of a question upvote from 5 to 10 reputation to match answer upvotes, and applied it retroactively to every past question upvote, which means every affected user's total was recomputed ([Stack Overflow blog](https://stackoverflow.blog/2019/11/13/were-rewarding-the-question-askers/)). It is only cheap if reputation is a projection of stored votes and the point values live in one policy.
+- **Stack Overflow, 2025: a privilege threshold removed.** The 50-reputation requirement for commenting was dropped in October 2025; all registered users can comment, reply in threads and vote on comments ([Stack Overflow blog](https://stackoverflow.blog/2025/10/08/a-new-look-for-comments/)). Any code with `if rep >= 50` scattered around would have needed a hunt; a policy lookup needed one change.
+- **Stack Overflow, 2016: a few machines serve a huge read load.** On 9 February 2016 the sites handled 209,420,973 HTTP requests (66,294,789 page loads) using 4 SQL Server machines in two AlwaysOn clusters, two main Redis servers and 9 primary web servers, with about 500,000 concurrent websocket connections at peak ([Nick Craver](https://nickcraver.com/blog/2016/02/17/stack-overflow-the-architecture-2016-edition/)). The design pressure is on caches and tiny write transactions, not on a big write cluster.
 
 ## Down the stack
 
@@ -154,7 +159,7 @@ For every (post, voter) there is at most one standing vote. A post's score equal
 In memory: a map from post id to post, a map from user to reputation, and per post a map from voter to direction. A vote is O(1): one lookup, a delta of at most four integer updates, one store. The delta is `effect(new) - effect(old)` with `effect(none) = 0`, which is why undo and switch need no special cases. In a relational store this maps directly to the public Stack Exchange data dump's shape: a `Votes` table with a `VoteTypeId` (1 for accepted by originator, 2 for up, 3 for down), a denormalised `Score` on `Posts`, and `Reputation` on `Users`. Denormalised totals make the page read cheap; the votes table makes them verifiable.
 
 ### Layer 3: The machine
-A vote in Postgres or SQL Server is a short transaction: insert or update a vote row of a few dozen bytes, update two rows with an increment, write the redo log and `fsync` on commit. On NVMe that commit is tens of microseconds; on networked storage it is about a millisecond, so one hot row tops out around a thousand serialised votes per second before batching helps. In memory, an uncontended Go `sync.Mutex` costs about 20 ns and the whole vote under it well under a microsecond. Stack Overflow's published 2016 architecture ran on a small fleet of SQL Server and web machines, which works because reads hit caches and writes like votes are tiny transactions.
+A vote in Postgres or SQL Server is a short transaction: insert or update a vote row of a few dozen bytes, update two rows with an increment, write the redo log and `fsync` on commit. On NVMe that commit is tens of microseconds; on networked storage it is about a millisecond, so one hot row tops out around a thousand serialised votes per second before batching helps. In memory, an uncontended Go `sync.Mutex` costs about 20 ns and the whole vote under it well under a microsecond. Stack Overflow's published 2016 architecture ran on four SQL Server machines, two main Redis servers and 11 IIS web servers, serving about 209 million HTTP requests on the day Nick Craver measured; vote counts were among the updates pushed over websockets ([Nick Craver](https://nickcraver.com/blog/2016/02/17/stack-overflow-the-architecture-2016-edition/)). That works because reads hit caches and writes like votes are tiny transactions.
 
 ### Why it's built this way
 People change their minds, so votes are stored as current state per (post, voter), not as counters. Reputation must be explainable when someone asks "why did I lose 2 points?", so it is a projection of standing votes. Rules change over the years, so the numbers sit in one policy object. Popular posts concentrate writes on one row, so the transaction is minimal and ordered. Reads dominate, so totals are denormalised and the log exists to verify them.
@@ -1335,6 +1340,26 @@ func (s *StackOverflow) Can(user, privilege string) (bool, error) {
 - One policy object for point values and thresholds, since real rules change and need backfills.
 - Hot rows: minimal transactions, in-place increments, a fixed lock order, asynchronous folding as the escape hatch.
 - Caps and floors make reputation order-dependent, so it is recomputed from a time-ordered event log.
+
+## Sources and further study
+
+**Primary**
+- [PostgreSQL: INSERT and ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html): the atomic upsert that enforces one vote per user per post.
+- [Stack Overflow blog: rewarding the question askers (2019)](https://stackoverflow.blog/2019/11/13/were-rewarding-the-question-askers/): the dated, retroactive rule change.
+
+**Systems docs**
+- [Stack Overflow blog: a new look for comments (2025)](https://stackoverflow.blog/2025/10/08/a-new-look-for-comments/): the removal of the commenting threshold.
+- [Stack Overflow for Teams: what is reputation](https://stackoverflowteams.com/help/whats-reputation/): point values, the 200 per day cap and its exemptions, the floor of 1 and self-acceptance.
+- [Nick Craver: Stack Overflow, the architecture (2016)](https://nickcraver.com/blog/2016/02/17/stack-overflow-the-architecture-2016-edition/): hardware counts and daily traffic.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 4 (Structural: Facade) and chapter 5 (Behavioral: Strategy, Observer, State).
+- *Head First Design Patterns*, Freeman and Robson: chapter 1 (Strategy), chapter 2 (Observer) and chapter 7 (Facade).
+- *Designing Data-Intensive Applications*, Martin Kleppmann (1st edition): chapter 7 (Transactions) for atomic increments and write conflicts, and chapter 11 (Stream Processing) for deriving state from an event log.
+
+**Other curricula**
+- [Refactoring.Guru: Strategy](https://refactoring.guru/design-patterns/strategy): the pattern behind the swappable reputation policy.
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): no Q&A-site chapter; its caching and database-scaling material covers the read-heavy side of this design.
 
 ## Watch
 - [Low Level Design: Live Coding, Making StackOverflow (Utkarsh Bindal)](https://www.youtube.com/watch?v=0030gDHf-QI): a live-coded object model for questions, answers and votes.

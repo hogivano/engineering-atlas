@@ -13,7 +13,7 @@ minutes: 22
 ## Requirements
 Functional:
 - Log a message at a level (DEBUG, INFO, WARN, ERROR) with optional key-value fields.
-- Get a logger by name. Set a level on any name; names without a level inherit from the nearest ancestor that has one, ending at the root.
+- Get a logger by name. Set a level on any name; names without a level inherit from the nearest ancestor that has one, ending at the root. (Python's root logger always has an explicit level, `WARNING` by default, per the [Logging HOWTO](https://docs.python.org/3/howto/logging.html).)
 - Attach any number of sinks to any name, each with its own minimum level and its own formatter (plain text, JSON).
 - Bind context fields once (`request_id`, `tenant`) and have them appear on every line from that logger.
 - Stop propagation at a chosen name, so a noisy subsystem can write to its own sink only.
@@ -118,7 +118,7 @@ The level lookup walks `app.db`, `app`, root and stops at the first name that ha
 
 ## Design patterns used and why
 - **Strategy (Formatter).** Text for humans, JSON for machines and logfmt for the team that likes it are three algorithms behind one interface. A sink holds one, so the same record can be text on the console and JSON in the file.
-- **Chain of responsibility (hierarchy walk).** Each name in the chain gets a chance to handle the record, then passes it to its parent. Unlike the textbook version, handling does not stop the chain; only `propagate = false` does. Log4j and Logback call this flag *additivity*; Python's `logging` calls it `propagate`.
+- **Chain of responsibility (hierarchy walk).** Each name in the chain gets a chance to handle the record, then passes it to its parent. Unlike the textbook version, handling does not stop the chain; only `propagate = false` does. Log4j and Logback call this flag *additivity*; Python's `logging` calls it `propagate`, and when it is false "passing to ancestor handlers stops" ([Python Logging HOWTO](https://docs.python.org/3/howto/logging.html)).
 - **Observer (sinks).** Many sinks subscribe to one logger name and are notified of each record. Adding a sink is registering an observer; nobody else changes.
 - **Decorator (AsyncSink, FilteringSink).** An async sink implements `Sink` and wraps another sink, adding a queue and a background writer without the inner sink knowing.
 - **Flyweight-like handles.** Loggers are cheap views over shared configuration. You can create one per request with bound fields without copying sinks or levels.
@@ -128,11 +128,16 @@ The level lookup walks `app.db`, `app`, root and stops at the first name that ha
 - **Concurrent logging and reconfiguration.** Writes to the configuration (set level, add sink) are rare; reads happen on every call. Use a read-write lock or copy-on-write: build a new sink list and swap the reference atomically, so the hot path reads without contention.
 - **Do not call sinks under the manager lock.** Snapshot the list of sinks along the chain under the lock, release it, then emit. A sink that blocks on a slow disk would otherwise block every thread that wants to log, and a sink that logs from inside `emit` would deadlock.
 - **Each sink protects itself.** Two threads writing to one file must not interleave half lines. The sink holds its own mutex around format-and-write, or hands the record to a single writer through a queue.
-- **Recursion.** A sink that fails and logs the failure through the same framework can loop forever. Count sink errors in a counter or write them to stderr directly.
-- **Async sinks drop or block.** A bounded queue in front of a slow sink must choose: block the caller (backpressure, latency spikes) or drop records (count drops and log the count later). Make the choice explicit per sink; audit logs block, debug logs drop.
+- **Recursion.** A sink that fails and logs the failure through the same framework can loop forever. Count sink errors in a counter or write them to stderr directly. Python does the latter: an exception in a handler's `emit()` goes to `handleError()`, which prints a traceback to stderr while `logging.raiseExceptions` is true and swallows it when false. The docs advise setting it to false in production ([Python Logging HOWTO](https://docs.python.org/3/howto/logging.html)).
+- **Async sinks drop or block.** A bounded queue in front of a slow sink must choose: block the caller (backpressure, latency spikes) or drop records (count drops and log the count later). Make the choice explicit per sink; audit logs block, debug logs drop. Log4j 2's async loggers default to blocking the caller when the ring buffer is full, offer a `Discard` policy that drops events at or below INFO by default, and the manual recommends synchronous logging for audit logs because async errors are hard to report back to the application ([Log4j 2 async docs](https://logging.apache.org/log4j/2.x/manual/async.html)).
 - **Field collisions.** A user field named `msg` or `level` must not overwrite the record's own values. Reserved keys win.
-- **Never interpret data.** Messages and fields are printed, never evaluated. Log4Shell (CVE-2021-44228) came from Log4j expanding `${jndi:...}` lookups inside logged strings, so an attacker-controlled user agent became remote code execution.
+- **Never interpret data.** Messages and fields are printed, never evaluated. Log4Shell (CVE-2021-44228) came from Log4j expanding `${jndi:...}` lookups inside logged strings, so an attacker-controlled user agent became remote code execution. It scored CVSS 10.0, and fixing it took more than one release: 2.15.0 was followed by 2.16.0 (CVE-2021-45046) and 2.17.0 (CVE-2021-45105, a recursion crash) ([Apache Log4j security page](https://logging.apache.org/security.html)).
 - **Shutdown.** Buffered and async sinks must flush on exit, or the last lines before a crash, the ones you need, are lost.
+
+## In the wild
+- **Log4Shell, 2021-12: a formatter that interpreted data.** Log4j 2's message lookups let a JNDI string in a logged value make the library fetch and run code from an attacker-chosen LDAP server. CVE-2021-44228 affected log4j-core from 2.0-beta9 up to (not including) 2.15.0 in the ranges listed by Apache, scored CVSS 10.0, and the first fix (2.15.0) was incomplete: later releases 2.16.0 and 2.17.0 closed a thread-context-lookup bypass and a recursion denial of service ([Apache Log4j security page](https://logging.apache.org/security.html)).
+- **Python logging: errors in a handler must not crash the app.** The standard library routes exceptions from `emit()` to `handleError()`, which prints to stderr or swallows the error depending on `logging.raiseExceptions`, and the docs advise turning it off in production. `SystemExit` and `KeyboardInterrupt` are never swallowed ([Python Logging HOWTO](https://docs.python.org/3/howto/logging.html)).
+- **Log4j 2 async loggers: the drop-or-block decision is a documented setting.** They use a pre-allocated LMAX Disruptor ring buffer of 256 x 1024 slots by default. When it fills, the default policy blocks the calling thread, so the application logs at the speed of the slowest appender, and a `Discard` policy is the alternative ([Log4j 2 async docs](https://logging.apache.org/log4j/2.x/manual/async.html)).
 
 ## Down the stack
 
@@ -140,10 +145,10 @@ The level lookup walks `app.db`, `app`, root and stops at the first name that ha
 A call at level L on name N is enabled if L is at least the level of the nearest ancestor of N (including N) that has a level set. An enabled call produces exactly one record with a timestamp from the injected clock and the bound fields merged with call-site fields, call-site winning. The record is offered to every sink on N and its ancestors, in order from N up, stopping after the first name whose `propagate` is false. Each sink writes it if the level passes that sink's own threshold. The call never throws because of a sink. A disabled call has no observable effect and does not read the clock.
 
 ### Layer 2: The mechanism
-The level lookup is a walk over dot-separated prefixes against a hash map, which costs one string slice and one map lookup per level of depth. Real frameworks cache the answer. Python's `logging.Logger` keeps a `_cache` dictionary from level to enabled flag and clears every logger's cache when any level changes. Log4j 2 precomputes each `LoggerConfig` and swaps in a new configuration object on reload. Go's `log/slog` puts the check behind `Handler.Enabled(ctx, level)` so a handler can decide before a `slog.Record` is built. Bound fields map to `slog.Logger.With`, which calls `Handler.WithAttrs` and lets a JSON handler pre-render the bound part once instead of on every line. Sorting keys at format time gives stable output; Go's `encoding/json` already sorts map keys when it marshals a map.
+The level lookup is a walk over dot-separated prefixes against a hash map, which costs one string slice and one map lookup per level of depth. Real frameworks cache the answer. Python's `logging.Logger` keeps a `_cache` dictionary from level to enabled flag, and `Manager._clear_cache` clears every logger's cache when any level changes ([logging/__init__.py](https://github.com/python/cpython/blob/main/Lib/logging/__init__.py)). The HOWTO adds that `isEnabledFor()` can be costly for deeply nested loggers, and lists switches such as `logging.logThreads = False` that skip collecting per-record fields ([Python Logging HOWTO](https://docs.python.org/3/howto/logging.html)). Log4j 2 precomputes each `LoggerConfig` and swaps in a new configuration object on reload ([Log4j architecture](https://logging.apache.org/log4j/2.x/manual/architecture.html)). Go's `log/slog`, added in Go 1.21, calls `Handler.Enabled` at the start of every log event so a handler can drop unwanted events quickly, and `Logger.With` maps to `Handler.WithAttrs`, which lets a handler format bound attributes once instead of on every call ([Go blog](https://go.dev/blog/slog)). Sorting keys at format time gives stable output; Go's `encoding/json` already sorts map keys when it marshals a map.
 
 ### Layer 3: The machine
-A disabled call that hits a cached level check costs a few nanoseconds: a pointer load, an integer compare and a branch the CPU predicts correctly. An enabled call is far more expensive. Building the record allocates a field map and strings (a few hundred bytes), formatting a JSON line takes on the order of 1 to 5 microseconds, and the line, typically 150 to 300 bytes, is copied into a buffer. A `write()` system call into the page cache costs 1 to 5 microseconds, and `fsync` to make it durable costs from about 100 microseconds on a good NVMe drive to 10 milliseconds on a spinning disk. At 20,000 lines per second of 250 bytes, that is 5 MB/s, which is fine for the disk but costs a whole core if every line is formatted and written synchronously. In a container, stdout goes through a pipe to the runtime's log driver, and a full pipe buffer (64 KB on Linux by default) blocks the writer. That is how a slow log collector stalls an application.
+A disabled call that hits a cached level check costs a few nanoseconds: a pointer load, an integer compare and a branch the CPU predicts correctly. An enabled call is far more expensive. Building the record allocates a field map and strings (a few hundred bytes), formatting a JSON line takes on the order of 1 to 5 microseconds, and the line, typically 150 to 300 bytes, is copied into a buffer. A `write()` system call into the page cache costs 1 to 5 microseconds, and `fsync` to make it durable costs from about 100 microseconds on a good NVMe drive to 10 milliseconds on a spinning disk. At 20,000 lines per second of 250 bytes, that is 5 MB/s, which is fine for the disk but costs a whole core if every line is formatted and written synchronously. In a container, stdout goes through a pipe to the runtime's log driver, and a full pipe buffer (64 KB on Linux by default, 16 pages of 4 KB, per [pipe(7)](https://man7.org/linux/man-pages/man7/pipe.7.html)) blocks the writer. That is how a slow log collector stalls an application.
 
 ### Why it's built this way
 1. Most log calls are below the active level, so the framework is designed around a cheap early exit before any allocation.
@@ -1267,6 +1272,25 @@ func (l *Logger) Log(level Level, msg string, f Fields) bool {
 - Concurrency: copy-on-write or read-write locks for configuration, sinks emitted outside the registry lock, per-sink locking or a single writer.
 - Failure isolation: counted sink errors, bounded async queues with an explicit drop or block policy, flush on shutdown.
 - Safety: reserved keys, redaction, and never interpreting logged data.
+
+## Sources and further study
+**Primary**
+- [Apache Log4j security page](https://logging.apache.org/security.html): CVE-2021-44228 and its follow-ups, with affected and fixed versions.
+- [CPython logging/__init__.py](https://github.com/python/cpython/blob/main/Lib/logging/__init__.py): the `Logger` level cache, `propagate` and cache clearing on reconfiguration.
+- [pipe(7), Linux man-pages](https://man7.org/linux/man-pages/man7/pipe.7.html): pipe capacity and blocking behaviour behind container stdout.
+
+**Systems docs**
+- [Go blog: structured logging with slog](https://go.dev/blog/slog): `Handler.Enabled`, `WithAttrs` and the allocation-focused design.
+- [Python Logging HOWTO](https://docs.python.org/3/howto/logging.html): effective level, propagation, `lastResort`, optimisation switches and `raiseExceptions`.
+- [Log4j 2 async loggers](https://logging.apache.org/log4j/2.x/manual/async.html): ring buffer, queue-full policies and the audit-log caveat.
+- [Log4j 2 architecture](https://logging.apache.org/log4j/2.x/manual/architecture.html): `LoggerConfig` hierarchy, appenders, layouts and additivity.
+
+**Books**
+- *Design Patterns*, Gamma et al., chapter 5 (Behavioral): Chain of Responsibility, Observer and Strategy, the three patterns the logger hierarchy combines.
+- *Observability Engineering*, Majors, Fong-Jones and Miranda, 1st ed., chapter 5 "Structured Events Are the Building Blocks of Observability": the case for key-value records over free text.
+
+**Other curricula**
+- [Refactoring.Guru: Chain of Responsibility](https://refactoring.guru/design-patterns/chain-of-responsibility): the textbook version stops at the first handler, which is the difference this lesson's propagation flag highlights.
 
 ## Watch
 - [Modern Python logging (mCoding)](https://www.youtube.com/watch?v=9L77QExPmI0): how Python's logger hierarchy, handlers, formatters and queue handlers fit together, and how to configure them well.

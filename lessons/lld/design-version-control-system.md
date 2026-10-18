@@ -135,11 +135,15 @@ sequenceDiagram
 
 - **Two writers move the same branch.** Process A and process B both read `main = C1`, build commits C2 and C3, and write `main`. Without a check, one commit vanishes from the branch. The fix is compare-and-swap on the ref: B's update from C1 fails because `main` is now C2, and B must rebase or merge. Git implements this with a lock file (`refs/heads/main.lock`), a check of the old value, and an atomic `rename` over the real ref file.
 - **Concurrent object writes.** Two processes writing the same blob is harmless: both produce the same bytes under the same id. Writers create a temporary file and rename it into place, so a reader never sees half an object.
-- **Crash mid-commit.** Because the ref moves last, a crash leaves only unreferenced objects. `git gc` and `git fsck` find and remove them later. Reverse the order and a crash leaves a branch pointing at a missing commit.
+- **Crash mid-commit.** Because the ref moves last, a crash leaves only unreferenced objects. `git gc` and `git fsck` find and remove them later. `git gc` only prunes unreachable loose objects older than two weeks by default (`gc.pruneExpire`), because another process may have just written objects it has not yet linked to a ref ([git-gc docs](https://git-scm.com/docs/git-gc)). Reverse the order and a crash leaves a branch pointing at a missing commit.
 - **Empty commit.** If the new root tree id equals the parent's, nothing changed; refuse unless the user explicitly allows it.
 - **Checkout with local changes.** Overwriting edited files loses work. Compare the working tree against HEAD's tree first and refuse, or carry the changes over when they do not touch files that differ between the two branches (Git's real behaviour).
 - **First commit and empty branches.** A fresh repository has a HEAD that names `main` but `main` points at nothing. `log` returns nothing, `branch` has nothing to point at, and the first commit has no parent.
-- **Hash collisions.** Accidental collisions are not a practical concern at 160 bits, but deliberate SHA-1 collisions are (SHAttered, 2017). Git now uses a collision-detecting SHA-1 and supports SHA-256 repositories.
+- **Hash collisions.** Accidental collisions are not a practical concern at 160 bits, but deliberate SHA-1 collisions are (SHAttered, 2017). Git 2.13.0 and later use a hardened SHA-1 that detects the SHAttered attack, and SHA-256 repositories exist but do not interoperate with SHA-1 repositories ([Git hash transition](https://git-scm.com/docs/hash-function-transition), [git init](https://git-scm.com/docs/git-init)). `sha1` is still the default object format.
+
+## In the wild
+- **SHAttered, 2017: the first SHA-1 collision.** On 23 February 2017 researchers at CWI and Google published two different PDF files with the same SHA-1 hash, the first practical collision. Git names every object by SHA-1, so Git 2.13.0 and later moved to a hardened implementation that detects this attack, and the project designed a SHA-256 transition that rewrites both object names and the references inside objects ([shattered.io](https://shattered.io/), [Git hash transition](https://git-scm.com/docs/hash-function-transition)).
+- **GitHub, 2015: rewriting the Merge button in memory.** The pull-request merge used a shell script around `git merge` on a temporary checkout. GitHub replaced it with libgit2, which merges two trees through an in-memory index without touching a working directory, and ran both paths on live traffic with its Scientist library. The comparison caught a legacy bug: Git's merge helper returns the number of conflicts as its exit value, so a file with exactly 768 conflicts wrapped to zero and was reported as a clean merge. After four days of iteration the experiment ran at 100% of requests for 24 hours with no mismatches over tens of millions of merges ([GitHub Engineering](https://github.blog/engineering/engineering-principles/move-fast/)).
 
 ## Down the stack
 
@@ -147,10 +151,10 @@ sequenceDiagram
 `commit` either returns a new id whose tree exactly matches the working tree and whose parent is the previous HEAD commit, with the current branch moved to it, or fails and moves nothing. The same tree, parent and message always yield the same id. A ref update succeeds only if the ref still holds the value the writer last read. `checkout` either replaces the working tree completely and moves HEAD, or refuses and changes nothing. `diff(a, b)` depends only on the two snapshots, never on the path between them.
 
 ### Layer 2: The mechanism
-Git serialises every object as `<type> <size>\0<payload>` and names it by the hash of that byte string. A tree payload is a sequence of entries `<mode> <name>\0<20 raw hash bytes>`, sorted by name. A commit payload is text: `tree <id>`, one `parent <id>` line per parent, `author`, `committer`, a blank line and the message. Loose objects are zlib-compressed and stored at `.git/objects/ab/cdef...`, the first two hex digits forming 256 subdirectories so no single directory grows huge. Refs are small text files under `.git/refs/heads/`, many of them consolidated into `packed-refs`, and HEAD usually contains `ref: refs/heads/main`. Because trees nest per directory, a commit that changes one file deep in a large repository writes one new blob plus one new tree per directory level on its path, and reuses every other subtree id unchanged. Diffing two commits walks both trees in parallel and skips any subtree whose ids are equal, which is why `git diff` between nearby commits is fast in a repository with a million files.
+Git serialises every object as `<type> <size>\0<payload>` and names it by the hash of that byte string. A tree payload is a sequence of entries `<mode> <name>\0<20 raw hash bytes>`, sorted by name. A commit payload is text: `tree <id>`, one `parent <id>` line per parent, `author`, `committer`, a blank line and the message. Loose objects are zlib-compressed and stored at `.git/objects/ab/cdef...`, the first two hex digits forming 256 subdirectories so no single directory grows huge ([Pro Git](https://git-scm.com/book/en/v2/Git-Internals-Git-Objects)). Refs are small text files under `.git/refs/heads/`, many of them consolidated into `packed-refs`, and HEAD usually contains `ref: refs/heads/main`. Because trees nest per directory, a commit that changes one file deep in a large repository writes one new blob plus one new tree per directory level on its path, and reuses every other subtree id unchanged. Diffing two commits walks both trees in parallel and skips any subtree whose ids are equal, which is why `git diff` between nearby commits is fast in a repository with a million files.
 
 ### Layer 3: The machine
-Git's collision-detecting SHA-1 runs at several hundred MB/s per core, so hashing a 10 KB source file costs tens of microseconds. zlib compresses source code to roughly a quarter to a third of its size. A loose object costs one inode and at least one 4 KB filesystem block regardless of size, which is why Git periodically packs them: a packfile stores objects back to back, with similar blobs stored as deltas against each other, and a companion `.idx` file holds sorted ids plus a 256-entry fanout table so a lookup is one table read and a binary search. Durability is a matter of `fsync`: Git's `core.fsync` setting controls whether object files and refs are flushed to disk before the ref rename, trading 0.1 to several milliseconds per commit for crash safety.
+Git's collision-detecting SHA-1 runs at several hundred MB/s per core, so hashing a 10 KB source file costs tens of microseconds. zlib compresses source code to roughly a quarter to a third of its size. A loose object costs one inode and at least one 4 KB filesystem block regardless of size, which is why Git periodically packs them: a packfile stores objects back to back, with similar blobs stored as deltas against each other, and a companion `.idx` file holds sorted ids plus a 256-entry fanout table so a lookup is one table read and a binary search ([pack format](https://git-scm.com/docs/gitformat-pack)). Durability is a matter of `fsync`: Git's `core.fsync` setting chooses which components (loose objects, packs, references, the index) are flushed to disk, trading roughly 0.1 to several milliseconds per commit for crash safety, and the docs warn that unhardened components may be lost after an unclean shutdown ([git-config](https://git-scm.com/docs/git-config)).
 
 ### Why it's built this way
 1. Developers need to trust that history has not been altered, so objects are named by the hash of their content and any change produces a new name.
@@ -975,6 +979,25 @@ func (r *Repo) BlobCount() int {
 - Compare-and-swap on refs (lock file plus atomic rename, or a conditional update) to detect concurrent commits, with the loser merging or rebasing.
 - Snapshots plus delta compression at the storage layer, rather than diffs as the logical model, and diff computed by walking trees with equal-subtree skipping.
 - Awareness of hash choice and migration (SHA-1 collision attacks, SHA-256 support).
+
+## Sources and further study
+**Primary**
+- [Git hash function transition](https://git-scm.com/docs/hash-function-transition): how a content-addressed store changes its hash without breaking every stored id.
+- [SHAttered](https://shattered.io/): the first practical SHA-1 collision and what it means for content addressing.
+- [gitformat-pack](https://git-scm.com/docs/gitformat-pack): packfile and index layout, including the fanout table and delta encoding.
+
+**Systems docs**
+- [git-update-ref](https://git-scm.com/docs/git-update-ref): ref updates with an expected old value and lock-file transactions.
+- [git-config: core.fsync](https://git-scm.com/docs/git-config): which repository components are flushed to disk, and the durability trade-off.
+- [GitHub Engineering: move fast and fix things](https://github.blog/engineering/engineering-principles/move-fast/): a production rewrite of Git merging verified by running old and new side by side.
+
+**Books**
+- *Pro Git*, Chacon and Straub (free online), chapter 10 "Git Internals": objects, references, packfiles and transfer protocols.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 4 (Composite, Facade) and chapter 5 (Command, Memento, Strategy).
+- *Designing Data-Intensive Applications* (1st ed.), Kleppmann: chapter 5 (Replication) and chapter 7 (Transactions), the compare-and-swap idea behind ref updates.
+
+**Other curricula**
+- [Refactoring.Guru: Memento](https://refactoring.guru/design-patterns/memento): frames snapshots for undo, a useful contrast with Git's shared, deduplicated snapshots.
 
 ## Watch
 - [Tech Talk: Linus Torvalds on git (Google)](https://www.youtube.com/watch?v=4XpnKHJAok8): the original design reasoning, including why content addressing and distributed history matter.

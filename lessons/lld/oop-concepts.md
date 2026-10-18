@@ -6,7 +6,7 @@ minutes: 17
 ## In one minute
 - Object-oriented programming is a way to keep rules next to the data they protect: an object owns some state and exposes only operations that keep that state valid.
 - Fifteen concepts cover almost every LLD discussion. They fall into four groups: building blocks (class, object, constructor, enum and value object), protection (encapsulation, abstraction), substitution (interface, abstract class, inheritance, polymorphism, overriding versus overloading), and relationships (association, aggregation, composition, dependency and realization).
-- The concepts are not a checklist; they are connected. Encapsulation makes abstraction possible, interfaces make polymorphism cheap to use, and composition is usually a safer route to polymorphism than inheritance.
+- The concepts are not a checklist; they are connected. Encapsulation makes abstraction possible, interfaces make polymorphism cheap to use, and composition is usually a safer route to polymorphism than inheritance, a point the Gang of Four make in their first chapter (*Design Patterns*, Ch 1: Introduction).
 - Each concept has a runtime price: a vtable or itab pointer, an extra indirection, a heap allocation. Usually it is nanoseconds; in hot loops it is worth knowing.
 - When reviewing agent-written code, these concepts give you the vocabulary to say what is wrong: "this setter breaks the invariant", "this subclass is not substitutable", "this should own its parts".
 
@@ -40,7 +40,7 @@ A **class** is a type plus rules; an **object** is one instance, and the key que
 **Encapsulation** means outside code cannot put an object into an invalid state. A wallet exposes `charge(amount)`, which checks the balance, not a public `balance` field that anyone can set to minus 400. **Abstraction** is the other face: callers see `charge` and `available`, and never learn whether the balance lives in a field, a ledger or a remote service. Encapsulation protects the object from callers; abstraction protects callers from the object's internals. Without encapsulation there is nothing stable to abstract over.
 
 ### Substitution
-An **interface** names a capability (`PaymentMethod`: `label`, `available`, `charge`, `refund`). **Polymorphism** lets one call site, `method.charge(amount)`, run the card's, the wallet's or the gift card's logic depending on the object. **Inheritance** is one way to get polymorphism, by subclassing; it also shares code, which is where it gets into trouble, because a subclass that changes a promised behaviour breaks every caller (Liskov Substitution Principle). An **abstract class** sits between: shared code plus abstract methods, the backbone of Template Method. **Overriding** replaces a method in a subtype and is resolved at runtime; **overloading** picks among methods with the same name by argument types at compile time (Java, C++, C#). Python, Go and TypeScript have no real overloading, which is one reason idioms differ across these languages.
+An **interface** names a capability (`PaymentMethod`: `label`, `available`, `charge`, `refund`). **Polymorphism** lets one call site, `method.charge(amount)`, run the card's, the wallet's or the gift card's logic depending on the object. **Inheritance** is one way to get polymorphism, by subclassing; it also shares code, which is where it gets into trouble, because a subclass that changes a promised behaviour breaks every caller (Liskov Substitution Principle). An **abstract class** sits between: shared code plus abstract methods, the backbone of Template Method. **Overriding** replaces a method in a subtype and is resolved at runtime; **overloading** picks among methods with the same name by argument types at compile time (Java, C++, C#). Python, Go and TypeScript have no real overloading, which is one reason idioms differ across these languages. Inheritance for reuse has a cost: Java's `Stack` extends `Vector`, so a "stack" inherits `get(i)` and `insertElementAt`, and its own Javadoc now says to prefer a `Deque` ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html)).
 
 ### Relationships
 Relationships say who knows whom and who owns whom. **Association**: an order knows its customer. **Aggregation**: a team groups employees who outlive the team. **Composition**: an order owns its line items; deleting the order deletes them, and nobody else holds them. **Dependency**: a checkout uses a clock passed into a method and keeps no reference. **Realization**: `Card` implements `PaymentMethod`. These map directly onto lifecycle code: who constructs, who deletes, who may hold a reference. Getting them wrong produces dangling references and leaked objects, the object-level version of the *partial failure* shape.
@@ -56,10 +56,10 @@ The table hides the most useful part, which is how the concepts lean on each oth
 - The principles judge how well you used them: Coupling and Cohesion, the SOLID lessons, Law of Demeter.
 
 ### Reviewing agent-written code
-Agents' OOP failures are predictable: setters for every field (encapsulation in name only), `isinstance` switches where a polymorphic method belongs, deep inheritance to reuse two helpers, and "manager" classes holding all the logic while entities are bags of data (the anemic domain model). Ask, for each class: what invariant does it protect, which methods can break it, and could a new subtype be added without editing a `switch`?
+Agents' OOP failures are predictable: setters for every field (encapsulation in name only), `isinstance` switches where a polymorphic method belongs, deep inheritance to reuse two helpers, and "manager" classes holding all the logic while entities are bags of data (the anemic domain model, which Fowler calls an anti-pattern because it keeps the costs of a domain model and loses data-with-behaviour, [Fowler](https://martinfowler.com/bliki/AnemicDomainModel.html)). Ask, for each class: what invariant does it protect, which methods can break it, and could a new subtype be added without editing a `switch`?
 
 ### The same shape elsewhere
-Polymorphism through a table of function pointers is older than OOP and lives far outside it. The Linux kernel's virtual file system gives every filesystem a `struct file_operations` with `read`, `write` and `open` pointers, so `read(2)` works the same on ext4, procfs and a socket. Device drivers, TLS libraries with pluggable cipher suites and database drivers all use the same structure: an interface, several realizations, and callers that never know which one they have.
+Polymorphism through a table of function pointers is older than OOP and lives far outside it. The Linux kernel's virtual file system gives every filesystem structs of function pointers (`file_operations`, `inode_operations`, `super_operations`) that the specific filesystem fills in, and the VFS calls through them when `read(2)` or `open(2)` arrives ([kernel docs](https://docs.kernel.org/filesystems/vfs.html)), so one system call works on ext4, procfs and a socket. Device drivers, TLS libraries with pluggable cipher suites and database drivers all use the same structure: an interface, several realizations, and callers that never know which one they have.
 
 ## Down the stack
 
@@ -67,7 +67,7 @@ Polymorphism through a table of function pointers is older than OOP and lives fa
 Each concept promises something testable. Encapsulation: no sequence of public calls can violate the class invariant (a wallet's balance never goes negative). Polymorphism: a call through the interface does what the interface documents for every implementation, so one contract test suite passes against all of them. Composition: when the whole is destroyed or reset, its parts go with it, and no outside reference to a part exists. Value objects: equal values are interchangeable and never change after construction. A design review can ask for a test per promise.
 
 ### Layer 2: The mechanism
-Polymorphism is implemented by dispatch tables. In C++ each object of a class with virtual methods carries a hidden pointer (vptr) to a per-class vtable, an array of function pointers laid out by the Itanium C++ ABI; `p->charge()` loads the vptr, loads the slot, and calls it. Go has no classes: an interface value is two words, a pointer to an itab (the interface type, the concrete type and its method pointers, built lazily and cached in a global hash table) and a pointer to the data. JavaScript looks up methods along the prototype chain, made fast by hidden classes (V8 calls them maps) and inline caches that remember the last shape seen at a call site. Python looks up attributes in the instance `__dict__`, then along the class's MRO, with a per-type method cache; `__slots__` replaces the per-instance dict with fixed offsets.
+Polymorphism is implemented by dispatch tables. In C++ each object of a class with virtual methods carries a hidden pointer (vptr) to a per-class vtable, an array of function pointers whose layout, with the vptr at offset zero when there is no primary base class, is fixed by the [Itanium C++ ABI](https://itanium-cxx-abi.github.io/cxx-abi/abi.html); `p->charge()` loads the vptr, loads the slot, and calls it. Go has no classes: an interface value is two words, a pointer to an itab (type metadata plus a list of method pointers, computed at run time and then cached) and a pointer to the data ([Russ Cox](https://research.swtch.com/interfaces)). JavaScript looks up methods along the prototype chain, made fast by hidden classes (V8 calls them maps) and inline caches that remember the last shape seen at a call site. Python looks up attributes in the instance `__dict__`, then along the class's MRO, with a per-type method cache; `__slots__` replaces the per-instance dict with fixed offsets.
 
 ### Layer 3: The machine
 The costs are small but real. A direct call is about 1 ns and inlinable; a virtual or interface call is 1 to 3 ns when the branch predictor guesses right, and up to around 15 to 20 ns when a call site sees many types and mispredicts, plus the lost inlining, which often matters more. Every C++ polymorphic object pays 8 bytes for its vptr; every Go interface value is 16 bytes, and storing a non-pointer value in one usually forces a heap allocation. A Java object header is 12 to 16 bytes. A small Python object with a `__dict__` costs over 100 bytes, against roughly 50 to 60 with `__slots__`. Composition affects layout: a Go struct that embeds its parts by value keeps them in one contiguous block (one cache line for small parts), whereas a list of pointers to parts scatters them across the heap and costs a cache miss, about 100 ns, per part. Encapsulation is also where concurrency control lives: if only the wallet's methods touch the balance, a single mutex inside the wallet makes it thread safe; if the field is public, no lock can.
@@ -108,6 +108,10 @@ classDiagram
 A food delivery app splits payment across a gift card, a wallet and a card, in that order. The first version was one 180-line `PaymentService.pay(user, amount)` with three `if` branches writing `user.gift_balance`, `user.wallet_balance` and `user.card_used` directly. Three bugs followed: a promotion script set `wallet_balance` directly and pushed 1,900 accounts negative; expired gift cards were spent because the expiry check lived in the checkout screen and the reorder flow skipped it; and a payment that failed on the card leg had already taken money from the wallet.
 
 The redesign applied four concepts. Encapsulation: each method object owns its balance and rejects overdrafts, so no script can push it negative. Polymorphism: `GiftCard.available(today)` returns 0 after expiry, so every flow gets the rule. Composition: `Checkout` owns an ordered list of methods and its receipts. All-or-nothing: `pay` sums `available` across methods before charging anything. Adding loyalty points later was one new class and no edits to `Checkout`. The cost: a few nanoseconds of interface dispatch per leg, against a 150 ms card network call.
+
+## In the wild
+- **Linux kernel, ongoing: the VFS as hand-built polymorphism.** Every filesystem registers tables of operations, and the VFS dispatches `read`, `lookup` and `open` through them, so a new filesystem is a new set of pointers with no change to callers ([kernel docs](https://docs.kernel.org/filesystems/vfs.html)). This is the interface-plus-realizations shape in C.
+- **Java platform, since JDK 1.0: `Stack extends Vector`.** A stack that inherits every `List`-style operation can be indexed and have elements inserted in the middle, breaking the LIFO contract. The current Javadoc points users to `Deque` implementations such as `ArrayDeque` instead ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -891,6 +895,24 @@ func (c *Checkout) Refund(receiptID int) error {
 - A checkout composed of an ordered list of methods that owns its receipts, checks the total first, and compensates (refunds earlier legs) if a later leg fails.
 - A clear position on inheritance: a gift card may reuse a wallet's balance logic by composition; subclassing is acceptable only if it remains substitutable (expiry changes `available`, which callers must already handle).
 - Concurrency control per account (a lock or version check), possible only because state is encapsulated.
+
+## Sources and further study
+**Primary**
+- [Python tutorial, Classes](https://docs.python.org/3/tutorial/classes.html): the language's own account of objects, inheritance and its limited notion of privacy.
+- [Anemic Domain Model (Fowler, 2003)](https://martinfowler.com/bliki/AnemicDomainModel.html): the origin of the term and Fowler's case against it.
+
+**Systems docs**
+- [Overview of the Linux VFS](https://docs.kernel.org/filesystems/vfs.html): dispatch through per-filesystem operation structs.
+- [`java.util.Stack`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html): a platform class whose own docs steer you away from its inheritance design.
+
+**Books**
+- *Design Patterns* (Gamma et al., 1994), Ch 1: Introduction, for "program to an interface" and "favour composition over inheritance".
+- *Head First Design Patterns*, 2nd ed., Ch 1: Welcome to Design Patterns, for the same ideas taught through a duck simulator.
+- *Clean Architecture* (Martin, 2017), Ch 5: Object-Oriented Programming, which argues that polymorphism is the real contribution of OOP.
+- *Refactoring*, 2nd ed., Ch 12: Dealing with Inheritance, for ways out of a hierarchy that went wrong.
+
+**Other curricula**
+- [refactoring.guru, What is a design pattern](https://refactoring.guru/design-patterns/what-is-pattern): treats patterns as reusable blueprints for recurring object-design problems, so OOP basics come first and patterns second.
 
 ## Watch
 - [Object-Oriented Programming, Simplified (Programming with Mosh)](https://www.youtube.com/watch?v=pTB0EiLXUC8): a fast refresher on encapsulation, abstraction, inheritance and polymorphism with small examples.

@@ -39,10 +39,10 @@ Ask only questions that change structure or output: case-sensitive keywords, exa
 5. **Driver.** Read lines, call `execute`, print. No logic, so no test needed.
 
 ### In-memory repositories
-A map keyed by id gives O(1) lookups, which is enough for nearly every round. Hiding the map behind methods lets you answer "how would you persist this?" with "implement this interface against a table" rather than "rewrite the service". Advance the id counter only when a write succeeds, so a rejected command does not shift every later output.
+A map keyed by id gives O(1) lookups, which is enough for nearly every round. Hiding the map behind methods (Fowler's [Repository](https://martinfowler.com/eaaCatalog/repository.html) pattern) lets you answer "how would you persist this?" with "implement this interface against a table" rather than "rewrite the service". Advance the id counter only when a write succeeds, so a rejected command does not shift every later output.
 
 ### Command parsing that does not crash
-Treat every line as hostile: blank, extra spaces, lowercase keyword, wrong argument count, a word where a number belongs. Validate in a fixed order (keyword, arity, number format, domain rules) so the error for a bad line is predictable. Domain errors share one type; the dispatcher catches that type, prints `ERROR <message>` and moves on.
+Treat every line as hostile: blank, extra spaces, lowercase keyword, wrong argument count, a word where a number belongs. Validate in a fixed order (keyword, arity, number format, domain rules) so the error for a bad line is predictable. Unvalidated input is how real software fails: Heartbleed was a missing check on a length field in a TLS heartbeat request, which let a client read up to 64 KiB of server memory per request ([Wikipedia](https://en.wikipedia.org/wiki/Heartbleed)). Domain errors share one type; the dispatcher catches that type, prints `ERROR <message>` and moves on.
 
 ### Tests
 A **golden test** feeds the spec's sample input and compares the full output; it catches format slips that evaluators' scripts are unforgiving about. **Focused tests** cover each rule and its edges: ties, boundaries, owner checks, and "a failed command changes nothing". Inject anything nondeterministic so tests repeat, as Design Snake and Ladder Game does with its dice and Design Movie Booking System with hold expiry.
@@ -51,7 +51,7 @@ A **golden test** feeds the spec's sample input and compares the full output; it
 With a dispatch table a new command is one entry plus a service method. The rule most likely to vary (which spot, which room, how to split) belongs behind a strategy: Design Parking Lot does this for spot choice and Design Splitwise for split types. Do not pre-build interfaces for everything; make the two likely changes cheap (see YAGNI Principle).
 
 ### The same shape elsewhere
-An interpreter over in-memory state is the **finding things fast** shape (keyword to handler, id to entity) wrapped around a state machine. Redis is exactly this: a command table mapping each name to a handler and an arity, and a loop that parses, checks and runs each request against in-memory data.
+An interpreter over in-memory state is the **finding things fast** shape (keyword to handler, id to entity) wrapped around a state machine. Redis is exactly this: a command table mapping each name to a handler and an arity ([Redis docs](https://redis.io/docs/latest/commands/command/)), and a loop that parses, checks and runs each request against in-memory data.
 
 ## Down the stack
 
@@ -59,10 +59,10 @@ An interpreter over in-memory state is the **finding things fast** shape (keywor
 Every input line produces exactly one output line, or none for a blank or comment line. Output is a pure function of the lines seen so far. A rejected command emits `ERROR ...` and leaves every repository and id counter unchanged. No input line can terminate the process. The practice tests check each statement.
 
 ### Layer 2: The mechanism
-Whitespace tokenising is O(line length). The dispatcher is a hash map from the uppercased keyword to an arity and a handler. Redis stores the same idea: a positive arity means exactly that many arguments including the name, a negative one means at least that many, and the server checks it before calling the handler. Numbers pass a strict digits-only check, so `-5`, `1e3` and `12abc` fail the same way. The service reads repositories and writes only after every check passes, which makes a failed command atomic without rollback code.
+Whitespace tokenising is O(line length). The dispatcher is a hash map from the uppercased keyword to an arity and a handler. Redis stores the same idea: a positive arity means exactly that many arguments including the name, a negative one means at least that many ([COMMAND docs](https://redis.io/docs/latest/commands/command/)), and the server checks it before running the command: `INCR a b c` is rejected with `wrong number of arguments for 'incr' command` ([Redis transactions docs](https://redis.io/docs/latest/develop/using-commands/transactions/)). Numbers pass a strict digits-only check, so `-5`, `1e3` and `12abc` fail the same way. The service reads repositories and writes only after every check passes, which makes a failed command atomic without rollback code.
 
 ### Layer 3: The machine
-Go's `bufio.Scanner` stops with "token too long" on lines over 64 KiB unless you call `Buffer`, a surprise when a sample file holds one huge line. Writing is the bigger trap: Go's `os.Stdout` is unbuffered, so `fmt.Println` per line is one `write` syscall, around a microsecond each; 100,000 lines spend a tenth of a second in syscalls alone. Wrap it in a `bufio.Writer` and flush at exit. Splitting allocates: Python creates a new string object (about 50 bytes of header) per token, while Go's `strings.Fields` returns substrings sharing the line's bytes.
+Go's `bufio.Scanner` stops with "token too long" on lines over `MaxScanTokenSize`, 64 KiB, unless you call `Buffer` ([bufio docs](https://pkg.go.dev/bufio)), a surprise when a sample file holds one huge line. Writing is the bigger trap: Go's `os.Stdout` is unbuffered, so `fmt.Println` per line is one `write` syscall, around a microsecond each; 100,000 lines spend a tenth of a second in syscalls alone. Wrap it in a `bufio.Writer` and flush at exit; the docs say buffered data is not guaranteed to reach the destination until `Flush` ([bufio docs](https://pkg.go.dev/bufio)). Splitting allocates: Python creates a new string object (about 50 bytes of header) per token, while Go's `strings.Fields` returns substrings sharing the line's bytes.
 
 ### Why it's built this way
 1. Evaluators judge by running sample input, so exact output and "never crash" matter more than any pattern.
@@ -99,6 +99,10 @@ BOOK cara 540 600 3  -> ERROR no room available
 ```
 
 Minutes 15 to 30: models, two repositories and the dispatcher with only `ADD_ROOM`; it runs. Minutes 30 to 60: the other four commands, about 7 minutes each. Minutes 60 to 80: error paths, half-open boundaries (`540-600` and `600-660` coexist) and a test that a rejected booking does not consume `B3`. The change request, "rooms can go under maintenance", is one dispatch entry, a `blocked` flag and one condition in the free check.
+
+## In the wild
+- **OpenSSL, 2014: Heartbleed.** The TLS heartbeat extension code (CVE-2014-0160) did not check a length field in the request, so each malformed request could return up to 64 KiB of the server's memory. The flaw entered the code on 31 December 2011, shipped in OpenSSL 1.0.1 on 14 March 2012, and was disclosed on 7 April 2014 with the fix in 1.0.1g. At disclosure about 17% of trusted secure web servers were believed vulnerable ([heartbleed.com](https://heartbleed.com/); [Wikipedia](https://en.wikipedia.org/wiki/Heartbleed)). A machine-coding parser has the same job on a smaller scale: validate every field before using it.
+- **Redis, documented design: a command table that rejects bad input before running it.** Each command declares its name and arity, and the server answers a wrong argument count with an error instead of running the handler. Inside `MULTI`, an error found while queuing makes `EXEC` refuse the whole transaction ([Redis docs](https://redis.io/docs/latest/develop/using-commands/transactions/)). This is the dispatch table plus "a failed command changes nothing" that the round rewards.
 
 ## Trade-offs
 
@@ -1004,6 +1008,25 @@ func Run(lines []string) []string {
 - The allocation rule behind a strategy, so VIP is a new strategy plus one dispatch entry.
 - Errors as output lines from one place, validation before writes, and real bugs still crashing.
 - I/O cost: buffered output, scanner line limits, and when a scan should become an index such as a min-heap of free spots per level.
+
+## Sources and further study
+**Primary**
+- [Go bufio package](https://pkg.go.dev/bufio): `Scanner` token limits and `Writer` flushing, the two I/O details that bite in timed rounds.
+- [heartbleed.com](https://heartbleed.com/): the official write-up of an input-validation failure and its scope.
+
+**Systems docs**
+- [Redis: COMMAND](https://redis.io/docs/latest/commands/command/): how a real server describes each command's name, arity and flags.
+- [Redis: transactions](https://redis.io/docs/latest/develop/using-commands/transactions/): queue-time errors versus execution-time errors, and the no-rollback choice.
+
+**Books**
+- *Patterns of Enterprise Application Architecture*, Martin Fowler: the Repository pattern, which the in-memory stores here follow (the online catalogue entry is linked under Free resources).
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 4, Building Tests, on writing the test before the change.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5, Behavioral Patterns, which includes Command and Strategy.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 6, The Command Pattern.
+
+**Other curricula**
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): has object-oriented design solutions but no timed, run-the-sample-input format.
+- [roadmap.sh: software design and architecture](https://roadmap.sh/software-design-architecture): lists patterns and principles to know; it says nothing about pacing a 90-minute round.
 
 ## Watch
 - [Machine Coding Round Interview: Flipkart, Uber, Udaan, Dunzo (CodeBuddy Official)](https://www.youtube.com/watch?v=Naf8KCy2lgM): what companies expect in the round and how candidates are evaluated.

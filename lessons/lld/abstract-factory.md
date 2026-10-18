@@ -36,12 +36,12 @@ kit = {"aws": AwsKit, "gcp": GcpKit, "memory": MemoryKit}[cfg.cloud](cfg)
 service = DocumentService(kit)
 ```
 
-`AwsKit` builds one boto3 session and hands it to every product; `GcpKit` does the same with one set of Google credentials. Configuration has one key, `cloud`, so broken combinations cannot be expressed, and `DocumentService` never names a vendor. Choosing the kit is a factory-method decision (see the Factory Method lesson); what the kit adds is that every later creation agrees with that one choice.
+`AwsKit` resolves credentials and region once and builds each product's client from them; `GcpKit` does the same with one set of Google credentials. Configuration has one key, `cloud`, so broken combinations cannot be expressed, and `DocumentService` never names a vendor. Choosing the kit is a factory-method decision (see the Factory Method lesson); what the kit adds is that every later creation agrees with that one choice.
 
 ### Factories you already use
 - **Database drivers.** In Go's `database/sql/driver`, a `Driver` opens a `Conn`, and the `Conn` creates the `Stmt` and `Tx` objects that only make sense on that connection. JDBC's `Connection.prepareStatement` and Python DB-API's `conn.cursor()` follow the same idea: the connection is the factory, and its products are bound to it.
 - **Event loops.** A Python asyncio loop creates futures, tasks, timers and transports (`loop.create_future()`, `loop.create_task()`, `loop.create_connection()`). Installing uvloop swaps the whole family at once. Mixing families is detected: awaiting a future from another loop raises `RuntimeError` saying the future is attached to a different loop.
-- **DI profiles.** A Spring `@Profile("test")` or a Guice module swaps a whole set of bindings at once, which is an abstract factory at application scale.
+- **DI profiles.** A Spring `@Profile("test")` ([Spring docs](https://docs.spring.io/spring-framework/reference/core/beans/environment.html)) or a Guice module swaps a whole set of bindings at once, which is an abstract factory at application scale.
 
 ### The axis problem
 Picture a table with families as rows and products as columns. Adding a row (a new cloud) is one new class that fills in every column, and nothing else changes. Adding a column (a new product, say a cache) means editing every row, including families owned by other teams. This is the expression problem in miniature. Three things keep it manageable: keep each family to the few products that genuinely share state; split unrelated products into separate, smaller factories; and make a missing product a compile-time or startup error (Python ABCs refuse to instantiate a class with an unimplemented abstract method, TypeScript checks `implements`, and Go code can assert `var _ CloudKit = (*GcpKit)(nil)`).
@@ -55,7 +55,7 @@ Picture a table with families as rows and products as columns. Adding a row (a n
 Asked to "add GCP support", an agent will usually add an `elif` in each place a client is built, plus a new config key per product. The diff looks small and correct, and it re-creates the eight-combination problem. Steer it to one `cloud` key, one kit per cloud, and a service that receives the kit or the products. Then check three things: the products a kit creates share its session and credentials rather than each building their own; a product from one kit handed to another kit's product fails loudly; and the in-memory kit is used in tests instead of patching vendor clients.
 
 ### The same shape elsewhere
-This is close to the *multi-step consistency* shape: several choices must agree, so you collapse them into one. TLS 1.2 cipher suites do the same: `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` names a key exchange, authentication method, cipher and hash analysed together, instead of negotiating four independent choices. A hardware vendor's board support package bundles drivers tested together for the same reason.
+This is close to the *multi-step consistency* shape: several choices must agree, so you collapse them into one. TLS 1.2 cipher suites do the same ([RFC 5246](https://datatracker.ietf.org/doc/html/rfc5246)): `TLS_DHE_RSA_WITH_AES_128_CBC_SHA256` names a key exchange, authentication method, cipher and hash analysed together, instead of negotiating four independent choices. A hardware vendor's board support package bundles drivers tested together for the same reason.
 
 ## Down the stack
 
@@ -63,14 +63,14 @@ This is close to the *multi-step consistency* shape: several choices must agree,
 Every product created by one factory works with every other product of that factory. Products from different factories are not required to interoperate, and when they are mixed the result must be a clear error at the point of mixing, not silent corruption later. The factory owns resources its products share (sessions, credential caches, connection pools); closing the factory closes them, so products must not outlive it. Whether repeated calls return new products or handles to shared state (two `queue()` calls returning views of the same queue) is part of the contract.
 
 ### Layer 2: The mechanism
-In Go's `database/sql/driver`, `Driver.Open(name)` returns a `driver.Conn` whose `Prepare` returns a `driver.Stmt` and whose `Begin` returns a `driver.Tx`. The `sql` package keeps each `Stmt` tied to the connection that prepared it and re-prepares it on another pooled connection when needed, because a statement handle from one server session is meaningless on another. In CPython's asyncio, `Task` checks each awaited future's loop with `futures._get_loop(fut)` and raises if it is not the task's own loop. Java's `DocumentBuilderFactory.newInstance()` chooses a family at runtime: a system property, then a `jaxp.properties` file, then `ServiceLoader`, then the platform default. In Python, `abc.ABCMeta` computes `__abstractmethods__` when the class is created, and `object.__new__` raises `TypeError` if any remain, which is how a family missing a product fails at construction time.
+In Go's `database/sql/driver`, `Driver.Open(name)` returns a `driver.Conn` whose `Prepare` returns a `driver.Stmt` and whose `Begin` returns a `driver.Tx`. The `sql` package keeps each `Stmt` tied to the connection that prepared it and re-prepares it on another pooled connection when needed, because a statement handle from one server session is meaningless on another ([driver docs](https://pkg.go.dev/database/sql/driver)). In CPython's asyncio, `Task` checks each awaited future's loop with `futures._get_loop(fut)` and raises if it is not the task's own loop ([CPython source](https://github.com/python/cpython/blob/main/Lib/asyncio/tasks.py)). Java's `DocumentBuilderFactory.newInstance()` chooses a family at runtime: a system property, then a configuration file, then `ServiceLoader`, then the platform default ([java.xml module docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.xml/module-summary.html)). Since Java 9, `newDefaultInstance()` skips that lookup, so the parser you get no longer depends on what else is on the classpath; the OWASP XXE cheat sheet's DOM example uses it ([OWASP](https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html)). In Python, `abc.ABCMeta` computes `__abstractmethods__` when the class is created, and `object.__new__` raises `TypeError` if any remain, which is how a family missing a product fails at construction time ([abc docs](https://docs.python.org/3/library/abc.html)).
 
 ### Layer 3: The machine
 A kit is a hand-built vtable: an object whose methods each return a product. In Go, an interface value is two words, an itab pointer and a data pointer. The itab holds the concrete type, a hash, and the method addresses for that (interface, type) pair; conversions known at compile time use statically generated itabs, and dynamic ones are computed once by `runtime.getitab` and cached in a global hash table. Each product call is a load from the itab and an indirect call, about 1 to 2 ns when predicted.
 
 That prediction is nearly perfect here. A process runs with one family, so every call site sees one concrete type for its whole life. CPU branch predictors learn the target, JVM and V8 inline caches stay monomorphic and inline the method, and Go's profile-guided optimisation can devirtualise hot sites. The dispatch cost of the pattern rounds to zero.
 
-The real costs are resources. If each product builds its own SDK client, a kit with three products opens three connection pools, resolves credentials three times and pays three sets of TLS handshakes, each one or two round trips plus a few milliseconds of CPU. Sharing one session or HTTP client across the family is the main runtime benefit of the pattern, and forgetting to do it is the main runtime mistake.
+The real costs are resources. If each product builds its own SDK client, a kit with three products opens three connection pools, resolves credentials three times and pays three sets of TLS handshakes, each one or two round trips plus a few milliseconds of CPU. Sharing one credential chain and one HTTP configuration across the family is the main runtime benefit of the pattern, and forgetting to do it is the main runtime mistake. Share what is safe to share: boto3 clients are generally thread-safe ([boto3 clients](https://docs.aws.amazon.com/boto3/latest/guide/clients.html)), but its `Session` objects are not and should not be shared across threads ([boto3 sessions](https://docs.aws.amazon.com/boto3/latest/guide/session.html)).
 
 ### Why it's built this way
 1. Some objects are only correct in combination: they share credentials, sessions, connections or reference formats.
@@ -99,9 +99,14 @@ flowchart LR
 ## Worked example
 The service above had 38 places that built a storage, queue or secrets client from separate config keys. During the rollout for the data-residency customer, one region was configured with `storage=gcs` and `queue=sqs`. Uploads succeeded, processors failed on every message, and 11,000 documents waited six hours before someone traced the mismatch.
 
-The fix introduced `CloudKit` with three products and three families. Configuration went from three keys per region to one, and the 38 construction sites to zero: services take a kit or its products in their constructors, and `main` builds the kit once. Sharing one SDK session per kit cut processor cold start from 2.1 s to 1.4 s, since credentials were resolved once instead of three times. References carry the kit's scheme (`gs://`, `s3://`) and queues reject foreign ones at publish, so a mismatch now fails on the first upload in staging.
+The fix introduced `CloudKit` with three products and three families. Configuration went from three keys per region to one, and the 38 construction sites to zero: services take a kit or its products in their constructors, and `main` builds the kit once. Resolving credentials once per kit cut processor cold start from 2.1 s to 1.4 s, since credentials were resolved once instead of three times. References carry the kit's scheme (`gs://`, `s3://`) and queues reject foreign ones at publish, so a mismatch now fails on the first upload in staging.
 
 Tests moved from LocalStack containers to `MemoryKit`, and the integration suite dropped from 14 minutes to 3. The cost appeared six months later when a cache product was proposed: three kits to update, one owned by another team. The cache got its own factory instead, because it shared nothing with the others.
+
+## In the wild
+- **Java XML parsers, documented practice: configure the factory first.** JAXP picks its implementation from a system property, a config file, `ServiceLoader` or the default, and the OWASP XXE cheat sheet tells callers to set features such as `disallow-doctype-decl` and secure processing on the factory before creating any parser from it. The factory is the one place where every parser it produces is made consistent ([java.xml docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.xml/module-summary.html), [OWASP](https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html)).
+- **CPython asyncio, documented behaviour: families that refuse to mix.** A `Task` that awaits a future created by another event loop raises `RuntimeError` with "attached to a different loop", and uvloop is sold as a drop-in replacement for the whole loop family ([CPython source](https://github.com/python/cpython/blob/main/Lib/asyncio/tasks.py), [uvloop](https://uvloop.readthedocs.io/)).
+- **boto3, documented behaviour: what a cloud kit may share.** The boto3 guide says `Session` objects are not thread-safe and recommends one per thread, while clients are generally thread-safe but cannot be shared across processes. A kit that holds one session for all threads would break that rule; a kit that shares clients and credentials respects it ([sessions](https://docs.aws.amazon.com/boto3/latest/guide/session.html), [clients](https://docs.aws.amazon.com/boto3/latest/guide/clients.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -697,6 +702,25 @@ func PublishReport(kit Kit, key, data string) (string, error) {
 - References and encrypted keys tagged with their family, rejected at the boundary when foreign, and startup checks that every product of the chosen family can reach its service.
 - Shared sessions and connection pools owned by the kit, with explicit lifetime and shutdown order.
 - A contract test suite run against every family in CI, including delivery semantics, consistency and error mapping, so families cannot silently drift.
+
+## Sources and further study
+**Primary**
+- [RFC 5246: TLS 1.2](https://datatracker.ietf.org/doc/html/rfc5246): cipher suites as a bundled family of algorithms.
+- [java.xml module summary (Java SE docs)](https://docs.oracle.com/en/java/javase/21/docs/api/java.xml/module-summary.html): the ordered JAXP lookup for factory implementations.
+- [asyncio tasks.py (CPython)](https://github.com/python/cpython/blob/main/Lib/asyncio/tasks.py): the check that rejects a future from another loop.
+
+**Systems docs**
+- [boto3 clients](https://docs.aws.amazon.com/boto3/latest/guide/clients.html): which products of an AWS kit are safe to share between threads.
+- [boto3 sessions](https://docs.aws.amazon.com/boto3/latest/guide/session.html): why a session is not the object to share.
+- [OWASP XXE Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html): configuring parser factories before use.
+- [abc module (Python docs)](https://docs.python.org/3/library/abc.html): abstract classes that cannot be instantiated until complete.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 3, Creational Patterns, for the original Abstract Factory.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 4, The Factory Pattern, which builds ingredient families for regional pizza stores.
+
+**Other curricula**
+- [Abstract Factory (refactoring.guru)](https://refactoring.guru/design-patterns/abstract-factory): frames it around families of related products and the cost of adding a product type.
 
 ## Watch
 - [Abstract Factory Pattern, Design Patterns ep 5 (Christopher Okhravi)](https://www.youtube.com/watch?v=v-GiuMmsXj4): the Gang of Four structure built up on a whiteboard, with how it differs from Factory Method.

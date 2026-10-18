@@ -15,7 +15,7 @@ minutes: 16
 ### The problem it solves
 An HTTP client has a base URL, a per-attempt timeout, an overall deadline, a retry count, a backoff policy, default headers, a proxy, TLS settings and a user agent. A constructor with nine positional parameters is unreadable at the call site (`Client("https://api", 2, 10, 3, None, {}, None, None, "svc/1.4")`), and the usual workaround, a ladder of overloaded constructors with three, five and seven parameters, multiplies code without making any of it safer.
 
-The deeper problem is that some fields constrain each other. Retries on a non-idempotent request need an idempotency key. The overall deadline must be at least the per-attempt timeout. A proxy and a Unix socket path cannot both be set. Setters cannot enforce these rules because each setter sees one field at a time; the rule can only be checked once the whole description is known.
+The deeper problem is that some fields constrain each other. Retries on a non-idempotent request need an idempotency key. The overall deadline must be at least the per-attempt timeout; the AWS SDK for Java guide recommends setting both a per-attempt timeout and a whole-call timeout, and the pair only makes sense if the second is at least the first ([AWS docs](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/best-practices.html)). A proxy and a Unix socket path cannot both be set. Setters cannot enforce these rules because each setter sees one field at a time; the rule can only be checked once the whole description is known.
 
 ### The shape
 A builder collects choices and validates them once:
@@ -32,7 +32,7 @@ client = (ClientBuilder("https://api.example.com")
 Each call returns a builder, which gives the readable chain. `build()` is the single place where cross-field rules live, and it either returns a fully valid object or fails with a message that names the rule. The product is immutable, so nothing can make it invalid afterwards. The Gang of Four version adds a *director* that runs a fixed sequence of builder steps, so the same steps can drive different builders (one builds a document tree, another renders plain text). In practice the director is usually just a function.
 
 ### When the language already gives you this
-- **Python**: a frozen dataclass with keyword-only fields and defaults reads as well as a builder at the call site, and `__post_init__` is where cross-field validation goes. `dataclasses.replace(cfg, timeout=5)` gives you "copy with one change".
+- **Python**: a frozen dataclass with keyword-only fields and defaults ([dataclasses docs](https://docs.python.org/3/library/dataclasses.html)) reads as well as a builder at the call site, and `__post_init__` is where cross-field validation goes. `dataclasses.replace(cfg, timeout=5)` gives you "copy with one change".
 - **TypeScript**: an options object (`new Client({ baseUrl, timeout: 2 })`) with an interface type and defaults applied in the constructor. The compiler checks field names and types; the constructor checks the rules.
 - **Go**: a config struct with a `Validate()` method, or functional options (`NewClient(url, WithTimeout(2*time.Second), WithRetries(3))`), the style Rob Pike described and Dave Cheney popularised. Each option is a function that modifies the config; the constructor applies them in order and then validates.
 
@@ -55,7 +55,7 @@ Builders are the *multi-step consistency* problem shape at object scale: accumul
 `build()` returns an object that satisfies every invariant, or returns or raises an error that names the first violated rule; it never returns a partially valid product. The product is immutable or at least does not share mutable state with the builder, so later builder calls cannot change an object already built. A builder is either single-use or persistent (each step returns a new builder), and that choice is part of its documented contract. Builders are not safe for concurrent use; they are local, short-lived objects.
 
 ### Layer 2: The mechanism
-Protocol Buffers' generated Java code is the canonical example: `Message.newBuilder()` returns a mutable builder, setters return the builder, `build()` checks required fields (in proto2) and throws if any are missing, and `buildPartial()` skips the check for callers who know better. `toBuilder()` copies an immutable message back into a builder for "copy with changes". Go's `strings.Builder` is a builder for bytes: it appends into a `[]byte` and `String()` returns a string that shares that memory without copying, which is only safe because the builder refuses to be copied (it stores a pointer to itself and panics in `copyCheck` if a copy is used). Java's `StringBuilder` grows its array by roughly doubling, so appends are amortised constant time.
+Protocol Buffers' generated Java code is the canonical example: `Message.newBuilder()` returns a mutable builder, setters return the builder, `build()` throws `UninitializedMessageException` when a proto2 required field is unset (the generated-code docs contrast it with `parseFrom`, which throws `InvalidProtocolBufferException` instead) ([protobuf docs](https://protobuf.dev/reference/java/java-generated/)). That check is shrinking: the proto2 guide now says not to use `required` and that it was removed from proto3 and editions ([proto2 guide](https://protobuf.dev/programming-guides/proto2/)), so in a modern schema `build()` validates little and cross-field rules need their own validator. `toBuilder()` copies an immutable message back into a builder for "copy with changes". Go's `strings.Builder` is a builder for bytes: it appends into a `[]byte` and `String()` returns a string that shares that memory without copying, which is only safe because the builder refuses to be copied (it stores a pointer to itself and panics in `copyCheck` if a copy is used, per the [source](https://go.dev/src/strings/builder.go)). Java's `StringBuilder` grows its array by roughly doubling, so appends are amortised constant time.
 
 Functional options in Go are a slice of `func(*config)` values. The constructor starts from defaults, loops over the options, and validates once at the end. Persistent builders, where each step returns a new value, are what the Practice implements. In Go they hit a classic trap: a builder struct copied by value still shares the backing array of any slice field. If `base` has three conditions in a slice with capacity four, `base.Where(x)` and `base.Where(y)` both append into slot four of the same array, and the first result silently changes to contain `y`. The fix is to copy the slice before appending.
 
@@ -90,6 +90,11 @@ sequenceDiagram
 A data team exposes a reporting API that turns filter requests into SQL. The first version concatenated strings: `"WHERE status = '" + status + "'"`. A penetration test found injection in two endpoints within an hour. The second version used a query builder with three rules in `build()`: identifiers must match `[A-Za-z_][A-Za-z0-9_]*`, operators must come from a fixed list of six, and every value becomes a `?` placeholder in a separate parameter list that the database driver binds. Values never touch the SQL text, so injection through values is impossible by construction.
 
 The builder is persistent. The API builds `base = Query("orders").where("tenant_id", "=", t)` once per request and derives three queries from it (the page, the total count and a CSV export). In the first draft the builder mutated itself, and the CSV export inherited the page's `LIMIT 50`, so exports silently returned 50 rows. Making each step return a new builder fixed it. Cost check: a typical query has 4 conditions and 1 ordering. Building it copies about 10 small list entries across 6 steps, under 2 microseconds in Python against a 5 to 50 millisecond database round trip.
+
+## In the wild
+- **AWS SDK for Java 2.x, documented practice: two timeouts and one shared client.** The SDK's best-practices guide asks callers to set both a per-attempt timeout (`apiCallAttemptTimeout`) and a whole-call timeout (`apiCallTimeout`), and to share one client instance because each client owns a connection pool. Those are the cross-field rule and the aliasing rule from this lesson, written down for a production SDK ([AWS docs](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/best-practices.html)).
+- **Protocol Buffers, current docs: validation in `build()` was retired.** The proto2 guide says `required` should not be used because required fields were so problematic that proto3 and editions removed them, so the one check generated builders could do is gone from new schemas. Field rules now live in separate validators ([proto2 guide](https://protobuf.dev/programming-guides/proto2/)).
+- **Go standard library: `strings.Builder` refuses to be copied.** It records its own address and panics if a copy is mutated, because a copied builder would share one backing array with the original, the same aliasing bug as a shared mutable builder ([source](https://go.dev/src/strings/builder.go)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -640,6 +645,24 @@ func (b Builder) Build() (Query, error) {
 - A migration path: a new constructor alongside the old one, a deprecation period, and an automated codemod that agents or scripts can apply across the 120 services.
 - Trade-off awareness: functional options keep defaults private and evolve cleanly; config structs are easier to inspect, serialise and diff.
 
+## Sources and further study
+**Primary**
+- [Python dataclasses](https://docs.python.org/3/library/dataclasses.html): `frozen`, `kw_only` and `__post_init__`, the native alternative to a builder.
+- [Protocol Buffers proto2 guide](https://protobuf.dev/programming-guides/proto2/): why `required`, and with it build-time validation, was dropped.
+
+**Systems docs**
+- [AWS SDK for Java 2.x best practices](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/best-practices.html): setting both timeouts and sharing clients.
+- [Protocol Buffers Java generated code](https://protobuf.dev/reference/java/java-generated/): immutable messages, builders and `toBuilder`, from a production library.
+- [Go strings.Builder source](https://go.dev/src/strings/builder.go): the copy check in a few lines.
+
+**Books**
+- *Effective Java* (3rd ed.), Bloch: chapter 2, Item 2, Consider a builder when faced with many constructor parameters.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 3, Creational Patterns, for the Builder and its director.
+- *Refactoring* (2nd ed.), Fowler: chapter 6, A First Set of Refactorings, which includes Introduce Parameter Object.
+
+**Other curricula**
+- [Builder (refactoring.guru)](https://refactoring.guru/design-patterns/builder): frames it as step-by-step construction, with a warning about telescoping constructors.
+
 ## Watch
 - [Functional options for friendly APIs (Dave Cheney, dotGo 2014)](https://www.youtube.com/watch?v=24lFtGHWxAQ): the Go answer to builders, and why it evolves better than config structs for public APIs.
 - [10 Design Patterns Explained in 10 Minutes (Fireship)](https://www.youtube.com/watch?v=tv-_1er1mWI): a fast tour that places builder next to singleton and factory in a JavaScript setting.
@@ -649,5 +672,5 @@ func (b Builder) Build() (Query, error) {
 - [Self-referential functions and the design of options (Rob Pike)](https://commandcenter.blogspot.com/2014/01/self-referential-functions-and-design.html): the original functional options post.
 - [Functional options for friendly APIs (Dave Cheney)](https://dave.cheney.net/2014/10/17/functional-options-for-friendly-apis): the written version of the talk, comparing every alternative.
 - [Fluent Interface (Martin Fowler)](https://martinfowler.com/bliki/FluentInterface.html): where method chaining helps readability and what it costs.
-- [Java generated code: builders (Protocol Buffers docs)](https://protobuf.dev/reference/java/java-generated/): a production builder with `build()`, `buildPartial()` and `toBuilder()`.
+- [Java generated code: builders (Protocol Buffers docs)](https://protobuf.dev/reference/java/java-generated/): a production builder with `build()` and `toBuilder()`.
 - [strings.Builder source (Go)](https://go.dev/src/strings/builder.go): a small builder that avoids a final copy and panics if copied.

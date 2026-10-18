@@ -18,19 +18,19 @@ A CRM loads a `Customer` for every page. Each customer has an order history (oft
 The proxy answer: `Customer.orders` holds a proxy with the real history's interface that runs the query only on first iteration. The credit report sits behind a protection proxy that checks the viewer's role before the paid API is called. The page code does not change.
 
 ### The four kinds
-A **virtual proxy** holds a recipe for the real object (a factory, a primary key, a file path) and builds it on first use. Hibernate's `session.getReference(Customer.class, id)` returns one. Virtual memory is the same idea in hardware: a not-present page table entry, and a page fault that loads the page on first touch.
+A **virtual proxy** holds a recipe for the real object (a factory, a primary key, a file path) and builds it on first use; Fowler lists it as one of four lazy-load varieties, next to lazy initialization, value holder and ghost ([PoEAA](https://martinfowler.com/eaaCatalog/lazyLoad.html)). Hibernate's `session.getReference(Customer.class, id)` returns one. Virtual memory is the same idea in hardware: a not-present page table entry, and a page fault that loads the page on first touch.
 
 A **protection proxy** checks whether the caller may perform the operation and forwards or refuses, so no caller can forget the policy.
 
 A **remote proxy** implements the interface by serialising arguments, sending them over the network and decoding the reply. A generated gRPC client stub is one: `client.GetUser(ctx, req)` looks like a method call and is an HTTP/2 request.
 
-A **smart-reference proxy** adds bookkeeping: reference counting, access logging, copy-on-write, or change tracking. Vue 3's `reactive()` wraps an object in a JavaScript `Proxy` whose `get` trap records which component read which property and whose `set` trap schedules re-renders.
+A **smart-reference proxy** adds bookkeeping: reference counting, access logging, copy-on-write, or change tracking. Vue 3's `reactive()` wraps an object in a JavaScript `Proxy` whose `get` trap records which component read which property and whose `set` trap schedules re-renders ([Vue docs](https://vuejs.org/guide/extras/reactivity-in-depth.html)).
 
 ### Proxy, decorator, adapter
 All three wrap an object. An adapter changes the interface (see Adapter). A decorator keeps it and adds a concern while always forwarding (see Decorator). A proxy keeps it and may not forward at all: it may refuse, defer, or cross a network. The line blurs (a cache is called either), so ask which question the wrapper answers: "what else happens on this call?" or "should and can this call reach the target?"
 
 ### Static and dynamic proxies
-A static proxy is written or generated for one interface. Go has only these, since it cannot create types at runtime: proxies are hand-written structs or generated code (gRPC stubs, `mockgen`). Dynamic proxies are created at runtime for any interface. Java's `java.lang.reflect.Proxy.newProxyInstance` builds a class implementing the given interfaces and routes every call to one `InvocationHandler.invoke(proxy, method, args)`. JavaScript's `new Proxy(target, handler)` intercepts thirteen operations, including `get`, `set`, `has`, `deleteProperty` and `apply`. Python has no proxy object, but `__getattr__`, called only when normal attribute lookup fails, makes a forwarding proxy a few lines long.
+A static proxy is written or generated for one interface. Go has only these, since it cannot create types at runtime: proxies are hand-written structs or generated code (gRPC stubs, `mockgen`). Dynamic proxies are created at runtime for any interface. Java's `java.lang.reflect.Proxy.newProxyInstance` builds a class implementing the given interfaces and routes every call to one `InvocationHandler.invoke(proxy, method, args)` ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/reflect/Proxy.html)). JavaScript's `new Proxy(target, handler)` intercepts thirteen operations, including `get`, `set`, `has`, `deleteProperty` and `apply` ([MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/Proxy)). Python has no proxy object, but `__getattr__`, called only when normal attribute lookup fails, makes a forwarding proxy a few lines long ([Python data model](https://docs.python.org/3/reference/datamodel.html)).
 
 ### Reviewing agent-written code
 Agents add lazy relationships by default because they keep the first query simple. Check every lazy collection read in a loop (an N+1), every lazy access after the transaction closes (serialisers and templates), and every permission check that is not in front of the data. In hand-written proxies, a forgotten method is an unguarded door.
@@ -44,12 +44,12 @@ A protection proxy is the *trust but verify* problem shape: the check sits on th
 A proxy promises the target's contract plus documented differences. A virtual proxy creates the target at most once, on first use, and reports a failed creation rather than caching a broken object. A protection proxy promises that a denied call has no effect on the target, including no side effects of creating it. A remote proxy cannot keep the local contract fully: it adds latency in milliseconds, new failure modes (timeouts, partial failure where the server acted but the reply was lost), and copies instead of shared references. What no proxy preserves is identity: `proxy is target` is false, and type checks see the proxy's class.
 
 ### Layer 2: The mechanism
-Java's dynamic proxy generates a class named like `$Proxy12` that extends `java.lang.reflect.Proxy` and implements the requested interfaces. Each method body boxes primitive arguments into an `Object[]` and calls the handler with a cached `Method` object. Spring AOP uses these for interfaces and CGLIB-generated subclasses otherwise; either way, a `@Transactional` method called from another method of the same bean goes through `this`, not the proxy, so no transaction starts. Hibernate's lazy entities are ByteBuddy-generated subclasses whose methods ask a lazy initializer to load the row on first access, and throw `LazyInitializationException` if the session is gone.
+Java's dynamic proxy generates a class named like `$Proxy12` that extends `java.lang.reflect.Proxy` and implements the requested interfaces. Each method body boxes primitive arguments into an `Object[]` and calls the handler with a cached `Method` object. Spring Framework uses these when the target implements an interface and CGLIB-generated subclasses otherwise ([Spring docs](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)); Spring Boot configures CGLIB by default, which also works for classes with no interface ([Boot docs](https://docs.spring.io/spring-boot/reference/features/aop.html)). Either way, only calls arriving through the proxy are intercepted, so a `@Transactional` method called from another method of the same bean goes through `this` and no transaction starts ([Spring docs](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)). Hibernate's lazy entities are generated subclasses (Byte Buddy by default) whose methods ask a lazy initializer to load the row on first access, and throw `LazyInitializationException` if the session is gone. A `final` entity class cannot be subclassed, so Hibernate silently returns the real object and loads eagerly ([Hibernate guide](https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html)).
 
-In JavaScript, a `Proxy` has internal slots `[[ProxyTarget]]` and `[[ProxyHandler]]`, and each internal method checks for a trap and falls back to the target. The engine enforces invariants: a `get` trap cannot report a different value for a non-configurable, non-writable property. Private class fields (`#balance`) are not reachable through a proxy: a method called with `this` set to the proxy throws `TypeError` when it reads `this.#balance`, which breaks naive wrappers of classes.
+In JavaScript, a `Proxy` has internal slots `[[ProxyTarget]]` and `[[ProxyHandler]]`, and each internal method checks for a trap and falls back to the target. The engine enforces invariants: a `get` trap cannot report a different value for a non-configurable, non-writable property. Private class fields (`#balance`) are not reachable through a proxy: a method called with `this` set to the proxy throws `TypeError` when it reads `this.#balance`, which breaks naive wrappers of classes ([MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy)).
 
 ### Layer 3: The machine
-A hand-written proxy in Go costs one extra interface call, roughly 1 to 2 ns, and one pointer of memory. A virtual proxy saves the target's whole allocation until it is needed: an unopened 4 MB image costs a 48-byte proxy. In Java, a dynamic proxy call allocates the argument array and boxes primitives unless the JIT's escape analysis removes them, and `Method.invoke` dispatch is slower than a direct call, typically tens of nanoseconds. In V8, property access on a `Proxy` does not use the inline caches that make ordinary property reads a few nanoseconds, so code that reads proxied objects in tight loops is often an order of magnitude slower; Vue mitigates this by caching proxies per object in a `WeakMap`.
+A hand-written proxy in Go costs one extra interface call, roughly 1 to 2 ns, and one pointer of memory. A virtual proxy saves the target's whole allocation until it is needed: an unopened 4 MB image costs a 48-byte proxy. In Java, a dynamic proxy call allocates the argument array and boxes primitives unless the JIT's escape analysis removes them, and `Method.invoke` dispatch is slower than a direct call, typically tens of nanoseconds. In V8, property access on a `Proxy` goes through the trap and generally misses the fast paths that make ordinary property reads cheap, so measure before putting proxied objects in tight loops; Vue avoids creating duplicate proxies by caching them per object in a `WeakMap` ([Vue source](https://github.com/vuejs/core/blob/main/packages/reactivity/src/reactive.ts)).
 
 A remote proxy dwarfs all of this. A local call costs nanoseconds; a same-datacentre RPC costs 0.2 to 1 ms, five to six orders of magnitude more, plus serialisation. A loop of 1,000 calls that looked free costs a second.
 
@@ -83,11 +83,16 @@ sequenceDiagram
 ```
 
 ## Worked example
-The CRM's customer list shows 50 customers per page and, after a product request, each row's open order count. The ORM maps `customer.orders` as a lazy collection. The template loops over customers and reads `len(customer.orders)`, so the page runs 1 query for the list and 50 more, one per proxy: 51 round trips. At 1.2 ms each against a database in the same zone, the page spends 61 ms in the database before rendering, and at 300 page views a second that is 15,300 queries a second for a list page.
+The CRM's customer list shows 50 customers per page and, after a product request, each row's open order count. The ORM maps `customer.orders` as a lazy collection, which Hibernate's guide recommends as the default for associations because eager fetching tends to cause N+1 queries ([Hibernate guide](https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html)). The template loops over customers and reads `len(customer.orders)`, so the page runs 1 query for the list and 50 more, one per proxy: 51 round trips. At 1.2 ms each against a database in the same zone, the page spends 61 ms in the database before rendering, and at 300 page views a second that is 15,300 queries a second for a list page.
 
 Two fixes, depending on the access pattern. If the page needs the orders themselves, eager-load them for this query only, with SQLAlchemy's `selectinload(Customer.orders)` or a fetch join in JPA: 2 queries, about 3 ms. If it needs only the count, do not load orders at all; add a grouped count query: 2 queries, 2.5 ms, and no thousands of order rows in memory. The lazy proxy stays as the default for pages that touch one customer.
 
 A second incident was a protection gap: a new export job called the credit API client directly, skipping the proxy. The fix made the client constructor package-private so the factory hands out only the proxy.
+
+## In the wild
+- **Spring Framework: `@Transactional` silently ignored on self-invocation.** Spring AOP is proxy based, so annotations only take effect on calls that arrive through the proxy. The reference documentation warns that a method calling another `@Transactional` method on the same object starts no transaction, and that misconfigured transaction annotations may be silently ignored, so code can appear to work until a rollback test is run. It offers AspectJ weaving, where there is no proxy, as the alternative ([Spring docs](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)).
+- **Hibernate: lazy proxies, N+1 and `LazyInitializationException`.** Hibernate returns generated proxy subclasses for lazy associations. Its user guide says eager fetching leads to N+1 queries, so associations should be lazy, but a lazy association touched after the persistence context closes throws `LazyInitializationException`. The recommended fix is to fetch what the use case needs, for example with `JOIN FETCH`, before closing. A final entity class cannot be proxied at all ([Hibernate guide](https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html)).
+- **Vue 3: `Proxy`-based reactivity.** Vue 2 tracked property access with getters and setters; Vue 3 uses JavaScript Proxies for reactive objects, with a `get` trap that records dependencies and a `set` trap that triggers updates, a smart-reference proxy in daily use at framework scale ([Vue docs](https://vuejs.org/guide/extras/reactivity-in-depth.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -843,6 +848,26 @@ func (g *GuardedStore) Keys() ([]string, error) {
 - N+1 awareness: batch prefetch for endpoints that need bodies, and a test or metric that caps storage calls per request.
 - A protection proxy or service layer as the only path to storage, with the raw client unexported, and checks ordered before any lazy load.
 - Safe lazy initialisation (`sync.Once`, a mutex, or a future shared by concurrent callers) and no caching of failed loads.
+
+## Sources and further study
+**Primary**
+- [Proxy (MDN)](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy): traps, invariants and the no-private-field-forwarding caveat.
+- [java.lang.reflect.Proxy (Java SE 21)](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/reflect/Proxy.html): dynamic proxy classes and `InvocationHandler`.
+- [Python data model](https://docs.python.org/3/reference/datamodel.html): `__getattr__` and attribute lookup rules.
+
+**Systems docs**
+- [Spring AOP proxying mechanisms](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html): JDK versus CGLIB proxies and the self-invocation limit.
+- [Spring Boot AOP defaults](https://docs.spring.io/spring-boot/reference/features/aop.html): CGLIB by default.
+- [Hibernate ORM user guide](https://docs.jboss.org/hibernate/orm/6.6/userguide/html_single/Hibernate_User_Guide.html): lazy proxies, fetching and custom entity proxies.
+- [Vue reactivity in depth](https://vuejs.org/guide/extras/reactivity-in-depth.html): Proxy-based tracking.
+
+**Books**
+- *Design Patterns* (Gamma, Helm, Johnson, Vlissides, 1st ed.), Ch 4: Structural Patterns, the Proxy entry with its virtual, remote and protection variants.
+- *Head First Design Patterns* (Freeman and Robson, 2nd ed.), Ch 11: Controlling Object Access, the Proxy Pattern.
+- *Patterns of Enterprise Application Architecture* (Fowler, 2002), the Lazy Load entry, summarised on [martinfowler.com](https://martinfowler.com/eaaCatalog/lazyLoad.html).
+
+**Other curricula**
+- [Proxy (refactoring.guru)](https://refactoring.guru/design-patterns/proxy): lists lazy initialization, access control, remote and logging proxies, with a structure diagram.
 
 ## Watch
 - [Proxy Pattern, Design Patterns ep 10 (Christopher Okhravi)](https://www.youtube.com/watch?v=NwaabHqPHeM): the Gang of Four structure and the kinds of proxy.

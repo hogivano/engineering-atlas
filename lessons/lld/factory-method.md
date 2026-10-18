@@ -64,17 +64,17 @@ class CsvExporter(ReportExporter):
 This is useful inside frameworks, where the framework owns the algorithm and the application supplies one piece of it (Django's class-based views call `get_queryset()`, which you override). Outside frameworks, passing the writer or a writer factory as a parameter does the same job with composition, and avoids a class hierarchy whose only purpose is to choose one object.
 
 ### Alternative constructors
-Python's `dict.fromkeys`, `datetime.fromtimestamp` and `int.from_bytes` are factory methods in the plainest sense: classmethods that build an instance from a different kind of input. Go's convention is the same idea without classes: `NewReader(r io.Reader) *Reader`, `errors.New`, `http.NewRequest`. They exist because a constructor has one signature and cannot return an error (in Python) or can only be one function (in Go). Named factories give each way of building an object its own name and validation.
+Python's `dict.fromkeys`, `datetime.fromtimestamp` and `int.from_bytes` are factory methods in the plainest sense: classmethods that build an instance from a different kind of input. Go's convention is the same idea without classes: `NewReader(r io.Reader) *Reader`, `errors.New`, `http.NewRequest`. They exist because a class has one constructor signature (Java and C++ cannot even overload two constructors that take the same argument types), and Go has no constructors at all. Named factories give each way of building an object its own name and validation. Fowler's catalogue lists the move as [Replace Constructor with Factory Function](https://refactoring.com/catalog/replaceConstructorWithFactoryFunction.html).
 
 ### What a factory can do that a constructor cannot
 - **Return a different concrete type** depending on input: `document.createElement("video")` returns an `HTMLVideoElement`.
-- **Return an existing instance**: Java's `Integer.valueOf` returns cached objects for -128 to 127; `logging.getLogger(name)` returns the same logger for the same name.
+- **Return an existing instance**: Java's `Integer.valueOf` always caches -128 to 127 ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html)); `logging.getLogger(name)` returns the same logger for the same name ([Python docs](https://docs.python.org/3/library/logging.html)).
 - **Fail cleanly**: return `(nil, err)` or raise a specific error instead of half-initialising an object.
 - **Be chosen at runtime by name**, from configuration or a URL.
 
 ### When not to use it
 - **One implementation.** `UserServiceFactory` that always returns `UserService` adds a file and a hop for readers. Call the constructor; add the factory when the second implementation arrives.
-- **Returning interfaces in Go by reflex.** Go's guidance is "accept interfaces, return structs": a constructor returning `*Client` lets callers use every method and define the narrow interface they need themselves. Return an interface when the concrete type is genuinely chosen at runtime.
+- **Returning interfaces in Go by reflex.** Go's code review guidance is for the producing package to return a concrete type: a constructor returning `*Client` lets callers use every method and define the narrow interface they need themselves ([Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)). Return an interface when the concrete type is genuinely chosen at runtime.
 - **Factories of factories.** If configuring the factory needs its own factory, the abstraction is fighting you; pass the dependencies in directly.
 - **String keys where an enum would do.** A registry keyed by free-form strings fails at runtime on a typo; if the set is closed and known at compile time, an exhaustive `switch` over an enum fails at compile time instead.
 
@@ -90,10 +90,10 @@ A factory keyed by scheme or name is the *finding things fast* shape in miniatur
 A factory promises: for a known key and valid input it returns an object that satisfies the interface; for an unknown key or invalid input it fails with an error that names the problem, and never returns a half-built object or a nil interface without an error. Whether it returns a fresh or a shared instance is part of the contract and must be documented, because callers that mutate a shared instance will affect each other. A registry promises that registration happens before first use and that duplicate keys are rejected rather than silently overwritten.
 
 ### Layer 2: The mechanism
-Go's `database/sql` is the textbook plugin factory. A driver package calls `sql.Register("postgres", &Driver{})` in its `init()` function; `Register` takes a write lock on a package-level `map[string]driver.Driver` and panics on a duplicate name. Importing the driver for side effects (`import _ "github.com/lib/pq"`) runs that `init`. `sql.Open("postgres", dsn)` takes a read lock, looks up the name, and returns an error `sql: unknown driver "postgres" (forgotten import?)` if it is missing. The `image` package does the same with `image.RegisterFormat`, matching magic bytes at the start of a file to pick a decoder. Python packages advertise factories through entry points in their metadata, which tools such as pytest load with `importlib.metadata.entry_points(group=...)`. In the browser, `document.createElement(tag)` looks up the tag in a table of element interfaces and custom elements registered with `customElements.define`.
+Go's `database/sql` is the textbook plugin factory. A driver package calls `sql.Register("postgres", &Driver{})` in its `init()` function; `Register` takes a write lock on a package-level `map[string]driver.Driver` and panics on a duplicate name ([Go source](https://go.dev/src/database/sql/sql.go)). Importing the driver for side effects (`import _ "github.com/lib/pq"`) runs that `init`. `sql.Open("postgres", dsn)` takes a read lock, looks up the name, and returns an error `sql: unknown driver "postgres" (forgotten import?)` if it is missing. The `image` package does the same with [`image.RegisterFormat`](https://pkg.go.dev/image#RegisterFormat), matching magic bytes at the start of a file to pick a decoder. Python packages advertise factories through entry points in their metadata, which tools such as pytest load with `importlib.metadata.entry_points(group=...)`. In the browser, `document.createElement(tag)` looks up the tag in a table of element interfaces and custom elements registered with `customElements.define`.
 
 ### Layer 3: The machine
-Returning through an interface has a cost in Go: a concrete value stored in an interface usually escapes to the heap, so a factory returning `Store` instead of `*MemoryStore` may add one allocation per call, and the compiler can no longer inline methods called through it. Each call becomes an indirect call through the itab, about 1 to 2 ns when predicted. Go's profile-guided optimisation can devirtualise hot interface call sites when the profile shows one dominant concrete type. The JVM does this speculatively: if class-hierarchy analysis or the profile shows one receiver type at a call site, it inlines the method behind a cheap type guard. In V8, objects created by one factory with fields assigned in the same order share a hidden class, which keeps property access monomorphic; a factory that builds the "same" object in different field orders on different branches creates several shapes and slows every reader.
+Returning through an interface has a cost in Go: a concrete value stored in an interface usually escapes to the heap, so a factory returning `Store` instead of `*MemoryStore` may add one allocation per call, and the compiler can no longer inline methods called through it. Each call becomes an indirect call through the itab, about 1 to 2 ns when predicted. Go's profile-guided optimisation can devirtualise hot interface call sites when the profile shows one dominant concrete type; it has done so for some calls since Go 1.21 ([release notes](https://go.dev/doc/go1.21)). The JVM does this speculatively: if class-hierarchy analysis or the profile shows one receiver type at a call site, it inlines the method behind a cheap type guard. In V8, objects created by one factory with fields assigned in the same order share a hidden class, which keeps property access monomorphic; a factory that builds the "same" object in different field orders on different branches creates several shapes and slows every reader.
 
 The other machine-level win is that factories can recycle. Because callers never call the constructor directly, the factory can hand out objects from a free list or a `sync.Pool`, which turns per-request allocation into reuse and cuts GC work. Constructors cannot do that.
 
@@ -127,6 +127,11 @@ The team created a small shared package with a `Store` interface, a registry, an
 
 The performance check came out as expected: `open_store` runs once per job, so the lookup and the extra interface hop are invisible next to a 40 ms object-storage round trip. The one regression was in a hot path where a job opened a store per row (2 million rows) and each S3 store built a new HTTP client with its own connection pool. Caching stores by bucket inside the S3 factory, the same trick the memory factory uses per name, brought that job from 50 minutes to 6.
 
+## In the wild
+- **Go ecosystem, 2017-2018: duplicate driver registration panics.** `sql.Register` panics when a name is registered twice. A golang-migrate user (2018) saw `Register called twice for driver mysql` at start-up, with the stack trace pointing at a vendored copy of the MySQL driver, and a lib/pq issue (2017) asks what to do when two packages in one program both pull in the Postgres driver. The registry crashes at init rather than letting the last import win, which is the loud failure the lesson recommends ([golang-migrate #83](https://github.com/golang-migrate/migrate/issues/83), [lib/pq #569](https://github.com/lib/pq/issues/569)).
+- **JDK, documented behaviour: `Integer.valueOf` is a caching factory.** It always caches -128 to 127 and may cache more, so two calls can return the same object and `==` on boxed values compares identity. This is the "return an existing instance" capability that a constructor does not have ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html)).
+- **Go standard library: image decoders registered by magic bytes.** A format package such as `image/png` registers itself with `image.RegisterFormat`, so a program must import it for side effects (`import _ "image/png"`) before `image.Decode` can read PNG. The registry is the plugin point, and a forgotten import fails at run time, not compile time ([Go docs](https://pkg.go.dev/image)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -152,7 +157,7 @@ The performance check came out as expected: `open_store` runs once per job, so t
 
 ## Check yourself
 1. Why can a factory return a cached instance when a constructor cannot?
-   **Answer:** A constructor always allocates a new object; a factory is an ordinary function that can look up and return an existing one, as `logging.getLogger` and `Integer.valueOf` do.
+   **Answer:** In Java and C++ a constructor always allocates a new object of exactly its own class; a factory is an ordinary function that can look up and return an existing one, as `logging.getLogger` and `Integer.valueOf` do.
 2. Go's guidance is "accept interfaces, return structs". When should a Go factory return an interface anyway?
    **Answer:** When the concrete type is chosen at runtime from input, such as a URL scheme or driver name, so the caller cannot know it in advance.
 3. A registry is keyed by strings from a config file. What failure does that introduce, and how do you contain it?
@@ -687,6 +692,26 @@ func (r *Registry) Open(url string) (Store, error) {
 - Factories that cache clients per provider and credentials, so pools and rate limiters are shared, with the lifetime documented in the factory contract.
 - Business logic that receives a provider (or a small selector) and never branches on concrete provider types.
 - Trade-offs: a `switch` for a small closed set owned by one team; a registry when other teams or plugins add providers, with duplicate-name rejection and clear errors.
+
+## Sources and further study
+**Primary**
+- [Integer.valueOf (Java SE docs)](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html): the caching guarantee for -128 to 127.
+- [logging.getLogger (Python docs)](https://docs.python.org/3/library/logging.html): same name, same object, by contract.
+- [Go 1.21 release notes](https://go.dev/doc/go1.21): when PGO started devirtualising interface calls.
+
+**Systems docs**
+- [database/sql.Register (Go docs)](https://pkg.go.dev/database/sql#Register): the registry contract, including the panic on duplicates.
+- [golang-migrate issue 83](https://github.com/golang-migrate/migrate/issues/83): a real duplicate-registration panic and its cause.
+- [Replace Constructor with Factory Function (refactoring.com)](https://refactoring.com/catalog/replaceConstructorWithFactoryFunction.html): Fowler's mechanics and motivation.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 3, Creational Patterns, for the original Factory Method structure.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: chapter 4, The Factory Pattern, for the simple factory versus factory method distinction.
+- *Effective Java* (3rd ed.), Bloch: chapter 2, Item 1, Consider static factory methods instead of constructors.
+- *Refactoring* (2nd ed.), Fowler: chapter 11, Refactoring APIs, where Replace Constructor with Factory Function lives.
+
+**Other curricula**
+- [Factory Method (refactoring.guru)](https://refactoring.guru/design-patterns/factory-method): frames it as overridable creation in a base class, with applicability rules.
 
 ## Watch
 - [Factory Method Pattern (Christopher Okhravi)](https://www.youtube.com/watch?v=EcFVTgRHJLM): the Gang of Four structure worked through step by step on a whiteboard.

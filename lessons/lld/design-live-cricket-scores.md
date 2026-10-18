@@ -145,13 +145,17 @@ Listeners receive a correction as its own event. A commentary feed that already 
 Scoring is a single-writer problem: one official scorer per match, sometimes with a backup. Give each innings a sequence number and make the client send `expected_seq` with every event, like a compare-and-set. A second device, or a retry of a request that actually succeeded, gets a conflict instead of recording the same ball twice. In memory, a mutex around validate, append and apply is enough.
 
 ### Retries and duplicates
-A scorer on stadium Wi-Fi taps "4" and the request times out. The retry carries the same `(innings, seq)`; the server sees an identical event already stored there and returns success without appending, the same idempotency-key idea used for payments.
+A scorer on stadium Wi-Fi taps "4" and the request times out. (Event streams normally deliver at least once, so consumers must tolerate repeats too ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)).) The retry carries the same `(innings, seq)`; the server sees an identical event already stored there and returns success without appending, the same idempotency-key idea used for payments.
 
 ### The rules that trip people up
-A wide adds one run plus anything the batters run, all as extras. It is not a legal ball and the batter has not faced it. A no-ball adds one extra, and any runs off the bat go to the batter. It is not legal, but it counts as a ball faced. Byes and leg byes are legal and faced, but go to extras and are not charged to the bowler. Since the 1980s, wides and no-balls have been charged to the bowler. A run out is not credited to the bowler. Under the 2022 laws, a new batter comes in on strike after a catch whether or not the batters crossed, which matches "replace the dismissed striker".
+A wide adds one run plus anything the batters run, all as extras. It is not a legal ball and the batter has not faced it. A no-ball adds one extra, and any runs off the bat go to the batter. It is not legal, but it counts as a ball faced. Byes and leg byes are legal and faced, but go to extras and are not charged to the bowler. Wides are charged to the bowler, and no-balls have been since the 1980s ([Wikipedia: Extra](https://en.wikipedia.org/wiki/Extra_(cricket))). A run out is not credited to the bowler. Under the 2022 laws (the 2022 edition of the Code, in force from 1 October 2022), a batter out caught is replaced at the end the striker was at, so the new batter faces the next ball unless the over has ended, whether or not the batters crossed ([MCC: changes in 2022](https://www.lords.org/getmedia/a2609406-e148-4c9b-9573-cb22d61febd9/Full-Explanation_Changes-to-the-Laws-of-Cricket-in-2022_v2_2.pdf)). That matches "replace the dismissed striker".
 
 ### Ends of innings and older corrections
-The innings ends when the side is all out (wickets equal batters minus one) or the final over's last legal ball is bowled; both checks run after every delivery. To fix a ball three overs ago, apply "replace event at sequence n" and replay from there with the same projection code.
+The innings ends when the side is all out (wickets equal batters minus one) or the final over's last legal ball is bowled; both checks run after every delivery. To fix a ball three overs ago, apply "replace event at sequence n" and replay from there with the same projection code. This rewrite is fine for the scorer's own working log. Once readers, commentary or push alerts have seen a ball, append a correction event instead and leave the original in place, because a strict event store never edits history and fixes mistakes with compensating events ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)).
+
+## In the wild
+- **Shopify, 2022: BFCM live map moves from polling to server-sent events.** The 2021 map pushed data over a WebSocket into a mailbox that clients polled at least every 10 seconds. The 2022 rebuild used a Go service that subscribes to Kafka and pushes to every registered SSE connection, behind NGINX. Data reached clients within milliseconds of reaching that server and within 21 seconds of creation end to end ([Shopify Engineering](https://shopify.engineering/server-sent-events-data-streaming)). A scoreboard has the same write-once, read-by-millions shape.
+- **Delhi High Court, January 2014: scores delayed by about five overs.** Multi Screen Media, which held the rights to the India v New Zealand series, won an interim injunction against ESPNcricinfo, Cricbuzz and Radio One. The sites' updates then lagged the TV broadcast by about five overs, with no ball-by-ball text ([MediaNama](https://www.medianama.com/2014/01/223-espncricinfo-cricbuzz-delay-live-updates-from-india-nz-cricket-series-by-5-overs-following-interim-court-order)). A publication delay is a business rule, so build it into the read side (publish the projection as of event n minus k) rather than the scoring core.
 
 ## Down the stack
 
@@ -159,10 +163,10 @@ The innings ends when the side is all out (wickets equal batters minus one) or t
 The scorecard equals `fold(apply, empty_scorecard, events)` for the stored events, in order. Each event was valid against the scorecard produced by the events before it. `undo` yields exactly the scorecard of the shorter log. Overs shown as `O.B` count only legal balls. A batter's balls include no-balls but not wides. Bowler runs include wides and no-balls but not byes or leg byes. A rejected event changes nothing and is not stored.
 
 ### Layer 2: The mechanism
-Each delivery is applied in O(1): look up the rule, update a handful of integers in two maps, maybe swap the strike, maybe advance the next-batter index. Undo is O(n) in the innings' events: about 150 for a T20, a few hundred for an ODI, and over 1,000 for a long Test innings. If that matters, snapshot every over and replay from the latest snapshot, which is how event-sourced systems bound rebuild time. In a database the log is a table with primary key `(innings_id, seq)`, enforcing one event per position, and the scorecard is a cached row.
+Each delivery is applied in O(1): look up the rule, update a handful of integers in two maps, maybe swap the strike, maybe advance the next-batter index. Undo is O(n) in the innings' events: about 150 for a T20, a few hundred for an ODI, and over 1,000 for a long Test innings. If that matters, snapshot every over and replay from the latest snapshot, which is how event-sourced systems bound rebuild time ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)). Fowler describes the same replay-and-snapshot idea ([martinfowler.com](https://martinfowler.com/eaaDev/EventSourcing.html)). In a database the log is a table with primary key `(innings_id, seq)`, enforcing one event per position, and the scorecard is a cached row.
 
 ### Layer 3: The machine
-A delivery event is tiny: kind, runs and dismissal fit in a byte or two, and with ids and a timestamp it is about 32 bytes. A whole ODI innings is around 20 KB, which fits in the L1 data cache of any modern CPU, so a full replay is a few microseconds of integer arithmetic. The expensive part is everything after the write. An update packet with the new score and a commentary line is roughly 200 to 500 bytes. At 10 million connected readers during a big match, one ball means 2 to 5 GB of outbound data, delivered within seconds and repeated about every 30 to 40 seconds. That is why such sites push deltas through CDNs and fan-out tiers rather than serving each reader from the scoring database.
+A delivery event is tiny: kind, runs and dismissal fit in a byte or two, and with ids and a timestamp it is about 32 bytes. A whole ODI innings is around 20 KB, which fits in the L1 data cache of any modern CPU, so a full replay is a few microseconds of integer arithmetic. The expensive part is everything after the write. An update packet with the new score and a commentary line is roughly 200 to 500 bytes. At 10 million connected readers during a big match, one ball means 2 to 5 GB of outbound data, delivered within seconds and repeated about every 30 to 40 seconds. That is why such sites push deltas through CDNs and fan-out tiers rather than serving each reader from the scoring database. Shopify's 2022 live map shows the shape: a Go server reads Kafka topics and pushes each update down server-sent-event connections, replacing a design where browsers polled a mailbox no more often than every 10 seconds ([Shopify Engineering](https://shopify.engineering/server-sent-events-data-streaming)).
 
 ### Why it's built this way
 Scorers make mistakes and reviews overturn decisions, so the system must undo exactly, so it stores events and derives totals. Cricket's rules give each delivery kind different effects on five counters, so each kind is a strategy and the projection code stays readable. An innings has a single official scorer, so a sequence number and a mutex give total order without distributed consensus. Reads outnumber writes by millions to one, so the write path is a small in-memory projection and the read path is a fan-out of small deltas.
@@ -1336,6 +1340,25 @@ func (in *Innings) Finished() bool {
 - Sequence numbers for single-writer ordering and idempotent retries.
 - Corrections published as events, so commentary and push notifications can amend rather than silently rewrite.
 - A clear split from the read-side fan-out, which dominates cost at scale.
+
+## Sources and further study
+
+**Primary**
+- [MCC: Changes to the Laws of Cricket in 2022](https://www.lords.org/getmedia/a2609406-e148-4c9b-9573-cb22d61febd9/Full-Explanation_Changes-to-the-Laws-of-Cricket-in-2022_v2_2.pdf): the official explanation of Law 18.11 and the other 2022 changes.
+- [Laws of Cricket online (MCC)](https://lawsofcricket.lords.org/home): the current text of the laws behind each delivery rule.
+
+**Systems docs**
+- [Azure: Event Sourcing pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing): snapshots, ordering by sequence id, optimistic concurrency and compensating events.
+- [Azure: Idempotent Consumer pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/idempotent-consumer): making duplicate delivery harmless.
+- [Shopify Engineering: server-sent events for the BFCM map](https://shopify.engineering/server-sent-events-data-streaming): a production push pipeline from Kafka to browsers.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: Ch 5 (Command, Memento, Observer, State, Strategy).
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: Ch 6 (Command) and Ch 10 (State).
+- *Designing Data-Intensive Applications* (1st ed.), Kleppmann: Ch 11 "Stream Processing", on logs as the source of truth with derived views.
+
+**Other curricula**
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): the state machine framing used for overs and strike rotation.
 
 ## Watch
 - [CricInfo/Cricbuzz Low Level Design (The Code Mate)](https://www.youtube.com/watch?v=VDqwCo6lhkY): an object model for matches, innings, overs and balls.

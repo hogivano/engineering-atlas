@@ -33,15 +33,15 @@ There are three ways to copy, and choosing one is the real design decision.
 
 A **shallow copy** duplicates the outer object and copies its fields by reference: Python's `copy.copy` and `dict.copy()`, JavaScript's `{...obj}`, struct assignment in Go. Immutable fields are safe to share. Mutable ones are not: `job.env` in the copy is the template's dict, so the first job's `PYTHON=3.13` leaks into every later job.
 
-A **deep copy** walks the graph and copies every reachable mutable object. Done naively it has two bugs: it turns one shared object into two (two steps that shared one cache config now have separate ones), and it recurses forever on a cycle (a step pointing back at its job). Python's `copy.deepcopy` fixes both with a memo keyed by `id(obj)`, checked before copying and filled before recursing into children. The Practice builds exactly this.
+A **deep copy** walks the graph and copies every reachable mutable object. Done naively it has two bugs: it turns one shared object into two (two steps that shared one cache config now have separate ones), and it recurses forever on a cycle (a step pointing back at its job). Python's `copy.deepcopy` fixes both with a memo keyed by `id(obj)` ([Python docs](https://docs.python.org/3/library/copy.html)), checked before copying and filled before recursing into children. The Practice builds exactly this.
 
-**Structural sharing** avoids copying by making the template immutable. A "copy with one change" builds a new top-level object pointing at the unchanged parts of the old one. Python's `dataclasses.replace` and `copy.replace` (3.13) do this for one level; persistent collections (Clojure's vectors, Immutable.js) do it for whole trees, copying only the path to the change.
+**Structural sharing** avoids copying by making the template immutable. A "copy with one change" builds a new top-level object pointing at the unchanged parts of the old one. Python's `dataclasses.replace` and `copy.replace` (new in 3.13, per the [copy docs](https://docs.python.org/3/library/copy.html)) do this for one level; persistent collections (Clojure's vectors, Immutable.js) do it for whole trees, copying only the path to the change.
 
 ### Language support, and where it breaks
 - **Python** offers `__copy__` and `__deepcopy__(self, memo)` hooks and otherwise falls back to the pickle protocol. Objects holding sockets, locks or files either fail to copy or produce a copy sharing the handle.
-- **JavaScript** has `structuredClone`, which handles cycles, `Map`, `Set` and `Date`, but throws on functions and returns plain objects for class instances, dropping their methods. `JSON.parse(JSON.stringify(x))` is worse: it drops `undefined`, stringifies dates and throws on cycles.
+- **JavaScript** has `structuredClone`, which handles cycles, `Map`, `Set` and `Date`, but throws `DataCloneError` on functions and does not walk the prototype chain, so class instances come back as plain objects without their methods ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm)). `JSON.parse(JSON.stringify(x))` is worse: it drops `undefined`, stringifies dates and throws on cycles.
 - **Go** has no generic clone. Struct assignment copies fields, but slices, maps and pointers inside still alias. `slices.Clone` and `maps.Clone` (Go 1.21) are shallow. A correct `Clone()` is written by hand.
-- **Java's** `Cloneable` has no `clone` method and `Object.clone` is protected and shallow; *Effective Java* advises a copy constructor or copy factory instead.
+- **Java's** `Cloneable` has no `clone` method and `Object.clone` is protected and shallow; *Effective Java* (3rd ed., Item 13) advises a copy constructor or copy factory instead.
 
 ### When not to use it
 - **Construction is cheap and has few fields.** A constructor call or an options object is clearer than a registry of examples.
@@ -52,7 +52,7 @@ A **deep copy** walks the graph and copies every reachable mutable object. Done 
 Asked to "create jobs from a template", an agent will often write `const job = { ...template }` and then `job.steps.push(...)`. Tests that build one job pass; production breaks when the second job inherits the first job's step. Ask for a test that creates two objects from one template, mutates nested fields of the first, and asserts the template and the second are unchanged. A hand-written recursive `clone` without a memo is a stack overflow waiting for the first cyclic template.
 
 ### The same shape elsewhere
-Prototype is the *duplicates* problem shape seen from the other side: you want many copies, and the bugs are the parts that should not have been duplicated or shared. Infrastructure stamps out copies of a validated example constantly. A Kubernetes Deployment holds a pod template that the ReplicaSet controller copies into every pod; VMs boot from golden images; `fork()` copies a process; AWS Lambda SnapStart restores new environments from a snapshot of an initialised one. All share the shallow-copy failure mode: something that should be unique per copy (a random seed, a host key, a connection) was baked into the template and is now shared by every instance.
+Prototype is the *duplicates* problem shape seen from the other side: you want many copies, and the bugs are the parts that should not have been duplicated or shared. Infrastructure stamps out copies of a validated example constantly. A Kubernetes Deployment holds a pod template that the ReplicaSet controller copies into every pod; VMs boot from golden images; `fork()` copies a process; AWS Lambda SnapStart restores new environments from a snapshot of an initialised one, and AWS tells you to generate unique IDs and random seeds after restore, not during initialisation ([AWS docs](https://docs.aws.amazon.com/lambda/latest/dg/snapstart-uniqueness.html)). All share the shallow-copy failure mode: something that should be unique per copy (a random seed, a host key, a connection) was baked into the template and is now shared by every instance.
 
 ## Down the stack
 
@@ -65,7 +65,7 @@ CPython's `copy.deepcopy` looks up a copier in `_deepcopy_dispatch` by exact typ
 ### Layer 3: The machine
 A shallow copy is one allocation plus a field copy: tens of nanoseconds. A deep copy allocates once per reachable mutable node, so a template with 2,000 nested dicts and lists costs 2,000 allocations and, in CPython, several milliseconds of per-node dispatch and memo inserts. That can exceed building from scratch, so measure before assuming cloning is cheap. The clone's nodes also land wherever the allocator has space, losing the original's locality.
 
-The kernel uses the cheapest prototype of all. `fork()` copies page tables, not memory, and marks pages read-only in both processes; the first write to a page faults and copies that one 4 KiB page. Redis `BGSAVE` relies on this: the child snapshots the dataset while the parent keeps writing, and extra memory equals the pages touched during the save, which on a write-heavy instance approaches the whole dataset. Copy-on-write is structural sharing implemented by the MMU.
+The kernel uses the cheapest prototype of all. `fork()` copies page tables, not memory, and marks pages read-only in both processes; the first write to a page faults and copies that one 4 KiB page. Redis `BGSAVE` relies on this: the child snapshots the dataset while the parent keeps writing, and extra memory equals the pages touched during the save, which on a write-heavy instance approaches the whole dataset; Redis's own latency guide says a busy instance can trigger copy-on-write of almost the whole process memory ([Redis docs](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)). Copy-on-write is structural sharing implemented by the MMU.
 
 ### Why it's built this way
 1. Some objects are expensive to set up or carry many decisions (validation, lookups, defaults), and you need many variations of them.
@@ -96,6 +96,11 @@ The team loads each type once and spawns with `clone(prototype)`. The first vers
 
 The bug that slipped through came from the other direction: the hand-written clone copied the equipment list but not the dicts inside it, so one goblin's power-up upgraded the sword of every goblin spawned after it. A test that clones twice and mutates nested data on one now guards every prototype type.
 
+## In the wild
+- **AWS Lambda SnapStart, documented hazard: a snapshot freezes anything meant to be unique.** Lambda resumes many execution environments from one initialised snapshot, so a random seed or unique ID generated during initialisation is identical in all of them. AWS says to generate such values in the handler or in a runtime hook after restore ([AWS docs](https://docs.aws.amazon.com/lambda/latest/dg/snapstart-uniqueness.html)).
+- **Redis, documented cost: `fork()` as a prototype.** RDB persistence forks a child that sees a frozen copy of the dataset. Redis warns that `fork()` can stall serving for milliseconds, or up to a second on a very large dataset, and that a busy instance can trigger copy-on-write of nearly all memory ([persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/), [latency](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)).
+- **cloud-init, documented practice: do not clone machine identity.** Machine images are prototypes, and cloud-init's SSH module can remove the image's default host keys (`ssh_deletekeys`) so each new instance does not share the template's keys ([cloud-init docs](https://docs.cloud-init.io/en/latest/reference/modules.html)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -108,7 +113,7 @@ The bug that slipped through came from the other direction: the hand-written clo
 ## Pitfalls in production
 - Shallow copies of templates with nested lists or maps, so edits leak into the template and every later copy. Fix: deep copy owned data, and test two clones with nested mutation.
 - A new field added to a class but not to its hand-written `clone()`, so it is silently shared or dropped. Fix: a test that compares a clone field by field using reflection or `__dict__`, so a new field fails it.
-- Values that must be unique per instance (ids, random seeds, SSH host keys on VM images) baked into the prototype. Fix: regenerate them in a post-clone hook, the way cloud-init regenerates host keys on first boot.
+- Values that must be unique per instance (ids, random seeds, SSH host keys on VM images) baked into the prototype. Fix: regenerate them in a post-clone hook, the way cloud-init can delete an image's baked-in host keys (`ssh_deletekeys`, per its [module docs](https://docs.cloud-init.io/en/latest/reference/modules.html)) so each machine makes its own.
 - Registry entries mutated after registration because the registry stored the caller's object. Fix: clone on `register` as well as on `create`.
 - `structuredClone` or JSON round-trips on TypeScript class instances, returning objects without methods. Fix: a `clone()` method, or templates as plain data.
 
@@ -644,6 +649,23 @@ func (r *PrototypeRegistry) Create(key string, overrides map[string]string) (*No
 - An explicit choice between snapshot semantics (changes roll out as deliberate re-renders) and live delegation (instances read through to the template), with the blast radius of each.
 - Post-clone hooks that generate per-instance identity (names, credentials, certificates) instead of copying it.
 - Cost awareness: large shared immutable parts are referenced, not copied per instance.
+
+## Sources and further study
+**Primary**
+- [Structured clone algorithm (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm): what the browser's deep copy does and refuses to copy.
+
+**Systems docs**
+- [Handling uniqueness with Lambda SnapStart (AWS)](https://docs.aws.amazon.com/lambda/latest/dg/snapstart-uniqueness.html): what must be regenerated after a snapshot restore.
+- [Redis latency diagnosis](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/): fork cost and copy-on-write in a live system.
+- [cloud-init modules](https://docs.cloud-init.io/en/latest/reference/modules.html): per-instance identity generated after cloning an image.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 3, Creational Patterns, for the original Prototype and its prototype manager.
+- *Effective Java* (3rd ed.), Bloch: chapter 3, Item 13, Override clone judiciously.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson: appendix A, Leftover Patterns.
+
+**Other curricula**
+- [Prototype (refactoring.guru)](https://refactoring.guru/design-patterns/prototype): frames it as cloning without coupling to concrete classes, plus the cost of cloning cyclic objects.
 
 ## Watch
 - [10 Design Patterns Explained in 10 Minutes (Fireship)](https://www.youtube.com/watch?v=tv-_1er1mWI): includes prototype in JavaScript and shows how it relates to the language's prototype chain.

@@ -50,17 +50,19 @@ Each team registers its own reaction at startup. The inventory code knows only t
 ### Push or pull
 A notification can carry the data (push: `fn(sku, old, new)`) or just say "I changed" and let the observer read what it needs (pull: `fn(subject)`). Push is simpler and gives each observer a consistent snapshot of that change. Pull lets observers fetch only what they need, but an observer that reads later may see a newer value than the one that triggered it. Most modern APIs push a small event object.
 
+Java shows what goes wrong with a thin version of the pattern. `java.util.Observable` and `Observer` have been deprecated since Java 9 because the event model is limited, the order of notifications is unspecified, and state changes do not match notifications one for one ([Java SE 17 docs](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/Observable.html)). The docs point to `java.beans` for a richer event model, to the `java.util.concurrent` data structures for reliable ordered messaging between threads, and to the `Flow` API for reactive streams. The lesson to copy is to give your subject a stated order and a stated failure rule instead of inheriting a base class that promises neither.
+
 ### The hard parts are lifecycle and re-entrancy
 Three situations break naive implementations.
 
-1. **Unsubscribe during notification.** An observer removes itself (a one-shot listener) or another observer while the subject is iterating the list. Mutating a list while iterating it skips elements or throws. Iterate over a snapshot, and decide whether a listener removed mid-delivery still gets the current event. The DOM says no (removed listeners are flagged and skipped); Node's `EventEmitter` says yes (it iterates a copy).
+1. **Unsubscribe during notification.** An observer removes itself (a one-shot listener) or another observer while the subject is iterating the list. Mutating a list while iterating it skips elements or throws. Iterate over a snapshot, and decide whether a listener removed mid-delivery still gets the current event. The DOM says no: removed listeners are flagged and skipped ([WHATWG DOM](https://dom.spec.whatwg.org/#concept-event-listener)). Node's `EventEmitter` says yes: a removal during `emit` does not affect the emit in progress ([Node.js docs](https://nodejs.org/api/events.html)).
 2. **Publishing during notification.** An observer reacts to `0 -> 1` by setting the value to `2`. If the subject notifies recursively, observers later in the list see `1 -> 2` before `0 -> 1`. Queue nested changes and deliver them after the current round, so every observer sees changes in the same order.
 3. **Failing observers.** One observer throws. Without isolation the remaining observers are skipped and the exception reaches the code that changed the value. Catch per observer, collect or log the error, and keep going.
 
 The Practice section builds a value cell that handles all three.
 
 ### Forgetting to unsubscribe
-A subject holds a strong reference to every callback, and every callback holds whatever it closes over, often an entire screen or request context. A component that subscribes on creation and never unsubscribes stays in memory forever and keeps reacting to events for a page the user left an hour ago. This is the lapsed listener problem. The fixes are a disposable handle (`subscribe` returns an unsubscribe function), lifecycle helpers (`AbortSignal` passed to `addEventListener`, React's effect cleanup), or weak references (Python's `weakref.WeakMethod`) when the subject should not keep observers alive.
+A subject holds a strong reference to every callback, and every callback holds whatever it closes over, often an entire screen or request context. A component that subscribes on creation and never unsubscribes stays in memory forever and keeps reacting to events for a page the user left an hour ago. This is the lapsed listener problem. The fixes are a disposable handle (`subscribe` returns an unsubscribe function), lifecycle helpers (an `AbortSignal` passed to [`addEventListener`](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener), which removes the listener when the controller aborts; React's effect cleanup), or weak references (Python's [`weakref.WeakMethod`](https://docs.python.org/3/library/weakref.html)) when the subject should not keep observers alive.
 
 ### Reviewing agent-written code
 Agents add observers readily and forget teardown, because the subscribe call is in the code they were asked to write and the unsubscribe belongs in a lifecycle method they did not open. In review, look for every `subscribe`, `on` or `addEventListener` and find its matching removal. Also check whether a new observer does slow work (an HTTP call, a database write) synchronously. If it does, it adds that latency to every change, and it belongs behind a queue.
@@ -74,11 +76,11 @@ Observer is the *fan-out* shape inside one process. The same shape appears in Po
 A well-behaved subject promises: every observer subscribed when a change is delivered is called exactly once for it, in subscription order; observers removed before their turn are not called; observers added during a delivery start with the next change; nested changes are delivered after the current one, so all observers see the same order; one observer's failure does not prevent delivery to the others and does not undo the change; and unsubscribing is idempotent. It should also say what it does not promise: in-process observers are not durable, so a crash between the change and the notification loses the notification. If an observer must never miss an event, use an outbox or a log, not a callback list.
 
 ### Layer 2: The mechanism
-Node's `EventEmitter` stores listeners in an `_events` object keyed by event name. A single listener is stored as the bare function and only becomes an array when a second one is added, because most events have one listener. `emit` copies the array before calling listeners, which is why removing a listener mid-emit does not affect the current emit. An `'error'` event with no listener throws. With more than 10 listeners on one event it prints a `MaxListenersExceededWarning`, a cheap leak detector.
+Node's `EventEmitter` stores listeners in an `_events` object keyed by event name. A single listener is stored as the bare function and only becomes an array when a second one is added, because most events have one listener. `emit` copies the array before calling listeners, which is why removing a listener mid-emit does not affect the current emit. An `'error'` event with no listener throws. With more than 10 listeners on one event it prints a `MaxListenersExceededWarning`, a cheap leak detector that the docs describe as a default meant to help find memory leaks ([Node.js docs](https://nodejs.org/api/events.html)). It calls listeners synchronously in registration order, and ignores their return values.
 
 The DOM's `EventTarget` keeps an event listener list per target with `type`, `callback`, `capture`, `once`, `passive` and `signal`. Removing a listener sets its `removed` flag, and dispatch skips flagged entries, so removal takes effect immediately. Dispatch walks capture, target and bubble phases along a path computed before the first listener runs.
 
-Java's `CopyOnWriteArrayList`, the usual listener list in concurrent code, copies the whole array on every `add` or `remove` and lets iterators read a frozen snapshot without locks. That fits listeners exactly: subscriptions are rare and notifications are frequent. Go code often gives each subscriber a buffered channel instead, which turns synchronous observers into asynchronous ones and forces an explicit decision when a subscriber's buffer is full: block, drop, or disconnect.
+Java's `CopyOnWriteArrayList`, the usual listener list in concurrent code, copies the whole array on every `add` or `remove` and lets iterators read a frozen snapshot without locks ([Java docs](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CopyOnWriteArrayList.html)). That fits listeners exactly: subscriptions are rare and notifications are frequent. Go code often gives each subscriber a buffered channel instead, which turns synchronous observers into asynchronous ones and forces an explicit decision when a subscriber's buffer is full: block, drop, or disconnect.
 
 ### Layer 3: The machine
 Notifying N observers costs N indirect calls plus whatever they do. The dispatch itself is cheap: a loop over 20 callbacks with trivial bodies takes well under a microsecond in Go or V8, and a few microseconds in CPython, where each call builds a frame. The cost that bites is that observers run on the publisher's thread. If one of 20 observers makes a 40 ms HTTP call, every `set` now takes 40 ms, and a request handler that changes three values waits 120 ms.
@@ -116,6 +118,11 @@ sequenceDiagram
 An online shop changes stock about 800 times per second at peak. The `StockLevel` subject had five synchronous observers. Four were fast (under 50 us each). The fifth, added for a marketing dashboard, posted every change to an HTTP endpoint with a median of 25 ms and a p99 of 300 ms. Checkout updates stock for every line item, and an average cart has 3 items, so checkout p99 rose by almost a second. During a dashboard outage the HTTP client threw on every call, and because the subject did not isolate failures, the cache-invalidation observer registered after it never ran. Customers saw "in stock" for sold-out items for 20 minutes.
 
 The fix had three parts. The subject now catches each observer's error, logs it with the observer's name, and continues. The dashboard observer only appends to an in-memory buffer (about 1 us), and a background worker ships batches of 500 events every second, dropping the oldest when the buffer passes 50,000 so a dead dashboard cannot exhaust memory. And the cache invalidation moved first in the list with a comment explaining why. Checkout p99 returned to 180 ms, and a later dashboard outage changed nothing customers could see.
+
+## In the wild
+- **GitHub, 2022: webhook retries block new events.** Webhooks are Observer across processes. On 5 October 2022, automated accounts created and deleted repositories so fast that many webhook jobs could not build their payloads, because the data was already gone. Delivery workers kept retrying them, which blocked new events for about 31 minutes (06:30 to 07:01 UTC) and delayed GitHub Actions. GitHub disabled the accounts and changed the workers to stop retrying jobs whose data no longer exists ([GitHub availability report](https://github.blog/2022-11-02-github-availability-report-october-2022/)).
+- **Oracle, 2017: Java retires its own Observer.** JDK 9 deprecated `Observable` and `Observer` for the reasons above: unspecified notification order and no one-to-one link between changes and notifications. A pattern from the 1994 book shipped in the standard library for two decades before its limits made it a warning ([Java SE 17 docs](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/Observable.html)).
+- **Precision Nutrition, 2020: subscribers skip committed events.** Subscribers polled an event table with `WHERE id > last_seen ORDER BY id`. Transactions holding IDs 187 and 188 committed after the one holding 189, so a reader passed them while they were invisible and never processed them. It was found weeks later, and about 0.6% of IDs were permanent gaps from rollbacks, so simply waiting for the next ID was rejected ([write-up](https://tech.precisionnutrition.com/postgres/databases/2020/03/06/fun-with-mvcc)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -738,6 +745,25 @@ func (c *Cell) Set(value int) []string {
 - Isolation: fast synchronous observers for counters, and per-session buffered queues with drop-oldest or coalescing for slow consumers, so one slow browser cannot stall the location pipeline.
 - Coalescing by time (for example one push per zone per 500 ms carrying the latest value), accepting that intermediate values are skipped.
 - Recognition that missed in-process notifications are lost on restart, so dashboards reload a snapshot on reconnect rather than relying on replay.
+
+## Sources and further study
+**Primary**
+- [WHATWG DOM Standard: event listeners](https://dom.spec.whatwg.org/#concept-event-listener): the `removed` flag that makes removal take effect during dispatch.
+- [Java SE 17: Observable](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/Observable.html): the deprecation notice and the reasons for it.
+
+**Systems docs**
+- [Node.js events](https://nodejs.org/api/events.html): synchronous dispatch, listener copies, the `'error'` event and the 10-listener warning.
+- [MDN: addEventListener](https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener): the `signal` option for tying a listener to a lifetime.
+- [Python weakref](https://docs.python.org/3/library/weakref.html): `WeakMethod` for subjects that must not keep observers alive.
+- [PostgreSQL NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html): the cross-process version, with its delivery rules.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 5 "Behavioral Patterns": the original Observer, with the push and pull discussion.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed.), chapter 2 "Keeping your Objects in the Know: The Observer Pattern".
+
+**Other curricula**
+- [Refactoring.Guru: Observer](https://refactoring.guru/design-patterns/observer): frames it as a subscription mechanism and lists the unspecified notification order as a drawback.
+- [Azure Architecture Center: Publisher-Subscriber](https://learn.microsoft.com/en-us/azure/architecture/patterns/publisher-subscriber): the cross-process form, with delivery and ordering trade-offs.
 
 ## Watch
 - [Observer Pattern, Design Patterns ep 2 (Christopher Okhravi)](https://www.youtube.com/watch?v=_BpmfnqjgzQ): push versus pull and the subject and observer interfaces, drawn step by step.

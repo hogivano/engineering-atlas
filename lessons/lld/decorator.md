@@ -36,7 +36,7 @@ source = Metered(Cached(Retry(CatalogClient(url), 3), clock, ttl=30))
 Every wrapper is tested alone with a fake inner source. The batch job builds a different stack (no cache, more retries) from the same parts.
 
 ### Order is behaviour
-Read a decorator stack from the outside in: the outermost wrapper sees every call first. In `Metered(Cached(Retry(client)))` the histogram includes cache hits, so its p50 collapses toward zero when the hit ratio is high; in `Cached(Metered(Retry(client)))` it measures only upstream calls. Retry outside a cache means a miss is retried; retry inside means the cache never stores a failure, which is what you usually want. Authorisation must sit outside caching, or one user's cached response can be served to another. Write the order down in one wiring function and add a test for the property that depends on it.
+Read a decorator stack from the outside in: the outermost wrapper sees every call first. In `Metered(Cached(Retry(client)))` the histogram includes cache hits, so its p50 collapses toward zero when the hit ratio is high; in `Cached(Metered(Retry(client)))` it measures only upstream calls. Retry outside a cache means a miss is retried; retry inside means the cache never stores a failure, which is what you usually want. Authorisation must sit outside caching, or one user's cached response can be served to another. Libraries that ship stacks document their order for this reason: Resilience4j's Spring aspects nest as Retry, CircuitBreaker, RateLimiter, TimeLimiter, Bulkhead, outermost first ([Resilience4j docs](https://resilience4j.readme.io/docs/getting-started-3)), and Django lists which middleware must sit above which, such as the cache and gzip middleware ([Django docs](https://docs.djangoproject.com/en/stable/ref/middleware/)). Write the order down in one wiring function and add a test for the property that depends on it.
 
 ### Function decorators
 Python's `@decorator` syntax applies the same idea to functions: `@cache` above `def f` is shorthand for `f = cache(f)`. HTTP middleware in Go has the type `func(http.Handler) http.Handler`, Express middleware calls `next()`, Django middleware wraps `get_response`, and gRPC interceptors receive the next handler as an argument. These are decorators whose interface is "a function that handles a request". The same ordering rules apply.
@@ -59,16 +59,16 @@ Decorators handle the *overload* and *partial failure* shapes as composable laye
 A decorator promises to implement the wrapped interface's full contract and to change behaviour only in the documented way. A caching decorator promises results at most `ttl` old and that failures are not cached unless documented; a retrying decorator promises a maximum number of attempts and that it retries only idempotent operations on transient errors. What a decorator does *not* preserve must be stated: object identity changes, so `isinstance`, `==`, Go type assertions and reflection see the wrapper, not the original.
 
 ### Layer 2: The mechanism
-PEP 318 defines `@d` above a function as `f = d(f)` evaluated at definition time, and stacked decorators apply bottom-up, so the one nearest `def` is innermost. `functools.wraps` copies `__module__`, `__name__`, `__qualname__`, `__doc__` and `__dict__` from the wrapped function and sets `__wrapped__`, which `inspect.signature` follows to report the original signature. `functools.lru_cache` keeps a dict from argument key to a node in a circular doubly linked list for recency.
+PEP 318 defines `@d` above a function as `f = d(f)` evaluated at definition time, and stacked decorators apply bottom-up, so the one nearest `def` is innermost ([PEP 318](https://peps.python.org/pep-0318/)). `functools.wraps` copies `__module__`, `__name__`, `__qualname__`, `__annotations__`, `__type_params__` (added in Python 3.12) and `__doc__`, updates `__dict__`, and sets `__wrapped__` ([functools docs](https://docs.python.org/3/library/functools.html)), which `inspect.signature` follows to report the original signature. `functools.lru_cache` keeps a dict from argument key to a node in a circular doubly linked list for recency.
 
-In Go, `bufio.NewReader(r)` returns a struct holding the inner `io.Reader`, a 4096-byte buffer and read and write offsets; `gzip.NewReader`, `io.LimitReader` and `io.TeeReader` stack the same way. HTTP middleware that wraps `http.ResponseWriter` to record the status code hits a known trap: the wrapper hides optional interfaces such as `http.Flusher` and `http.Hijacker`, so streaming and websockets break silently. Go 1.20 added `http.ResponseController`, which looks for an `Unwrap() http.ResponseWriter` method to reach the original writer through the decorators.
+In Go, `bufio.NewReader(r)` returns a struct holding the inner `io.Reader`, a 4096-byte default buffer ([bufio source](https://go.dev/src/bufio/bufio.go)) and read and write offsets; `gzip.NewReader`, `io.LimitReader` and `io.TeeReader` stack the same way. HTTP middleware that wraps `http.ResponseWriter` to record the status code hits a known trap: the wrapper hides optional interfaces such as `http.Flusher` and `http.Hijacker`, so streaming and websockets break silently. Go 1.20 added `http.ResponseController`, which looks for an `Unwrap() http.ResponseWriter` method to reach the original writer through the decorators ([net/http docs](https://pkg.go.dev/net/http#NewResponseController), [Go 1.20 notes](https://go.dev/doc/go1.20)).
 
 ### Layer 3: The machine
 Each layer costs a call frame and, in Go, an indirect call through an itab, about 1 to 2 ns when predicted. Ten middleware layers add perhaps 20 ns and ten stack frames, invisible next to a 1 ms request. In CPython a generic `def wrapper(*args, **kwargs)` builds a tuple and a dict on every call and costs roughly 100 ns per layer, which shows up in tight loops of millions of calls. Go closures that capture variables escape to the heap once, when the middleware is built, not per request. In V8, a call site that always sees the same wrapper class stays monomorphic and can be inlined.
 
 Some decorators save far more than they cost. Reading a file one byte at a time through an unbuffered reader makes one `read` syscall per byte, roughly 200 to 500 ns each; `bufio.Reader` turns 4096 of those into one syscall and 4095 memory copies from the buffer. A cache decorator turns an 80 ms network call into a hash lookup of under 100 ns.
 
-Stateful decorators carry concurrency costs. A cache needs a lock or a concurrent map, and without request coalescing a popular key that expires sends every concurrent caller upstream at once (a stampede). Go's `singleflight` package and similar tools let one caller fetch while others wait. Python's `lru_cache` keeps its internal structure consistent under threads but documents that the wrapped function may be called more than once for the same key when calls overlap.
+Stateful decorators carry concurrency costs. A cache needs a lock or a concurrent map, and without request coalescing a popular key that expires sends every concurrent caller upstream at once (a stampede). Go's `singleflight` package and similar tools let one caller fetch while others wait ([singleflight docs](https://pkg.go.dev/golang.org/x/sync/singleflight)). Python's `lru_cache` keeps its internal structure consistent under threads but documents that the wrapped function may be called more than once for the same key when calls overlap ([functools docs](https://docs.python.org/3/library/functools.html)).
 
 ### Why it's built this way
 1. Cross-cutting concerns (caching, retries, metrics) apply to many components, so writing them inside each one duplicates code.
@@ -104,7 +104,12 @@ A pricing service handles 12,000 requests a second at peak, and each request nee
 
 The team split it into `CatalogClient`, `Retry(attempts=3, transient only)`, `Cached(ttl=30s)` and `Metered`, wired as `Metered(Cached(Retry(client)))` with a separate upstream histogram inside the retry layer. The cache hit ratio settled at 93%, cutting upstream traffic to about 6,700 calls a second and request p99 from 95 ms to 22 ms.
 
-Then an incident: the upstream degraded and error rates hit 40%. The pricing service retried 3 times, but so did the API gateway in front of it and the mobile client, so each user action could produce up to 27 upstream calls. The fix was a decorator, not a rewrite: a `RetryBudget` wrapper that allows retries only while they stay under 10% of recent requests, placed inside the cache, plus removing retries from the gateway. The order of layers was then pinned by a test that counts upstream calls for a scripted failure sequence.
+Then an incident: the upstream degraded and error rates hit 40%. The pricing service retried 3 times, but so did the API gateway in front of it and the mobile client, so each user action could produce up to 27 upstream calls (three layers, three tries each; AWS describes the same multiplication, 243 times across five layers, in its [Builders' Library](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)). The fix was a decorator, not a rewrite: a `RetryBudget` wrapper that allows retries only while they stay under 10% of recent requests (the ratio Google's SRE book uses for per-client budgets, [SRE book](https://sre.google/sre-book/handling-overload/)), placed inside the cache, plus removing retries from the gateway. The order of layers was then pinned by a test that counts upstream calls for a scripted failure sequence.
+
+## In the wild
+- **AWS, Builders' Library: retries that multiply across layers.** AWS describes a stack five layers deep with three retries at each layer: if the database fails queries under load, independent retrying raises its load 243 times, which makes recovery unlikely. Their guidance is to retry at a single point in the stack, and the AWS SDK limits local retries with a token bucket, added in 2016 ([AWS Builders' Library](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)).
+- **Google, SRE book: retry budgets as a layer.** To stop retries amplifying an overload, Google limits each request to three attempts and each client to retries that are under 10% of its requests. A retry budget is exactly a decorator that counts and refuses, wrapped around the call ([SRE book](https://sre.google/sre-book/handling-overload/)).
+- **Go, 2023: wrappers that hid `http.Flusher`.** Middleware that wrapped `http.ResponseWriter` hid optional interfaces such as `Flusher` and `Hijacker`. Go 1.20 added `ResponseController`, which follows an `Unwrap` method through the wrappers, because the optional-interface approach was described as not discoverable and clumsy ([Go 1.20 notes](https://go.dev/doc/go1.20)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -714,6 +719,26 @@ func Chain(base Fetcher, decorators ...func(Fetcher) Fetcher) Fetcher {
 - Retry only idempotent calls on transient errors, with a retry budget or circuit breaker, and no retries at other layers on the same path.
 - Concurrency in stateful layers: a concurrent cache with request coalescing and TTL jitter, and a rate limiter safe under parallel calls.
 - Mesh trade-off: retries, timeouts and mTLS can move to the mesh for uniformity, while caching and tenant logic stay in code that understands the data.
+
+## Sources and further study
+**Primary**
+- [PEP 318, Decorators for Functions and Methods](https://peps.python.org/pep-0318/): the equivalence `f = d(f)` and the bottom-to-top application order.
+- [functools, `wraps` and `lru_cache` (Python docs)](https://docs.python.org/3/library/functools.html): the exact attributes copied, and the note that overlapping calls may run the function twice.
+- [Go 1.20 release notes](https://go.dev/doc/go1.20): the `ResponseController` rationale for unwrapping.
+
+**Systems docs**
+- [Resilience4j getting started](https://resilience4j.readme.io/docs/getting-started-3): a library that documents the nesting order of its retry, breaker, limiter and bulkhead decorators.
+- [Django middleware reference](https://docs.djangoproject.com/en/stable/ref/middleware/): hints on which middleware must come before which.
+- [singleflight (Go docs)](https://pkg.go.dev/golang.org/x/sync/singleflight): duplicate-call suppression for stateful cache layers.
+- [Timeouts, retries and backoff with jitter (AWS Builders' Library)](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/): why retries belong in one layer.
+- [Handling overload (Google SRE book)](https://sre.google/sre-book/handling-overload/): per-request and per-client retry budgets.
+
+**Books**
+- *Design Patterns* (Gamma, Helm, Johnson, Vlissides, 1st ed.), Ch 4: Structural Patterns, the Decorator entry.
+- *Head First Design Patterns* (Freeman and Robson, 2nd ed.), Ch 3: Decorating Objects, which teaches the pattern with java.io-style stacks.
+
+**Other curricula**
+- [Decorator (refactoring.guru)](https://refactoring.guru/design-patterns/decorator): frames the pattern as an alternative to subclassing, with a wrapper diagram.
 
 ## Watch
 - [Decorator Pattern (Christopher Okhravi)](https://www.youtube.com/watch?v=GCraGHx6gso): the Gang of Four structure built up from a subclass explosion.

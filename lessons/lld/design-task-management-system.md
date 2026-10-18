@@ -129,20 +129,24 @@ sequenceDiagram
 ## Design patterns used and why
 
 - **State as a table, not as classes.** The classic State pattern gives each status its own class. Here statuses have no behaviour of their own; the rules live on the edges between them. A transition table lets each project configure its own workflow (add `qa`, remove `in_review`) without code, and it is easy to render as a diagram for users. The [State](state.md) lesson shows the class-per-state form for comparison.
-- **Specification or Chain of guards** for the rules on moves. Each guard is small (`AssigneeRequired`, `BlockersDone`, `WipLimit`, `OnlyAdminsReopen`) and returns a reason or nothing. The workflow runs them in order and reports the first failure, so new rules arrive as new classes, not as more `if` branches.
+- **Specification or Chain of guards** for the rules on moves. Each guard is small (`AssigneeRequired`, `BlockersDone`, `WipLimit`, `OnlyAdminsReopen`) and returns a reason or nothing. The workflow runs them in order and reports the first failure, so new rules arrive as new classes, not as more `if` branches. Jira draws the same line between two kinds of guard: a *condition* decides whether a user may attempt a transition at all (the button is hidden), while a *validator* checks the input and rejects the move with a reason, leaving the issue in its status ([Atlassian docs](https://support.atlassian.com/jira-cloud-administration/docs/configure-advanced-issue-workflows/)). Keeping those two apart gives the UI both a clean menu of legal moves and a useful error message.
 - **Observer** through the activity stream. The service appends events; notifications, search indexing and webhooks subscribe. The task code never knows who is listening.
 - **Repository** for storage, with `save(task, expectedVersion)` as the only write. This puts the concurrency rule in one place instead of trusting every caller to remember it.
 - **Composite** for subtasks when you need roll-ups: a parent's progress is the share of its leaf tasks that are done, computed recursively.
 
 ## Concurrency and edge cases
 
-- **Lost update.** Without versions, Alice's status change and Bob's reassignment both read the old row and the last save wins, silently undoing one. A conditional write (`UPDATE task SET ..., version = version + 1 WHERE id = $1 AND version = $2`, checking one row changed) turns that into a conflict the client can resolve by reloading.
+- **Lost update.** Without versions, Alice's status change and Bob's reassignment both read the old row and the last save wins, silently undoing one. A conditional write (`UPDATE task SET ..., version = version + 1 WHERE id = $1 AND version = $2`, checking one row changed) turns that into a conflict the client can resolve by reloading. This is the pattern Martin Fowler calls [Optimistic Offline Lock](https://martinfowler.com/eaaCatalog/optimisticOfflineLock.html). It stays correct under Postgres's default Read Committed level because a blocked updater re-evaluates its `WHERE` clause against the newly committed row, so a stale version no longer matches ([Postgres docs](https://www.postgresql.org/docs/current/transaction-iso.html)).
 - **WIP limit check-then-act.** Two moves for the same person can both see "2 of 3 in progress" and both succeed, ending at 4. The count and the move must be checked in one transaction, or the per-user counter must be a row updated conditionally.
 - **Blocker reopened mid-move.** If a blocker is reopened between the guard check and the save, the guard's answer is stale. Either lock the blocker rows for the transaction or accept a narrow window and run a periodic consistency check. Say which, and why.
 - **Dependency cycles.** "A blocks B, B blocks C, C blocks A" deadlocks the work. Before adding an edge, search from the new blocker along its own blockers; if the search reaches the task, refuse. With a few links per task this is microseconds.
-- **Deleting a blocker.** Deleting a task that blocks others should either be refused or remove the edges and record that in the history of the blocked tasks; never leave dangling ids.
+- **Deleting a blocker.** Deleting a task that blocks others should either be refused or remove the edges and record that in the history of the blocked tasks; never leave dangling ids. Prefer a soft delete (a `deleted_at` tombstone) so a mistaken bulk delete can be undone; Atlassian's April 2022 outage is the large-scale version of this lesson (see below).
 - **Time zones.** Store due dates as UTC instants; sorting local date strings breaks for distributed teams.
 - **Notification storms.** A bulk move of 500 tasks should produce one digest per watcher, not 500 emails. Coalesce events per recipient over a short window.
+
+## In the wild
+- **Atlassian, 2022: a deletion script took out 775 customers' Jira and Confluence sites.** A script meant to remove one retired app was given cloud site IDs instead of app IDs, and the deletion API accepted both without warning. It ran for about 23 minutes on 5 April and deleted 883 sites belonging to 775 customers; some were down for up to 14 days. Review had checked the endpoint and call method but not the IDs, and staging did not have the IDs. Atlassian blocked bulk site deletion, committed to soft-delete for customer data and accelerated multi-site restore drills ([Atlassian post-incident review](https://www.atlassian.com/engineering/post-incident-review-april-2022-outage)).
+- **Kubernetes, ongoing: every object carries a version for conditional writes.** The API server rejects an update whose `resourceVersion` is stale with `409 Conflict`, and the docs tell clients that need lost-update detection to make writes conditional on it and retry on conflict. Controllers and humans editing the same object are the "two people, one task" case at cluster scale ([Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)).
 
 ## Down the stack
 
@@ -150,7 +154,7 @@ sequenceDiagram
 A write that names version v either applies completely and returns version v + 1, or changes nothing and reports the current version. A move succeeds only along a configured transition and only when every guard passes against the state being written. Every successful change appends exactly one activity event, in the same transaction, so history never disagrees with state. Queries return tasks ordered by priority, then due date (no date last), then creation order, and reflect all committed writes at the time of the read.
 
 ### Layer 2: The mechanism
-In a relational store, a task row carries `version INT NOT NULL`. Writes are conditional updates, and the API exposes the version as an HTTP `ETag`; a client sends `If-Match`, and a mismatch returns `412 Precondition Failed` as defined in RFC 9110. Kubernetes uses the same idea with `metadata.resourceVersion` and returns `409 Conflict`. The activity table is append-only with an index on `(task_id, at)`. List views use a composite index such as `(project_id, assignee_id, status, priority, due_at)` so the filter and the sort are served by one B-tree range scan instead of a sort of every row. Blocker edges live in a join table `(task_id, blocker_id)` indexed both ways, which makes "what blocks me" and "what do I block" equally cheap. The guard for blockers is a single query: count blockers whose status is not `done`.
+In a relational store, a task row carries `version INT NOT NULL`. Writes are conditional updates, and the API exposes the version as an HTTP `ETag`; a client sends `If-Match`, and a server that sees no matching entity tag must not run the method and may answer `412 Precondition Failed` ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-if-match)). The spec ties "lost update" avoidance to strong validators, so a weak `W/` tag is the wrong choice for a version number. Kubernetes uses the same idea with `metadata.resourceVersion` and returns `409 Conflict` for a stale one ([Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/)). The activity table is append-only with an index on `(task_id, at)`. List views use a composite index such as `(project_id, assignee_id, status, priority, due_at)` so the filter and the sort are served by one B-tree range scan instead of a sort of every row. Blocker edges live in a join table `(task_id, blocker_id)` indexed both ways, which makes "what blocks me" and "what do I block" equally cheap. The guard for blockers is a single query: count blockers whose status is not `done`.
 
 ### Layer 3: The machine
 A task row with a short title and a dozen fixed fields is a few hundred bytes, so an 8 KB Postgres page holds dozens; a project with 50,000 tasks fits in a few megabytes and stays in the buffer cache. A B-tree lookup on a warm index touches three or four pages, each a memory access of well under a microsecond, so a filtered board query costs more in serialising JSON than in finding rows. A conditional update that commits waits for one write-ahead log flush, roughly 0.1 to 1 ms on NVMe. Version conflicts cost a round trip and a re-render on the client, tens to hundreds of milliseconds, but they are rare because two people rarely edit the same task in the same second. That rarity is the economic case for optimistic over pessimistic locking: no lock is held while a human thinks for 30 seconds in an edit dialog.
@@ -1148,6 +1152,26 @@ func (b *TaskBoard) History(id string) ([]Event, error) {
 - Cycle detection on blocking links, and a clear statement of which guard reads can race and how that window is closed.
 - An append-only activity stream written in the same transaction, feeding history, notifications and automation as subscribers.
 - Workflow migration and automation handled through the same service so that guards and versions still apply.
+
+## Sources and further study
+
+**Primary**
+- [RFC 9110, HTTP Semantics: If-Match and strong validators](https://www.rfc-editor.org/rfc/rfc9110.html#name-if-match): the standard form of "update only if unchanged", and why only strong entity tags qualify.
+- [PostgreSQL: Read Committed isolation](https://www.postgresql.org/docs/current/transaction-iso.html): how a blocked update re-checks its `WHERE` clause, which is why the version check holds.
+
+**Systems docs**
+- [Atlassian: configure advanced issue workflows](https://support.atlassian.com/jira-cloud-administration/docs/configure-advanced-issue-workflows/): conditions, validators and post functions as a real product's guard model.
+- [Kubernetes API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/): `resourceVersion` and 409 Conflict as a production optimistic-concurrency API.
+- [Atlassian post-incident review, April 2022](https://www.atlassian.com/engineering/post-incident-review-april-2022-outage): the primary account of the deletion incident above.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral), State, Observer and Chain of Responsibility.
+- *Head First Design Patterns*, Freeman and Robson: chapter 10 (State) for the class-per-state form this lesson deliberately avoids, and chapter 2 (Observer).
+- *Refactoring*, Martin Fowler: chapter 10 (Simplifying Conditional Logic), the refactoring that turns scattered status `if` chains into guards.
+
+**Other curricula**
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): frames status handling as one class per state; this lesson argues a transition table fits better when states carry no behaviour of their own.
+- [donnemartin/system-design-primer](https://github.com/donnemartin/system-design-primer): no task-tracker chapter, but its coverage of consistency and write contention backs the versioned-write argument.
 
 ## Watch
 - [Pessimistic vs Optimistic Concurrency Control in Database Systems (Hussein Nasser)](https://www.youtube.com/watch?v=I8IlO0hCSgY): the trade-off behind versioned writes, with database examples.

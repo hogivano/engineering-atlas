@@ -8,12 +8,12 @@ minutes: 15
 - Parts can be shared. The same track sits in many playlists, and the same engineer is on several teams.
 - Because the whole does not own its parts, it must not create, copy or destroy them. It holds references or ids and nothing more.
 - The hard question is the other direction: what happens to every whole when a shared part goes away. Decide it explicitly: block, unlink, or tolerate a dangling id.
-- UML's hollow diamond has no precise standard meaning. Write down lifetime and sharing rules instead.
+- UML's hollow diamond has no precise standard meaning ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)). Write down lifetime and sharing rules instead.
 
 ## How it works
 
 ### The problem: who is allowed to delete a part
-A music service has 40 million tracks and 300 million playlists. An early design gives `Playlist` a cascade delete on its tracks, and in staging a tester deletes a test playlist and 50 tracks vanish from every other playlist that held them. The model said "part of" when it meant "refers to". Aggregation is that weaker relationship: a whole that groups parts it does not own, which can belong to several wholes and outlive all of them.
+A music service has 40 million tracks and 300 million playlists. An early design gives `Playlist` a cascade delete on its tracks, and in staging a tester deletes a test playlist and 50 tracks vanish from every other playlist that held them. The model said "part of" when it meant "refers to". Aggregation is that weaker relationship: a whole that groups parts it does not own, which can belong to several wholes and outlive all of them. The UML spec admits that the precise semantics of shared aggregation vary by application area and modeler, and Fowler, quoting Rumbaugh, calls the hollow diamond a modeling placebo with no meaning beyond a plain association ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF), [Fowler](https://martinfowler.com/bliki/AggregationAndComposition.html)). That is why this lesson states its three questions instead of leaning on the symbol.
 
 ### Shared parts and independent lifetimes
 Three questions separate aggregation from composition. Can the part exist with no whole? Can it be in two wholes at once? Should copying the whole leave the parts shared? For a playlist and its tracks all three answers are yes: duplicating a playlist should point at the same tracks, not create 50 new track records.
@@ -23,7 +23,7 @@ In code this means the whole stores references or ids and accepts parts from out
 ### The removal question
 Independent lifetimes cut both ways: a label can withdraw a track from under every playlist holding it. Decide once, centrally, what happens:
 
-- **Restrict.** Refuse to remove a part that any whole still uses. Safe, but a widely used part becomes impossible to remove.
+- **Restrict.** Refuse to remove a part that any whole still uses. Safe, but a widely used part becomes impossible to remove. npm went this way after the left-pad incident: it made unpublishing harder when other packages depend on the version ([npm blog](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm)). In Postgres, `RESTRICT` refuses the delete outright, while the default `NO ACTION` lets the statement run and fails if the constraint is still broken at check time, which can be deferred to the end of the transaction ([Postgres docs](https://www.postgresql.org/docs/current/ddl-constraints.html)).
 - **Unlink.** Remove the part and strip it from every whole. Needs a fast way to find those wholes, which means a reverse index from part to wholes.
 - **Tolerate.** Leave the id in place and have readers skip or grey out missing parts. Cheap at write time, and the normal choice across service boundaries where you cannot update every holder atomically.
 
@@ -39,7 +39,7 @@ If a part makes no sense without its whole (an order line without an order) or m
 Agents often add cascades and deep copies because they look thorough. Check that wholes never construct or destroy shared parts, that clones are shallow for aggregated fields, and that part removal has one documented answer.
 
 ### The same shape elsewhere
-Hard links and symlinks have the same shape: a file survives until its last directory entry goes, and a symlink that outlives its target dangles. Container registries share image layers and need a garbage collection pass to find unused ones.
+Hard links and symlinks have the same shape: a file survives until its last directory entry goes, and a symlink that outlives its target dangles. Container registries share image layers between manifests and need a mark-and-sweep garbage collection pass to find unreferenced ones, which the Docker registry docs say to run with the registry read-only because an upload during the sweep can lose layers ([Docker registry docs](https://distribution.github.io/distribution/about/garbage-collection/)).
 
 ## Down the stack
 
@@ -51,7 +51,7 @@ In garbage-collected runtimes, aggregation is simply reachability. A tracing col
 
 Rust makes the distinction visible. A plain field owns its value, so sharing requires `Rc<T>` or, across threads, `Arc<T>`: a compiler-checked hollow diamond.
 
-In a relational database, the part's table has its own primary key, and the whole references it through a join table (`playlist_track(playlist_id, track_id, position)`). The foreign key's `ON DELETE` clause is the removal policy: `RESTRICT` or `NO ACTION` blocks deleting a track in use; `CASCADE` on the join table's `track_id` deletes the link rows, not the playlists; `SET NULL` suits a one-to-many column such as `employee.team_id`. Postgres enforces these through internal triggers on both tables, which is why an index on the referencing column matters: without it, every track delete scans the join table.
+In a relational database, the part's table has its own primary key, and the whole references it through a join table (`playlist_track(playlist_id, track_id, position)`). The foreign key's `ON DELETE` clause is the removal policy: `RESTRICT` or `NO ACTION` blocks deleting a track in use (they differ only in when the check runs); `CASCADE` on the join table's `track_id` deletes the link rows, not the playlists; `SET NULL` suits a one-to-many column such as `employee.team_id`. Postgres enforces these through internal triggers on both tables, which is why an index on the referencing column matters: it does not create one for you, and without it each delete from the referenced table scans the referencing table ([Postgres docs](https://www.postgresql.org/docs/current/ddl-constraints.html)).
 
 ### Layer 3: The machine
 A playlist of 50 tracks is an array of 50 pointers or 50 8-byte ids. The tracks themselves live elsewhere on the heap or on other database pages, so rendering the playlist is 50 dependent loads. In memory, each miss costs about 100 ns; in Postgres, fetching 50 tracks by primary key may touch 50 different 8 KB pages, each a buffer cache hit of a microsecond or so, or an SSD read of roughly 100 us when cold. That scattering is the price of sharing: one copy per part, many readers.
@@ -83,6 +83,10 @@ flowchart LR
 A team-management tool has 12,000 employees and 1,800 teams. Each employee is on 1 to 4 teams, 21,000 memberships in total. Teams aggregate employees: disbanding a team must never delete a person.
 
 The first schema stored id arrays on both `employee` and `team`. Disbanding a team scanned all 12,000 employees, and the arrays drifted when one update failed. The second schema used `membership(team_id, employee_id)` with a composite primary key and an index on `employee_id`, plus `ON DELETE CASCADE` on both foreign keys. Disbanding a team of 15 now deletes 15 link rows through the primary key; offboarding an employee deletes their 1 to 4 link rows through the second index. Neither touches the other side's main table. The remaining issue was shared mutation. Team leads could edit a member's "role" from the team page, which wrote to `employee.title` and changed it on every team. Moving `role` onto the membership row fixed it: the person is shared, the role is per team.
+
+## In the wild
+- **npm, 2016: left-pad.** In a naming dispute a maintainer unpublished 273 packages, including the tiny `left-pad`, which thousands of projects depended on directly or through other packages. Hundreds of installs a minute failed for about 2.5 hours until npm restored version 0.0.3 from backup, because a republished copy did not satisfy pins on 0.0.3. npm then restricted unpublishing of packages with dependents and began holding the names of removed packages ([npm blog](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm)). A shared part removed by its owner, with no removal policy, broke every whole that referenced it.
+- **Docker registry: shared layers need a stop-the-world sweep.** Image layers are stored by content and shared across manifests; a layer with at least one referencing manifest is never collected. Unused layers are found by marking digests from all manifests and sweeping every other blob, and the docs warn that uploading during the sweep risks deleting layers of a new image ([Docker registry docs](https://distribution.github.io/distribution/about/garbage-collection/)). It is the "unlink" policy done by scan instead of by reverse index.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -710,6 +714,20 @@ func (c *Catalog) Orphans() []string {
 - Per-album data such as caption and position stored on the link, not the shared photo.
 - Indexes on both columns of the link table and an estimate of worst-case fan-out.
 - Ownership: the photo's owner controls its lifetime, and album owners cannot destroy it.
+
+## Sources and further study
+**Primary**
+- [OMG UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF): defines `AggregationKind` and says the precise semantics of shared aggregation vary, while composite aggregation is the strong form.
+- [npm: kik, left-pad, and npm](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm): the registry's own account of a shared part being removed and the policy it adopted.
+
+**Systems docs**
+- [Docker Distribution: garbage collection](https://distribution.github.io/distribution/about/garbage-collection/): shared layers, reference by digest and a mark-and-sweep pass.
+- [Azure Architecture Center: tactical DDD](https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-domain-driven-design): aggregates referencing one another by identity only, the usual shape of aggregation across services.
+
+**Books**
+- *Domain-Driven Design*, Eric Evans (1st ed., 2003): chapter 6 "The Life Cycle of a Domain Object", on aggregates, references between them and repositories.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 1, which contrasts aggregation with acquaintance and notes that they are distinguished by intent, not by how they are coded.
+- *Refactoring*, Martin Fowler (2nd ed., 2018): chapter 9 "Organizing Data", for Change Reference to Value and Change Value to Reference, the moves between sharing a part and copying it.
 
 ## Watch
 - [UML class diagrams (Lucid Software)](https://www.youtube.com/watch?v=6XrL5jXmTwM): class diagram relationships, including the aggregation and composition diamonds.

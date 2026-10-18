@@ -935,7 +935,7 @@ func FreeVars(n Node) []string {
 
 **Books**
 - *Design Patterns* (Gamma, Helm, Johnson, Vlissides, 1994), Ch 5: Behavioral Patterns, the original Visitor with its double-dispatch structure.
-- *Head First Design Patterns* (2nd ed., 2020), Ch 12: Patterns of Patterns, Compound Patterns, for how Visitor combines with Composite and Iterator.
+- *Head First Design Patterns* (2nd ed., 2020), Appendix A: Leftover Patterns, a short treatment of Visitor.
 
 **Other curricula**
 - [Visitor (Refactoring Guru)](https://refactoring.guru/design-patterns/visitor): lists the same cost, that every new element class means updating all visitors, plus the encapsulation problem.

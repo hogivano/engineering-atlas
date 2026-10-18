@@ -23,15 +23,15 @@ An invariant has two halves. The constructor *establishes* it: trim the name, re
 Two leaks undo this work. Returning the internal list (`return self._tracks`) lets callers append behind the method's back, so return a copy or an immutable view. Accepting a list in the constructor and storing it directly lets the caller keep a reference and mutate it later, so copy on the way in as well.
 
 ### Values and entities
-Two `Track("Intro", "Nils", 214)` objects are interchangeable: same title, artist and duration, same thing. A track is a *value*, and values should be immutable, compare by their fields and hash by the same fields, so they work as dictionary keys and set members. Changing a value means making a new one.
+Two `Track("Intro", "Nils", 214)` objects are interchangeable: same title, artist and duration, same thing. A track is a *value*, and values should be immutable, compare by their fields and hash by the same fields, so they work as dictionary keys and set members. Changing a value means making a new one. Fowler's reason is aliasing: if two variables share a mutable date, changing one moves the other ([Fowler](https://martinfowler.com/bliki/ValueObject.html)).
 
-A playlist is an *entity*. Rename it, add three songs, and it is still the same playlist, the one with ID 41 that a user shared last week. Two playlists with identical songs are still two playlists. Entities compare by identity, usually an explicit ID rather than memory address, because the same entity may be loaded twice from a database into two objects that must compare equal.
+A playlist is an *entity*. Rename it, add three songs, and it is still the same playlist, the one with ID 41 that a user shared last week. Two playlists with identical songs are still two playlists. Entities (in Evans's terms, objects defined by identity rather than attributes; *Domain-Driven Design*, Ch 5) compare by identity, usually an explicit ID rather than memory address, because the same entity may be loaded twice from a database into two objects that must compare equal.
 
-Mixing these up causes real bugs. Value equality on a mutable entity breaks hash tables: put a playlist in a set, add a song, and the set can no longer find it. Identity equality on a value lets duplicates slip through, because a freshly parsed track never matches a stored one.
+Mixing these up causes real bugs. Refactoring's catalogue has the matching moves: wrap a primitive that has grown behaviour in a class ([refactoring.guru](https://refactoring.guru/replace-data-value-with-object)), and make a collection field safe with Encapsulate Collection (*Refactoring*, 2nd ed., Ch 7). Value equality on a mutable entity breaks hash tables: put a playlist in a set, add a song, and the set can no longer find it. Identity equality on a value lets duplicates slip through, because a freshly parsed track never matches a stored one.
 
 ### Equality and hashing per language
-- **Python:** `==` falls back to identity unless the class defines `__eq__`. Defining `__eq__` sets `__hash__` to `None`, so instances become unhashable until you define `__hash__` from the same fields. `@dataclass(frozen=True)` generates all three consistently.
-- **Go:** `==` on structs compares every field, and a struct whose fields are all comparable can be a map key with no code at all. A struct with a slice or map field cannot be compared and will not compile as a map key.
+- **Python:** `==` falls back to identity unless the class defines `__eq__`. Defining `__eq__` sets `__hash__` to `None`, so instances become unhashable until you define `__hash__` from the same fields ([Python data model](https://docs.python.org/3/reference/datamodel.html)). `@dataclass(frozen=True)` generates all three consistently; a plain `@dataclass` leaves `__hash__` as `None`, and `frozen=True` makes assignment raise `FrozenInstanceError` ([dataclasses docs](https://docs.python.org/3/library/dataclasses.html)).
+- **Go:** `==` on structs compares every field, and a struct whose fields are all comparable can be a map key with no code at all. A struct with a slice or map field cannot be compared and will not compile as a map key, because a map key type must have `==` fully defined and slices, maps and functions do not ([Go spec](https://go.dev/ref/spec)).
 - **JavaScript and TypeScript:** `===` on objects is identity, and `Map` and `Set` use identity for object keys. Value semantics need an `equals` method and a string or tuple key, such as `` `${title}|${artist}|${seconds}` ``.
 
 ### Copy semantics
@@ -49,7 +49,7 @@ Value versus entity is the *duplicates* problem shape. Event deduplication, idem
 A class promises that every instance reachable by callers satisfies its invariants, both after construction and after every method call, including failed ones. Value types promise that equality is reflexive, symmetric and transitive, that equal instances have equal hashes, and that both are stable for the object's lifetime. Entities promise that equality follows identity and does not change when fields change. A class documents whether returned collections are copies or views, and whether copying an instance shares anything.
 
 ### Layer 2: The mechanism
-CPython represents every object as a `PyObject` header (a reference count and a pointer to the type) followed by type-specific data. A normal class instance stores attributes in a dictionary; since PEP 412, instances of one class share a single keys table and store only values, and 3.11 and later can keep those values inline in the object until something forces a real dict. `__slots__` replaces the dictionary with fixed offsets, implemented as descriptors on the class. Attribute lookup walks the type's method resolution order (MRO); a per-type cache tagged with a version number skips the walk, and the 3.11 specialising interpreter rewrites hot `LOAD_ATTR` instructions into variants such as `LOAD_ATTR_INSTANCE_VALUE` that read a fixed slot after one type check.
+CPython represents every object as a `PyObject` header (a reference count and a pointer to the type) followed by type-specific data. A normal class instance stores attributes in a dictionary; since PEP 412, instances of one class share a single keys table and store only values, and 3.11 and later can keep those values inline in the object until something forces a real dict. `__slots__` replaces the dictionary with fixed offsets, implemented as descriptors on the class, and `@dataclass(slots=True)` (Python 3.10 and later) generates it for you by building a new class ([dataclasses docs](https://docs.python.org/3/library/dataclasses.html)). Attribute lookup walks the type's method resolution order (MRO); a per-type cache tagged with a version number skips the walk, and the 3.11 specialising interpreter rewrites hot `LOAD_ATTR` instructions into variants such as `LOAD_ATTR_INSTANCE_VALUE` that read a fixed slot after one type check.
 
 V8 gives each object a pointer to a hidden class (V8 calls it a *map*) that records property names and offsets. Objects built by the same constructor, assigning fields in the same order, share a map, and inline caches at each property access remember "this map means offset 16". Adding a property later, or in a different order, creates a new map and can turn a fast monomorphic call site into a slow megamorphic one.
 
@@ -95,6 +95,10 @@ classDiagram
 A podcast platform keeps 12 million episode records in memory in a ranking service, each a Python object with eight attributes. With ordinary instances, `tracemalloc` showed about 230 bytes per object plus its strings: 2.8 GB of objects before any string data, and the service needed 6 GB hosts. Garbage collection passes took 900 ms because the collector walks every container object.
 
 The team made the episode class a `@dataclass(frozen=True, slots=True)`, since ranking only reads episodes and updates arrive as whole new records. Objects dropped to about 104 bytes, saving 1.5 GB. Because the class was now a hashable value, they also deduplicated identical episodes syndicated under different feeds through a dictionary keyed by the episode itself, which removed another 9% of objects. Frozen instances made the deduplication safe, since nobody could mutate a shared episode.
+
+## In the wild
+- **CPython, 3.7 (2018): `gc.freeze()` for forking servers.** A pre-fork web server shares its loaded objects with child processes through copy-on-write pages, but collections over those objects can cause page copies in the children, which raises memory use. `gc.freeze()` moves all tracked objects into a permanent generation that later collections ignore, and the docs say this maximises memory sharing; they recommend `gc.disable()` early in the parent, `gc.freeze()` before `fork()`, and `gc.enable()` in the child ([Python gc docs](https://docs.python.org/3/library/gc.html)).
+- **Fowler's write-up: the aliased date.** In his Value Object description, a retirement date assigned from a party date shares one mutable object, so moving the party date to a Saturday moves the retirement date too. The cure he gives is immutable values that are replaced, never edited ([Fowler](https://martinfowler.com/bliki/ValueObject.html)). This is a documented teaching case rather than a production outage.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -808,6 +812,25 @@ func (p *Playlist) SameAs(o *Playlist) bool { return o != nil && p.ID == o.ID }
 - `Money` as integer minor units plus currency, with operations that refuse mixed currencies, rather than floats.
 - Measuring per-object size with `tracemalloc` or Go heap profiles before optimising, then `__slots__` or frozen slotted dataclasses in Python and field reordering or interned IDs in Go.
 - Awareness that copies of entities (for example a quote cloned into a trip) need new identities and their own collections.
+
+## Sources and further study
+**Primary**
+- [dataclasses (Python docs)](https://docs.python.org/3/library/dataclasses.html): the exact table of when `__hash__` is generated, plus `frozen` and `slots` caveats.
+- [The Go Programming Language Specification](https://go.dev/ref/spec): map key and comparison rules for struct types.
+
+**Systems docs**
+- [Python gc module](https://docs.python.org/3/library/gc.html): `freeze()` and `disable()` for pre-fork servers.
+- [Python data model](https://docs.python.org/3/reference/datamodel.html): `__eq__`, `__hash__` and the rules that tie them.
+- [Python tutorial, Classes](https://docs.python.org/3/tutorial/classes.html): instance and class variables, and name mangling.
+
+**Books**
+- *Domain-Driven Design* (Evans, 2003), Ch 5: A Model Expressed in Software, for entities, value objects and identity.
+- *Refactoring*, 2nd ed., Ch 7: Encapsulation, for Encapsulate Collection and Encapsulate Record.
+- *Refactoring*, 2nd ed., Ch 9: Organizing Data, for Change Reference to Value and Replace Primitive with Object.
+- *Head First Design Patterns*, 2nd ed., Ch 1: Welcome to Design Patterns, for programming to behaviour rather than data.
+
+**Other curricula**
+- [refactoring.guru, Replace Data Value with Object](https://refactoring.guru/replace-data-value-with-object): when a primitive field earns its own class, and that it fits dates, money and ranges less well.
 
 ## Watch
 - [Raymond Hettinger: Dataclasses, the code generator to end all code generators (PyCon 2018)](https://www.youtube.com/watch?v=T-TwcmT6Rcw): what `@dataclass` generates for equality, hashing, ordering and immutability, and when to use it.

@@ -13,12 +13,12 @@ minutes: 17
 ## How it works
 
 ### What the diagram is for
-A class diagram drops method bodies, imports and error handling, and keeps what reviewers argue about: which classes exist, who owns whom, and which way dependencies point. Martin Fowler distinguishes UML as sketch, as blueprint and as programming language. Nearly all useful work today is sketching: draw to explore or explain, and stop once the picture has answered the question.
+A class diagram drops method bodies, imports and error handling, and keeps what reviewers argue about: which classes exist, who owns whom, and which way dependencies point. Martin Fowler distinguishes UML as sketch, as blueprint and as programming language ([UmlMode](https://martinfowler.com/bliki/UmlMode.html)). Nearly all useful work today is sketching: draw to explore or explain, and stop once the picture has answered the question.
 
 ### The class box
 The top compartment holds the name, plus an optional stereotype such as `<<interface>>`, `<<abstract>>` or `<<enumeration>>`. The middle holds attributes in the form `visibility name: Type [multiplicity] = default`, for example `- lines: OrderLine [1..*]`. The bottom holds operations as `visibility name(param: Type): ReturnType`, for example `+ addLine(item: MenuItem, qty: int): void`.
 
-Static members are underlined and abstract ones italicised; Mermaid writes them with a trailing `$` and `*`. Compartments may be left empty. A diagram that lists every getter is a diagram nobody reads.
+Static members are underlined and abstract ones italicised; Mermaid writes them with a trailing `$` and `*` ([Mermaid docs](https://mermaid.js.org/syntax/classDiagram.html)). Compartments may be left empty. A diagram that lists every getter is a diagram nobody reads.
 
 ### Visibility
 `+` public, `-` private, `#` protected and `~` package map to Java's keywords directly. Python only has the `_name` convention, and Go's nearest fit is a capitalised (exported) versus lowercase name. The marks state the interface you intend, not what the language enforces, so the diagram is often the clearest record of that intent.
@@ -40,7 +40,7 @@ These are the arrows from the earlier lessons in this course, collected in one p
 | Inheritance | solid line, hollow triangle at the parent | `A <\|-- B` | B is a kind of A | `extends`, subclassing, embedding as a crude substitute |
 | Realization | dashed line, hollow triangle at the interface | `A <\|.. B` | B fulfils the contract A | `implements`, structural interface satisfaction |
 
-Dependency and association differ in time: one call versus a stored reference. Aggregation and composition differ in lifetime: deleting a playlist keeps its tracks, deleting an order deletes its lines. Realization and inheritance differ in what is shared: a contract only, versus contract plus implementation and state. The UML specification itself leaves the semantics of shared aggregation to the application domain, so use the hollow diamond only when the team agrees what it means.
+Dependency and association differ in time: one call versus a stored reference. Aggregation and composition differ in lifetime: deleting a playlist keeps its tracks, deleting an order deletes its lines. Realization and inheritance differ in what is shared: a contract only, versus contract plus implementation and state. The UML specification says the precise semantics of shared aggregation vary by application area and modeler, while composite aggregation means the whole is responsible for the existence and storage of its parts ([UML 2.5.1, AggregationKind](https://www.omg.org/spec/UML/2.5.1/PDF)). Use the hollow diamond only when the team agrees what it means.
 
 ### Using it in an interview
 In a low-level design round the interviewer reads your diagram before your code. A sequence that works:
@@ -54,7 +54,7 @@ In a low-level design round the interviewer reads your diagram before your code.
 Five to eight classes is enough. Twenty-five boxes in 45 minutes signals you modelled the nouns, not the problem.
 
 ### Diagrams in the age of generated code
-Code assistants over-produce class models: an interface per class, a manager per noun, links in both directions. Asking for a Mermaid class diagram of generated code is a cheap review step, since arrows in every direction reveal coupling faster than reading files. Diagram-as-code also lets the picture change in the same pull request as the code.
+Code assistants over-produce class models: an interface per class, a manager per noun, links in both directions. Asking for a Mermaid class diagram of generated code is a cheap review step, since arrows in every direction reveal coupling faster than reading files. Diagram-as-code also lets the picture change in the same pull request as the code, and GitHub renders Mermaid blocks in Markdown files, issues and pull requests ([GitHub Docs](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams)).
 
 ### The same shape elsewhere
 A class diagram is a schema for an object graph. An entity-relationship diagram says the same about tables (`1` on the one side becomes a NOT NULL foreign key, `*` to `*` a join table), and JSON Schema says it about messages. The shape is "trust but verify": a declared structure plus a validator that checks real data against it.
@@ -65,9 +65,9 @@ A class diagram is a schema for an object graph. An entity-relationship diagram 
 A class diagram promises structural facts that hold whenever a caller can observe the system: an `Order` reaches its lines, every `OrderLine` belongs to exactly one `Order`, `CardPayment` satisfies `PaymentMethod`. Each is testable: multiplicities as invariants after every public operation, realization as "compiles where the interface is expected", composition as "after deleting the whole, no part is reachable". It promises nothing about ordering or timing; that belongs in sequence and state diagrams.
 
 ### Layer 2: The mechanism
-In the UML 2.5 metamodel an `Association` element has two member ends, each a `Property` with `lower` and `upper` bounds, navigability, and an `aggregation` kind of `none`, `shared` or `composite`. Generalization and InterfaceRealization are separate elements. Tools exchange the model as XMI, an XML format.
+In the UML 2.5 metamodel an `Association` element has two member ends, each a `Property` with `lower` and `upper` bounds, navigability, and an `aggregation` kind of `none`, `shared` or `composite` ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)). Generalization and InterfaceRealization are separate elements. Tools exchange the model as XMI, an XML format.
 
-Mermaid is lighter: it parses `classDiagram` text into classes, members and relations with optional cardinality labels, and a layout engine (dagre by default) renders SVG. It checks neither multiplicities nor interface methods; the text is only a drawing. Enforcement lives in code: constructors for lower bounds of 1, guarded add methods for upper bounds, database constraints, and graph validators like the practice below.
+Mermaid is lighter: it parses `classDiagram` text into classes, members and relations with optional cardinality labels, and a layout engine renders SVG. Since v12.0.0 that engine is ELK, not dagre, and the default theme changed too, so existing class diagrams re-lay out unless you set `layout: dagre` ([Mermaid layouts](https://mermaid.js.org/config/layouts.html), [12.0.0 release](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0)). It checks neither multiplicities nor interface methods; the text is only a drawing. Enforcement lives in code: constructors for lower bounds of 1, guarded add methods for upper bounds, database constraints, and graph validators like the practice below.
 
 ### Layer 3: The machine
 Each arrow has a memory shape. On a 64-bit machine an upper bound of 1 is one 8-byte pointer (4 with JVM compressed oops), and `0..1` adds a null check at every read. An upper bound of `*` in Go is a 24-byte slice header plus a backing array; an empty CPython list is 56 bytes plus 8 per slot.
@@ -170,6 +170,10 @@ class Order:
 Now the cost. With 200,000 open orders of 3 lines each in Go, `[]OrderLine` (32-byte lines by value) is one backing array per order. `[]*OrderLine` adds 600,000 separate heap objects for the garbage collector to trace. Both are under 10 MB, so choose by semantics; at 50 million lines in a pricing batch, value composition is one cache-friendly scan instead of 50 million pointer chases.
 
 In the interview, spend about 5 minutes on requirements, 10 on the diagram, 20 coding `Order`, `OrderLine` and `PaymentMethod`, and the rest walking through "place order, pay, assign courier".
+
+## In the wild
+- **GitHub, 2022: Mermaid diagrams render in Markdown.** On 14 February 2022 GitHub announced that a fenced `mermaid` block in a Markdown file draws a diagram ([GitHub Blog](https://github.blog/developer-skills/github/include-diagrams-markdown-files-mermaid/)). The docs now list issues, discussions, pull requests, wikis and Markdown files as places it renders ([GitHub Docs](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams)). A class diagram committed as text can be reviewed in the same pull request as the code it describes.
+- **Mermaid, 2026: version 12.0.0 re-lays out every class diagram.** The release is marked breaking: it bundles ELK as the default layout engine and changes the default look, so existing flowcharts, state and class diagrams re-lay out and recolour. Teams that want the old picture add `layout: dagre`, `theme: default` and `look: classic` to their config ([release notes](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0)). A diagram stored as text has a toolchain version, and that version belongs in the same upgrade checklist as a compiler.
 
 ## Trade-offs
 
@@ -865,6 +869,25 @@ func Validate(assocs []Association, objects map[string]string, links []Link) ([]
 - A `FinePolicy` interface with one implementation today, justified by a known second policy, rather than a speculative plugin system.
 - Navigability chosen per query, avoiding two-way links that are not needed.
 - A walk-through of "borrow, return late, pay fine" on the diagram.
+
+## Sources and further study
+**Primary**
+- [UML 2.5.1 specification, PDF (OMG)](https://www.omg.org/spec/UML/2.5.1/PDF): the metamodel behind `Association`, `Property` multiplicities and `AggregationKind`.
+- [Mermaid 12.0.0 release notes](https://github.com/mermaid-js/mermaid/releases/tag/mermaid%4012.0.0): the breaking change to default layout and theme for class diagrams.
+
+**Systems docs**
+- [Mermaid layouts](https://mermaid.js.org/config/layouts.html): which diagram types use ELK by default and how to select dagre instead.
+- [GitHub Docs: creating diagrams](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams): where Mermaid renders in Markdown on GitHub.
+- [GitHub Blog: diagrams in Markdown with Mermaid](https://github.blog/developer-skills/github/include-diagrams-markdown-files-mermaid/): the 2022 announcement.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: Appendix B "Guide to Notation", the class and object diagram notation the book uses for every pattern.
+- *Cracking the Coding Interview*, Gayle Laakmann McDowell, chapter 7 "Object-Oriented Design": how interviewers expect classes and relationships to be sketched.
+- *Software Engineering at Google*, Winters, Manshreck and Wright, chapter 10 "Documentation": why design documents and diagrams need an owner and a review process.
+
+**Other curricula**
+- [donnemartin/system-design-primer: object-oriented design](https://github.com/donnemartin/system-design-primer): frames OOD as a set of worked interview exercises with class sketches, with no multiplicity or lifetime reasoning.
+- [Refactoring.Guru: design patterns](https://refactoring.guru/design-patterns): shows each pattern as a structure diagram; useful for seeing realization and composition arrows in context.
 
 ## Watch
 - [UML Class Diagram Tutorial (Lucid Software)](https://www.youtube.com/watch?v=UI6lqHOVHic): a clear walkthrough of boxes, visibility, multiplicity and the relationship types with one running example.

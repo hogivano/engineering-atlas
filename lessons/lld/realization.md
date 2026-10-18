@@ -25,20 +25,20 @@ PayoutService - - - - - - > <<interface>> PayoutRail     (dependency: uses)
                                        SepaInstantRail
 ```
 
-Read each arrow by what crosses it. Generalization from `SepaInstantRail` to `SepaRail` carries fields, method bodies and the obligation to behave like a `SepaRail`. Realization from `SepaRail` to `PayoutRail` carries only the obligation: provide `send` and `status` with these signatures and documented behaviour. Dependency carries nothing; it says a change to `PayoutRail` may force a change to `PayoutService`. UML's compact form shows the same thing: a "lollipop" on `SepaRail` means it *provides* `PayoutRail`, and a "socket" on `PayoutService` means it *requires* it.
+UML itself defines Realization as a specialised dependency between a specification (the supplier) and its implementation (the client), drawn as a dashed line with a triangular head at the realized element ([UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF)). Read each arrow by what crosses it. Generalization from `SepaInstantRail` to `SepaRail` carries fields, method bodies and the obligation to behave like a `SepaRail`. Realization from `SepaRail` to `PayoutRail` carries only the obligation: provide `send` and `status` with these signatures and documented behaviour. Dependency carries nothing; it says a change to `PayoutRail` may force a change to `PayoutService`. UML's compact form shows the same thing: a "lollipop" on `SepaRail` means it *provides* `PayoutRail`, and a "socket" on `PayoutService` means it *requires* it.
 
 ### Arrows point at the abstraction
 In a well-layered design the dependency and all realizations point at `PayoutRail`. That is Dependency Inversion drawn as geometry, and a quick review test: an arrow from a high-level class to a concrete rail means the inversion has leaked.
 
 ### What realization does and does not give you
-A realizing class must provide every declared operation with compatible signatures, and gets no fields. Java default methods, Rust default trait methods and concrete methods on Python ABCs let an interface hand over some code, which blurs the line with generalization; keep anything holding state in a class.
+A realizing class must provide every declared operation with compatible signatures, and gets no fields. Java default methods, Rust default trait methods and concrete methods on Python ABCs let an interface hand over some code, which blurs the line with generalization; keep anything holding state in a class. Defaults are not free of risk for compiled code: adding one is binary compatible, but an old class that inherits the same default from two unrelated interfaces gets an `IncompatibleClassChangeError` when it calls the method ([JLS 13.5.7](https://docs.oracle.com/javase/specs/jls/se21/html/jls-13.html#jls-13.5.7)).
 
 A class may realize several role interfaces: `SepaRail` might realize `PayoutRail`, `Cancellable` and `HealthReporter`. Trouble starts when two interfaces use one name for different things, such as `close()` meaning "end the session" in one and "close the settlement batch" in the other. Java and TypeScript give the class one `close`; C# can provide both through explicit interface implementation.
 
 ### Declared versus implicit realization
-Nominal languages record the realization (`class SepaRail implements PayoutRail`), so the compiler checks it and IDEs list every realizer. In Go a type realizes `PayoutRail` the moment it has `Send` and `Status` with the right signatures. Nothing records intent, and a renamed method breaks the realization silently until some distant conversion fails. The Go FAQ's fix is one line per realizer: `var _ PayoutRail = (*SepaRail)(nil)`.
+Nominal languages record the realization (`class SepaRail implements PayoutRail`), so the compiler checks it and IDEs list every realizer. In Go a type realizes `PayoutRail` the moment it has `Send` and `Status` with the right signatures. Nothing records intent, and a renamed method breaks the realization silently until some distant conversion fails. The Go FAQ's fix is one line per realizer: `var _ PayoutRail = (*SepaRail)(nil)` ([Go FAQ](https://go.dev/doc/faq#guarantee_satisfies_interface)).
 
-TypeScript checks `implements` but accepts any object of the right shape and erases the clause from the emitted JavaScript. Python has two forms. Subclassing an `abc.ABC` blocks instantiation if an abstract method is missing. `PayoutRail.register(SepaRail)` declares a "virtual subclass" and checks nothing: `isinstance` returns true even if `SepaRail` has no `send`.
+TypeScript checks `implements` but accepts any object of the right shape and erases the clause from the emitted JavaScript. The clause is only a check; it does not change the class's own inferred types ([TypeScript handbook](https://www.typescriptlang.org/docs/handbook/2/classes.html)). Python has two forms. Subclassing an `abc.ABC` blocks instantiation if an abstract method is missing. `PayoutRail.register(SepaRail)` declares a "virtual subclass" and checks nothing: `isinstance` returns true even if `SepaRail` has no `send` ([Python abc docs](https://docs.python.org/3/library/abc.html)). A third form, `typing.Protocol`, is structural like Go: a class qualifies by shape with no base class, and `isinstance` works only when the protocol is marked `@runtime_checkable` ([PEP 544](https://peps.python.org/pep-0544/)).
 
 ### Diagrams that stay true
 A hand-drawn class diagram is accurate on the day it is drawn. Diagram-as-code (Mermaid writes realization as `PayoutRail <|.. SepaRail`) can be generated from source or checked against it, so a missing realization fails a build instead of misleading a new hire. The practice task builds the core of such a check.
@@ -52,7 +52,7 @@ Realization is the *trust but verify* shape: a declaration is a claim about beha
 ## Down the stack
 
 ### Layer 1: The contract
-The realizing type provides every member of the interface and its superinterfaces with compatible signatures, and its values are accepted where the interface is expected. Java and C# check at compile time unless the class is abstract; Go at each static conversion; TypeScript only at compile time; Python ABCs at instantiation. Separately compiled code can still break it: if an interface gains a method after a realizer was compiled, the JVM links the old class anyway and throws `AbstractMethodError` only when the missing method is called.
+The realizing type provides every member of the interface and its superinterfaces with compatible signatures, and its values are accepted where the interface is expected. Java and C# check at compile time unless the class is abstract; Go at each static conversion; TypeScript only at compile time; Python ABCs at instantiation. Separately compiled code can still break it: adding an abstract method to an interface is binary compatible by specification ([JLS 13.5.4](https://docs.oracle.com/javase/specs/jls/se21/html/jls-13.html#jls-13.5.4)), so the JVM links the old class anyway and throws `AbstractMethodError` only when the missing method is called.
 
 ### Layer 2: The mechanism
 **Java.** The class file's `interfaces` array names the directly implemented interfaces. When HotSpot links the class it builds an itable with an entry for every implemented interface, including superinterfaces and those inherited from superclasses, each pointing to a block of method pointers. Default methods are filled from the interface; missing ones get a stub that throws `AbstractMethodError`.
@@ -92,6 +92,10 @@ The payouts platform has five rails realizing `PayoutRail` and processes 1.2 mil
 The JVM links it without complaint. About 0.4 percent of payouts are cancelled, 4,800 a day, and the vendor rail carries 15 percent of traffic, so roughly 720 cancellations a day hit `AbstractMethodError`, each leaving a payout in flight that the customer believes was cancelled.
 
 The fix had three parts. `cancel` moved to a separate `Cancellable` interface, and the service returns "cannot cancel on this rail" when a rail does not realize it. A conformance suite (send, status, idempotent retries, cancel where realized) runs in CI against every class in the `ServiceLoader` configuration, vendor jars included. And the architecture diagram is now generated from code, so the vendor rail's missing realization arrow is visible.
+
+## In the wild
+- **Apache Commons DBCP 2.5.0, 2018: new interface methods against old drivers.** DBCP started calling JDBC 4.1 methods such as `Connection.getSchema()`. A driver built for JDBC 4.0 still loaded, because the method was absent from its class, and the JVM threw `AbstractMethodError` at the call. The fix in 2.6.0 detects the case and uses null for schema values ([DBCP-518](https://issues.apache.org/jira/browse/DBCP-518)). It is the vendor-plugin failure in the worked example, in a widely deployed pool.
+- **Go FAQ: a marker method to force explicit realization.** Because Go interfaces are satisfied implicitly, the FAQ shows adding a method such as `ImplementsFooer()` so that a type must opt in, and notes this is needed only to resolve ambiguity among similar interfaces. The ordinary tool is the `var _ I = T{}` compile-time assertion ([Go FAQ](https://go.dev/doc/faq#guarantee_satisfies_interface)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -644,6 +648,20 @@ func Satisfies(ifaces map[string]Interface, classes map[string]Class, cls, iface
 - Binary compatibility: old classes link and fail at the first call to a missing method, so evolution uses new interfaces or defaults.
 - Behavioural rules (expiry, idempotency, error codes) documented on the interface and enforced by the suite.
 - A class diagram generated from code showing which backend realizes which role.
+
+## Sources and further study
+**Primary**
+- [OMG UML 2.5.1](https://www.omg.org/spec/UML/2.5.1/PDF): Realization as a specialised dependency, InterfaceRealization, and the lollipop and socket notation for provided and required interfaces.
+- [PEP 544: Protocols, structural subtyping](https://peps.python.org/pep-0544/): Python's implicit realization and the limits of runtime checks.
+
+**Systems docs**
+- [Apache DBCP-518](https://issues.apache.org/jira/browse/DBCP-518): an `AbstractMethodError` caused by calling a newer interface method on an older realizer.
+- [TypeScript handbook: classes, `implements` clauses](https://www.typescriptlang.org/docs/handbook/2/classes.html): why `implements` is a check and nothing more.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1994): chapter 1, "program to an interface, not an implementation", the principle realization serves.
+- *Head First Design Patterns*, Freeman and Robson (2nd ed., 2020): chapter 1, on coding to a supertype so behaviour can vary behind it.
+- *Clean Architecture*, Robert C. Martin (1st ed., 2017): chapter 10 "ISP" and chapter 11 "DIP", on small role interfaces and arrows pointing at abstractions.
 
 ## Watch
 - [UML Class Diagram Tutorial (Lucid Software)](https://www.youtube.com/watch?v=UI6lqHOVHic): the notation for every class relationship, realization included.

@@ -13,7 +13,7 @@ minutes: 19
 ## Requirements
 
 Functional:
-- A board of `rows x cols` cells with `m` mines. Presets: Beginner 9 by 9 with 10 mines, Intermediate 16 by 16 with 40, Expert 30 by 16 with 99, plus custom sizes.
+- A board of `rows x cols` cells with `m` mines. Presets: Beginner 9 by 9 with 10 mines (some versions use 8 by 8), Intermediate 16 by 16 with 40, Expert 30 by 16 with 99, plus custom sizes ([Wikipedia](https://en.wikipedia.org/wiki/Minesweeper_(video_game))).
 - The player can reveal a cell, toggle a flag on a hidden cell, and chord: on a revealed number whose flagged neighbours equal the number, reveal all other hidden neighbours at once.
 - Revealing a mine loses. Revealing a cell with zero adjacent mines also reveals its neighbours, recursively, through the connected empty region and its numbered border.
 - The first reveal is never a mine.
@@ -121,7 +121,7 @@ sequenceDiagram
 ## Design patterns used and why
 
 - **Façade** for `Game`. The UI, a test or a bot solver all call five methods. The board's array layout can change without touching them.
-- **Strategy** for mine placement. The rules about where mines may go (first click safe, first click opens a region, board must be solvable without guessing) change between versions and between difficulty settings. Simon Tatham's Mines, for example, generates boards that never require a guess by default. Each rule is a new placer; `Game` does not change.
+- **Strategy** for mine placement. The rules about where mines may go (first click safe, first click opens a region, board must be solvable without guessing) change between versions and between difficulty settings. Simon Tatham's Mines, for example, generates boards that never require a guess by default ([Tatham's manual](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/mines.html)). Real versions differ on this rule: some only guarantee the first click is safe, and some also make its neighbours safe ([Wikipedia](https://en.wikipedia.org/wiki/Minesweeper_(video_game))). Each rule is a new placer; `Game` does not change.
 - **State machine**, kept as an enum with guarded transitions. `NOT_STARTED` to `PLAYING` on the first reveal, `PLAYING` to `WON` or `LOST`, and nothing out of the terminal states. A State-pattern class per status is overkill here, because only two methods behave differently per state and the rule is mostly "reject".
 - **Observer** for the UI and for sound or statistics. The flood returns the list of changed cells, and the UI repaints exactly those. That matters on big boards, where repainting everything after each click wastes most of a frame.
 - **Command**, optional, for replay. Each move is a small record (`reveal 4 7`, `flag 2 3`) appended to a log. Seed plus log reproduces any game, which turns "I lost on a cell that should have been safe" bug reports into a failing test.
@@ -138,22 +138,28 @@ Avoid the tempting `Cell` class hierarchy (`MineCell`, `NumberCell`, `EmptyCell`
 - **Win and loss in one move.** A chord can reveal a safe cell that would complete the board and a mine in the same call. Process neighbours in a fixed order and stop at the first mine, so the outcome is deterministic.
 - **Threads.** The game is single-player, so the only concurrency is the UI thread and a timer tick. Keep all state changes on the UI thread (or one game actor), and have the timer only post "repaint the clock" events. A co-op multiplayer version puts one owner per game behind a queue, the single-owner approach from [How to handle Concurrency Scenarios](handling-concurrency.md), and makes reveal idempotent so that two players clicking the same cell is harmless.
 
+## In the wild
+- **Simon Tatham's Puzzles, ongoing: solvable-by-default Mines.** The Mines game in this widely ported collection has an "ensure solubility" option, on by default, so the whole grid can be deduced from the initial open space, and players can switch it off for riskier grids. That is the no-guess placer of this lesson running in a shipped product ([Tatham's manual](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/mines.html)).
+- **Microsoft Minesweeper, 1990: the reference ruleset.** Microsoft's version first appeared in 1990 in the Windows Entertainment Pack and later shipped with Windows. Its Beginner, Intermediate and Expert presets and the chording gesture (opening all unflagged neighbours of a satisfied number) became the baseline most clones follow ([Wikipedia](https://en.wikipedia.org/wiki/Minesweeper_(video_game))).
+- **Kaye, 2000: consistency checking is NP-complete.** The proof that deciding whether a partly revealed board has any valid mine arrangement is NP-complete explains why solvers and generators use bounded deduction and retries instead of exact reasoning ([Wikipedia](https://en.wikipedia.org/wiki/Minesweeper_(video_game))).
+
+
 ## Down the stack
 
 ### Layer 1: The contract
 `reveal` on a hidden, unflagged cell during play either loses (the cell is a mine) or reveals exactly the cell, plus, if its count is zero, the connected region of zero cells and their non-mine neighbours, never crossing a flag. It returns the new status. It is idempotent: a second call on the same cell changes nothing. The number of revealed safe cells equals `rows * cols - mines` if and only if the status is `WON`. The first reveal never loses.
 
 ### Layer 2: The mechanism
-Store the board in row-major order: cell `(r, c)` is index `r * cols + c`. Neighbours are the eight offsets `-cols-1, -cols, -cols+1, -1, +1, cols-1, cols, cols+1`, with bounds checks at the edges. A common trick removes the checks: pad the board with a one-cell border of sentinel cells that are "already revealed, count non-zero", so the flood stops there naturally. Chess programs use the same idea in mailbox boards.
+Store the board in row-major order: cell `(r, c)` is index `r * cols + c`. Neighbours are the eight offsets `-cols-1, -cols, -cols+1, -1, +1, cols-1, cols, cols+1`, with bounds checks at the edges. A common trick removes the checks: pad the board with a one-cell border of sentinel cells that are "already revealed, count non-zero", so the flood stops there naturally. Chess programs use the same idea in mailbox boards ([Chess Programming Wiki](https://www.chessprogramming.org/Board_Representation)).
 
 Counts are computed once after placement: for each mine, increment its eight neighbours. That is `8m` increments, under 1,000 for Expert. The flood is a BFS: push the start cell, pop a cell, and if its count is zero, push each hidden, unflagged neighbour after marking it revealed. Marking on push rather than on pop guarantees each cell enters the queue once, so the flood is O(cells revealed). The win check is a counter of opened safe cells, incremented by the flood.
 
-A no-guess generator places mines, then runs a solver from the first click that uses only deductions (single-cell rules, then subset rules between pairs of numbers). If the solver gets stuck, it rerolls or locally moves mines. Deciding in general whether a partly revealed board is consistent is NP-complete, which Kaye proved in 2000, so practical generators use bounded deduction plus retries rather than exact reasoning.
+A no-guess generator places mines, then runs a solver from the first click that uses only deductions (single-cell rules, then subset rules between pairs of numbers). If the solver gets stuck, it rerolls or locally moves mines. Deciding in general whether a partly revealed board is consistent is NP-complete, which Kaye proved in 2000 ([Wikipedia](https://en.wikipedia.org/wiki/Minesweeper_(video_game))), so practical generators use bounded deduction plus retries rather than exact reasoning.
 
 ### Layer 3: The machine
 Pack each cell into one byte: four bits of count (0 to 8), one bit for mine, two bits for hidden, flagged or revealed. Expert is 480 bytes, which fits in eight 64-byte cache lines; a 1,000 by 1,000 board is 1 MB and fits in a modern L2 or L3 cache. A Python object per cell costs 100 bytes or more once its attribute storage is counted, plus an 8-byte pointer in a list, so a million `Cell` objects is over 100 MB before you have done anything. Row-major order also makes horizontal neighbours adjacent in memory and vertical ones `cols` bytes away, so a BFS that spreads row by row mostly hits warm lines.
 
-Recursion is the classic failure. A recursive flood on a 1,000 by 1,000 empty board recurses up to a million frames deep. CPython stops at a default recursion limit of 1,000 frames. A browser's JavaScript stack typically allows on the order of ten thousand frames before "Maximum call stack size exceeded". Go grows goroutine stacks on demand up to a 1 GB maximum on 64-bit systems, so it survives longer but copies the stack each time it doubles. An explicit queue lives on the heap, costs 8 bytes or less per entry, and never crashes.
+Recursion is the classic failure. A recursive flood on a 1,000 by 1,000 empty board recurses up to a million frames deep. CPython stops at a default recursion limit of 1,000 frames, and its docs warn that raising the limit too far can crash the interpreter ([Python docs](https://docs.python.org/3/library/sys.html)). A browser's JavaScript stack typically allows on the order of ten thousand frames before "Maximum call stack size exceeded". Go grows goroutine stacks on demand up to a 1 GB maximum on 64-bit systems ([Go docs](https://pkg.go.dev/runtime/debug)), so it survives longer but copies the stack each time it doubles. An explicit queue lives on the heap, costs 8 bytes or less per entry, and never crashes.
 
 ### Why it's built this way
 1. Players click fast and boards can be large, so each move must cost in proportion to what it reveals, not to the board size.
@@ -1079,6 +1085,24 @@ func (g *Game) View() []string {
 - Mine placement as an injected strategy with a seed: lazy placement after the first click, a guaranteed-opening placer, and a no-guess placer that runs a deduction solver with a retry budget.
 - Server-side verification by replaying seed plus move log, with the server deciding the seed so a client cannot pick an easy board.
 - A clear stance on what not to model: no `Cell` subclass per kind, no singleton game.
+
+## Sources and further study
+**Primary**
+- [Python sys module: setrecursionlimit](https://docs.python.org/3/library/sys.html): why recursive flood fill hits a ceiling and why raising it is risky.
+- [Go runtime/debug: SetMaxStack](https://pkg.go.dev/runtime/debug): the 1 GB goroutine stack ceiling on 64-bit systems.
+
+**Systems docs**
+- [Simon Tatham's Puzzles: Mines](https://www.chiark.greenend.org.uk/~sgtatham/puzzles/doc/mines.html): the "ensure solubility" option, chording and undo in a real implementation.
+- [Minesweeper (Wikipedia)](https://en.wikipedia.org/wiki/Minesweeper_(video_game)): presets, first-click variants, history and the NP-completeness result.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 4 (Facade) and chapter 5 (Strategy, Observer, Command).
+- *Head First Design Patterns*, Freeman and Robson: chapter 2 (Observer), chapter 6 (Command), chapter 7 (Facade) and chapter 10 (State, and when an enum is enough).
+
+**Other curricula**
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): frames State as per-status classes, which this lesson judges too heavy for a four-status game.
+- [Red Blob Games: grid parts](https://www.redblobgames.com/grids/parts/): grid geometry and neighbours, behind the Topology extension.
+
 
 ## Watch
 - [Coding Challenge #71: Minesweeper (The Coding Train)](https://www.youtube.com/watch?v=LFU5ZlrR21E): builds the game from scratch, including neighbour counts and the flood reveal.

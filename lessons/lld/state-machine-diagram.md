@@ -16,7 +16,7 @@ minutes: 17
 A **state** is a period in an object's life during which a fixed set of rules applies. "Paid" is a state; "total is 42.10" is data. The test is whether the set of legal operations changes. An **event** happens at a point in time: a call (`cancel()`), a message (`PaymentCaptured`), a timer (`after(30s)`) or a condition becoming true (`when(stock == 0)`). A **transition** is an arrow between states triggered by an event. The black dot is the initial pseudostate and the circled dot a final state.
 
 ### Guards and actions
-The full label is `event [guard] / action`. The guard is a side-effect-free boolean evaluated when the event arrives; if it is false, the machine looks for another transition. The action runs while the transition fires. Two transitions on the same event from the same state need mutually exclusive guards; UML leaves the choice undefined, and real implementations quietly pick the first one declared. A **choice** pseudostate (a diamond) evaluates its guards after the first part of the transition has run, for branches that depend on a value the action just computed, such as "charge the card, then go to `paid` or `payment_failed`".
+The full label is `event [guard] / action`. The guard is a side-effect-free boolean evaluated when the event arrives; if it is false, the machine looks for another transition. The action runs while the transition fires. Two transitions on the same event from the same state need mutually exclusive guards; UML leaves the choice undefined, and real implementations quietly pick the first one declared (SCXML makes this explicit: the first match in document order is taken, [W3C SCXML](https://www.w3.org/TR/scxml/)). A **choice** pseudostate (a diamond) evaluates its guards after the first part of the transition has run, for branches that depend on a value the action just computed, such as "charge the card, then go to `paid` or `payment_failed`".
 
 ### Entry, exit and do activities
 Inside a state box you can write `entry / startTimer()`, `exit / stopTimer()` and `do / pollSensor()`. Entry runs every time the state is entered, whichever arrow brought you in, and exit every time it is left. With five arrows into `connected`, the "start heartbeat" code lives in one place, and nobody forgets it on the sixth arrow. A `do` activity is long-running work interrupted when the state is left: in code, a goroutine or timer that the exit action cancels.
@@ -26,7 +26,7 @@ An internal transition (`event / action` written inside the box) runs an action 
 ### Composite states
 A **composite** (or superstate) contains its own nested state machine. When the object is in `playing`, inside `active`, inside `on`, it is in all three at once: the active configuration. Two rules give composites their power:
 
-1. **Inherited transitions.** An event is offered to the innermost active state first, then to its parent, then the grandparent. The `power` arrow drawn once on `on` works from every state inside it. This is Harel's 1987 answer to state explosion: N states that all need an emergency exit need N flat arrows but one hierarchical arrow.
+1. **Inherited transitions.** An event is offered to the innermost active state first, then to its parent, then the grandparent. The `power` arrow drawn once on `on` works from every state inside it. This is Harel's 1987 answer to state explosion ([Harel, Statecharts](https://doi.org/10.1016/0167-6423%2887%2990035-9)): N states that all need an emergency exit need N flat arrows but one hierarchical arrow.
 2. **Entering a composite enters a child.** An arrow that ends on the border of a composite continues to its initial substate, recursively, until a simple (leaf) state is active. An arrow can also cross the border and end on a specific inner state.
 
 When a transition fires, the machine finds the innermost state that strictly contains both source and target (the least common ancestor, or LCA). It exits every active state below the LCA, innermost first, enters each state from the LCA down to the target, outermost first, then drills down through initial substates. Inside-out exits mean a child never tears down after its parent has released shared resources; outside-in entries mean a parent's setup is in place before a child uses it.
@@ -46,17 +46,17 @@ Flat diagrams map to a switch on an enum, a `(state, event)` transition table ([
 Code assistants produce a plausible `switch` and miss the semantics around it. Check that unhandled events are explicitly ignored or rejected rather than falling into a default branch that mutates state, that entry actions are not duplicated per incoming arrow, that guards have no side effects, and that self and internal transitions are not confused. Ask for the diagram and a test per arrow.
 
 ### The same shape elsewhere
-Statecharts are a **multi-step consistency** tool: they make the legal orders of operations explicit. The same shape appears in TCP's connection states, a payment saga's compensation steps and a checkout form's UI, where hierarchy lets "connection reset" or "user logged out" be handled once at the top.
+Statecharts are a **multi-step consistency** tool: they make the legal orders of operations explicit. The same shape appears in TCP's connection states (eleven in RFC 9293, one of them the fictional CLOSED, [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html)), a payment saga's compensation steps and a checkout form's UI, where hierarchy lets "connection reset" or "user logged out" be handled once at the top.
 
 ## Down the stack
 
 ### Layer 1: The contract
-UML specifies **run-to-completion**: events are queued and each is fully handled (guards, exits, actions, entries, drill-down) before the next is dequeued, so no one observes a half-finished step. The transition chosen is the one on the innermost active state with an enabled guard; exits run innermost first, entries outermost first, and an event with no enabled transition is discarded. Given a definition and an event sequence, the log of exits and entries is fully determined, which makes it testable.
+UML specifies **run-to-completion**: event occurrences wait in a pool, and each is fully handled (guards, exits, actions, entries, drill-down) before the next is dispatched, so no one observes a half-finished step. UML leaves the dispatch order undefined, so first-in first-out is an implementation choice; SCXML pins it down with an internal and an external event queue. An event with no enabled transition is discarded unless the active states list it as deferred ([UML 2.5.1, 14.2.3.9](https://www.omg.org/spec/UML/2.5.1/PDF), [SCXML](https://www.w3.org/TR/scxml/)). The transition chosen is the one on the innermost active state with an enabled guard; exits run innermost first and entries outermost first. Given a definition and an event sequence, the log of exits and entries is fully determined, which makes it testable.
 
 ### Layer 2: The mechanism
 A hierarchical machine is a tree of states plus a transition list. Dispatch walks from the active leaf up parent pointers, testing transitions at each level. Executing one computes the LCA from the two ancestor chains, exits up to it, enters down from it, then follows history records or initial children to a leaf. History is a map from composite to last active child, written during exit.
 
-SCXML, the W3C statechart XML format, specifies this algorithm in pseudocode (`microstep`, `exitStates`, `enterStates`, `computeExitSet`), including document order as the tiebreaker between conflicting transitions. Samek's QP implements hierarchy with each state as a C function that returns either "handled", "transition to X" or "super is Y"; the dispatcher discovers the hierarchy at run time by calling those functions. XState stores the machine as a JSON-like config, interprets it, and exposes the active configuration as a value you can serialise.
+SCXML, the W3C statechart XML format ([W3C SCXML](https://www.w3.org/TR/scxml/)), specifies this algorithm in pseudocode (`microstep`, `exitStates`, `enterStates`, `computeExitSet`), including document order as the tiebreaker between conflicting transitions. Samek's QP implements hierarchy with each state as a C function that returns either "handled", "transition to X" or "super is Y"; the dispatcher discovers the hierarchy at run time by calling those functions. XState stores the machine as a JSON-like config, interprets it, and exposes the active configuration as a value you can serialise.
 
 ### Layer 3: The machine
 A flat table of 50 states by 20 events with one-byte targets is 1 KB and sits in L1 cache, so a lookup takes nanoseconds. Hierarchical dispatch adds a parent-pointer hop per level, and state functions or virtual methods (Go itabs, C++ vtables) add an indirect call each: 1 to 2 ns predicted, 15 to 20 cycles mispredicted. An interpreted JavaScript config walks object properties and prototype chains, orders of magnitude slower than a table but irrelevant for 60 UI events a second. Lexers that run per byte compile their machines to jump tables or `goto` instead (Ragel, re2c).
@@ -90,7 +90,7 @@ stateDiagram-v2
     }
   }
 ```
-Mermaid has no history pseudostate, so the shallow history on `On` used in the worked example is stated in prose here; in a full UML tool it would be an `H` inside the `On` box.
+Mermaid's state diagrams support choice, fork and concurrency but not history ([Mermaid docs](https://mermaid.js.org/syntax/stateDiagram.html)), and since v12.0.0 they use the ELK layout ([layouts](https://mermaid.js.org/config/layouts.html)). Mermaid has no history pseudostate, so the shallow history on `On` used in the worked example is stated in prose here; in a full UML tool it would be an `H` inside the `On` box.
 
 ## Worked example
 Take the player above with shallow history on `On`. Power from `Off` logs `exit:Off`, `enter:On`, `enter:Idle`. Play with no media fails its guard, nothing up the chain handles it, and it is dropped. With media, play logs `exit:Idle`, `enter:Active`, `enter:Playing` (the LCA is `On`), and pause logs `exit:Playing`, `enter:Paused`.
@@ -98,6 +98,10 @@ Take the player above with shallow history on `On`. Power from `Off` logs `exit:
 Now press power. Only `On` handles it, so the machine exits `Paused`, `Active` (recording it as `On`'s last child) and `On`, then enters `Off`. Press power again: `enter:On`, history picks `Active` over `Idle`, and because history is shallow `Active` starts at `Playing`. The user returns playing, not paused; deep history would have restored `Paused`. Whichever you choose, it is a product decision the diagram makes visible.
 
 A `tick` in `Playing` is a self-transition, so it logs `exit:Playing`, `enter:Playing` and re-runs entry: a bug if entry restarts a buffering timer and tick was meant to be internal.
+
+## In the wild
+- **Stripe, documented lifecycle: a payment is a state machine.** A PaymentIntent moves through states such as `requires_payment_method`, `requires_action` (for example 3D Secure), `processing` and `succeeded`. Asynchronous methods such as bank debits can stay in `processing` for up to a few days. It can be cancelled before it reaches `processing` or `succeeded`, and cancellation cannot be undone ([Stripe docs](https://docs.stripe.com/payments/paymentintents/lifecycle)). Integrators that treat "payment" as a boolean mishandle the in-between states.
+- **IETF, 2022: TCP's connection states, formalised.** RFC 9293 lists the states a connection passes through: LISTEN, SYN-SENT, SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT and the fictional CLOSED, which stands for no connection record existing ([RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html)). Every implementation must agree on what each state does with each segment, which is the same contract as a diagram arrow.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -977,6 +981,24 @@ func (h *HSM) DrainLog() []string {
 - Explicit handling of unhandled events, and side-effect-free guards like `[attempts < 5]` with the counter updated in an action.
 - Entry and exit actions for timers and the motor, and why exits run inside-out.
 - Run-to-completion on one event queue, a fixed-memory table or QP-style implementation on the device, and a test per arrow.
+
+## Sources and further study
+**Primary**
+- [Harel, Statecharts: a visual formalism for complex systems (1987)](https://doi.org/10.1016/0167-6423%2887%2990035-9): the paper that introduced hierarchy, orthogonal regions and history.
+- [UML 2.5.1 specification, PDF (OMG)](https://www.omg.org/spec/UML/2.5.1/PDF): clause 14.2.3.9 defines run-to-completion and event processing.
+- [RFC 9293: TCP](https://www.rfc-editor.org/rfc/rfc9293.html): a standardised, widely implemented state machine.
+
+**Systems docs**
+- [Stripe: PaymentIntent lifecycle](https://docs.stripe.com/payments/paymentintents/lifecycle): states, async processing and cancellation rules of a production API.
+- [Stately: XState documentation](https://stately.ai/docs/xstate): a statechart runtime with hierarchy and history for JavaScript.
+- [Mermaid state diagram syntax](https://mermaid.js.org/syntax/stateDiagram.html): composite states, choice, fork and concurrency, without history.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral), the State pattern as the object-oriented encoding of a flat machine.
+- *Head First Design Patterns*, Freeman and Robson: chapter 10 "The State of Things".
+
+**Other curricula**
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): presents State as a class-per-state pattern and notes its overlap with strategy; it does not cover hierarchy or history.
 
 ## Watch
 - [UML 2 State Machine Diagrams (Derek Banas)](https://www.youtube.com/watch?v=_6TFVzBW7oo): the notation for states, guards, actions and composite states, drawn step by step.

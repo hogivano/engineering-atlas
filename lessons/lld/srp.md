@@ -63,7 +63,7 @@ class IssueInvoice:         # the workflow: order of steps only
 `IssueInvoice` still knows the sequence (compute, save, then notify) because the sequence is its responsibility. It does not know tax rates, HTML or retry backoff. Tax tests become pure arithmetic that run in microseconds. The notifier's retry policy can change without anyone rereading tax code.
 
 ### Where the name misleads
-"Single responsibility" sounds like "do one thing", which leads people to split by verb: `InvoiceLoader`, `InvoiceSaver`, `InvoiceValidator`, `InvoiceFormatter`. That often splits one owner's logic across four files, so every change still touches all four. Robert Martin later restated the principle as "gather together the things that change for the same reasons; separate the things that change for different reasons." That is cohesion and coupling under another name, and it goes back to David Parnas's 1972 advice to hide each design decision likely to change inside its own module.
+"Single responsibility" sounds like "do one thing", which leads people to split by verb: `InvoiceLoader`, `InvoiceSaver`, `InvoiceValidator`, `InvoiceFormatter`. That often splits one owner's logic across four files, so every change still touches all four. Robert Martin later restated the principle as "gather together the things that change for the same reasons; separate the things that change for different reasons" ([Martin, 2014](https://blog.cleancoder.com/uncle-bob/2014/05/08/SingleReponsibilityPrinciple.html)). That is cohesion and coupling under another name, and it goes back to David Parnas's 1972 advice to hide each design decision likely to change inside its own module ([Parnas](https://www.win.tue.nl/~wstomv/edu/2ip30/references/criteria_for_modularization.pdf)).
 
 ### When following it too zealously hurts
 - **Indirection without payoff.** If tax rules have changed once in three years and only one team ever touches the file, a `TaxPolicyFactory` adds reading cost and no protection.
@@ -71,7 +71,7 @@ class IssueInvoice:         # the workflow: order of steps only
 - **Anaemic objects.** Splitting all behaviour out of a type leaves a bag of fields plus a cloud of `*Service` classes that each poke at it.
 - **Premature seams.** Every interface you add is a promise to keep it stable. Add one when a second reason to change shows up, not before.
 
-A practical rule: extract when you see two different owners in the commit history of one file, or when a test needs fakes for things unrelated to what it checks.
+A practical rule: extract when you see two different owners in the commit history of one file, or when a test needs fakes for things unrelated to what it checks. Refactoring catalogues name both sides of the trade. Editing one class for many unrelated reasons is [divergent change](https://refactoring.guru/smells/divergent-change), the symptom of a missing split. Having one change ripple through many small classes is [shotgun surgery](https://refactoring.guru/smells/shotgun-surgery), the symptom of splitting by verb.
 
 ### Reviewing agent-written code
 Coding agents optimise for "make the requested change work" and tend to put the change where the context already is. Asked to add a tax rule, an agent will happily add it inside `issue()`, and while there it may also "fix" the retry loop it noticed. Two habits help:
@@ -79,7 +79,7 @@ Coding agents optimise for "make the requested change work" and tend to put the 
 - Prefer codebases where responsibilities are already separated. An agent working in a 40-line `TaxPolicy` with its own tests has less room to cause collateral damage than one working in a 1,400-line service.
 
 ### The same shape elsewhere
-A god class is a contention problem. Many teams writing one file looks like many transactions writing one hot row: they serialise on merge conflicts instead of locks. The fix is the same in both domains: partition the shared thing by who writes it.
+A god class is a contention problem. Many teams writing one file looks like many transactions writing one hot row: they serialise on merge conflicts instead of locks. The fix is the same in both domains: partition the shared thing by who writes it. Conway's observation that a system's structure copies the communication structure of its builders is why the partition usually has to follow teams as well ([Conway, 1968](http://www.melconway.com/Home/Committees_Paper.html)).
 
 ## Down the stack
 
@@ -87,10 +87,10 @@ A god class is a contention problem. Many teams writing one file looks like many
 After the split, each unit has a contract small enough to test exhaustively. `TaxPolicy.tax(subtotal, country)` is a pure function: same inputs, same output, no I/O. `InvoiceRepository.get` returns the saved invoice or "not found". `Notifier.send` either delivers or returns an error. `IssueInvoice` promises ordering: it saves before it notifies, never notifies if saving failed, and does not send twice for an invoice that already exists. Each sentence maps to a test that needs at most two fakes.
 
 ### Layer 2: The mechanism
-The mechanism is dependency injection plus module boundaries. `IssueInvoice` receives its collaborators through its constructor instead of building them, so tests pass fakes and production passes real adapters. In Python the boundary is a module and an informal protocol (or `typing.Protocol`). In TypeScript it is an `interface` checked structurally at compile time and erased at runtime. In Go it is a package plus a small interface declared by the consumer, so `billing` declares `type Notifier interface { Send(to, body string) error }` and the email package never imports billing. Import graphs make the split visible: if `tax` imports `smtp`, the split is cosmetic.
+The mechanism is dependency injection plus module boundaries. `IssueInvoice` receives its collaborators through its constructor instead of building them, so tests pass fakes and production passes real adapters. In Python the boundary is a module and an informal protocol (or `typing.Protocol`). In TypeScript it is an `interface` checked structurally at compile time and erased at runtime. In Go it is a package plus a small interface declared by the consumer ([Go code review comments](https://go.dev/wiki/CodeReviewComments)), so `billing` declares `type Notifier interface { Send(to, body string) error }` and the email package never imports billing. Import graphs make the split visible: if `tax` imports `smtp`, the split is cosmetic.
 
 ### Layer 3: The machine
-Splitting costs a little at runtime. Each collaborator is one heap object, typically 16 to 64 bytes, allocated once at startup and reused, so allocation cost rounds to zero. Calls through an interface are indirect. In Go an interface value is two words (an itab pointer and a data pointer), and a call loads the function pointer from the itab and jumps: about 1 to 2 ns, and it blocks inlining unless the compiler can devirtualise it (profile-guided optimisation in Go 1.21+ does this for hot sites). In V8 a monomorphic call site is cached and costs a few ns. In CPython any method call costs roughly 30 to 100 ns. Compare that with a 1 ms database round trip or a 200 ms email API call: the dispatch overhead is under a thousandth of the request.
+Splitting costs a little at runtime. Each collaborator is one heap object, typically 16 to 64 bytes, allocated once at startup and reused, so allocation cost rounds to zero. Calls through an interface are indirect. In Go an interface value is two words (an itab pointer and a data pointer), and a call loads the function pointer from the itab and jumps: about 1 to 2 ns, and it blocks inlining unless the compiler can devirtualise it (profile-guided optimisation in Go 1.21 and later can devirtualise some hot sites, per the [Go 1.21 notes](https://go.dev/doc/go1.21)). In V8 a monomorphic call site is cached and costs a few ns. In CPython any method call costs roughly 30 to 100 ns. Compare that with a 1 ms database round trip or a 200 ms email API call: the dispatch overhead is under a thousandth of the request.
 
 Layout and concurrency are where the split can make code faster. A god object that holds a rate cache, retry counters and a template cache behind one mutex serialises unrelated work: a template reload blocks tax calculation. Separate objects get separate locks, or no locks at all when they hold no mutable state. Separate objects also stop unrelated hot counters from sharing a 64-byte cache line, which avoids false sharing when two threads update them.
 
@@ -121,6 +121,10 @@ After the split: `TaxPolicy` is 60 lines with 120 table-driven tests that run in
 The runtime cost: four extra objects at startup and four interface calls per invoice, about 10 ns in Go, against a request that spends 3 ms in the database and 150 ms waiting for the email provider. Nobody will measure the difference.
 
 What the team chose not to split: the rule that an invoice's total equals subtotal plus tax stays inside one `Invoice` type with its constructor enforcing it. One rule, one place.
+
+## In the wild
+- **Knight Capital, 2012: one flag with two jobs.** New order-routing code reused a flag that had once switched on a retired trading routine called Power Peg. A technician deployed the new code to only seven of eight servers, so the eighth ran the dead logic, and in about 45 minutes the firm lost more than $460 million. The SEC found no second-person review of the deploy and no written procedure ([SEC order](https://www.sec.gov/litigation/admin/2013/34-70694.pdf)). Live behaviour and dead behaviour shared one switch, which is what mixed responsibilities in one place look like when they fail.
+- **Istio, 2020: when splitting did not pay.** The mesh's control plane began as separate microservices for config, certificates and discovery. The team concluded that many of the usual benefits of microservices did not apply to those parts and merged them into a single binary, istiod ([Istio blog](https://istio.io/latest/blog/2020/istiod/)). A responsibility boundary is not automatically a deployment boundary.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -610,6 +614,24 @@ func (w IssueInvoice) Run(invoiceID, email string, items []Item, taxRateBps, dis
 - A thin coordinator that owns sequencing, idempotency and compensation (refund or retry assignment), with invariants kept in one place.
 - Recognising the cost: more indirection, and services add network failure and consistency problems, so modules come first.
 - How the split changes review, testing and agent-assisted work: smaller, single-owner diffs.
+
+## Sources and further study
+**Primary**
+- [Conway, How Do Committees Invent? (1968)](http://www.melconway.com/Home/Committees_Paper.html): structure follows communication structure, so ownership and responsibility boundaries end up aligned.
+
+**Systems docs**
+- [Go wiki: Code review comments, interfaces](https://go.dev/wiki/CodeReviewComments): interfaces belong in the package that uses them, which is how Go keeps responsibilities decoupled.
+- [Go 1.21 release notes](https://go.dev/doc/go1.21): profile-guided devirtualisation of interface calls, relevant to the runtime cost of splitting.
+- [Istio: Introducing istiod](https://istio.io/latest/blog/2020/istiod/): a real team weighing when separate components earn their cost.
+- [SEC order on Knight Capital](https://www.sec.gov/litigation/admin/2013/34-70694.pdf): the regulator's account of a failure rooted in mixed live and dead code.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin, chapter 7 "SRP: The Single Responsibility Principle" and chapter 13 "Component Cohesion": the principle and its component-level form.
+- *Refactoring* (2nd ed.), Martin Fowler, chapter 3 "Bad Smells in Code": divergent change and shotgun surgery.
+
+**Other curricula**
+- [Refactoring.Guru: Divergent Change](https://refactoring.guru/smells/divergent-change): describes the symptom of a class edited for unrelated reasons and recommends Extract Class.
+- [Wikipedia: Single-responsibility principle](https://en.wikipedia.org/wiki/Single-responsibility_principle): background on the principle and how its wording has changed.
 
 ## Watch
 - [Breaking Dependencies: The SOLID Principles (Klaus Iglberger, CppCon 2020)](https://www.youtube.com/watch?v=Ntraj80qN2k): a careful look at what each SOLID principle really says, including SRP as separation of concerns.

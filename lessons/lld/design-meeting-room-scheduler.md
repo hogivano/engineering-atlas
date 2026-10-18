@@ -128,12 +128,17 @@ sequenceDiagram
 
 ## Concurrency and edge cases
 
-- **Two organizers, one room.** Both search, both see Bonsai free at 10:00, both book. The search and the booking must happen under one lock in memory, or the booking must be a conditional insert that the database rejects on overlap. Postgres can enforce this with an exclusion constraint: `EXCLUDE USING gist (room WITH =, during WITH &&)` on a `tstzrange` column, which turns a race into a clean constraint violation that the losing request retries.
+- **Two organizers, one room.** Both search, both see Bonsai free at 10:00, both book. The search and the booking must happen under one lock in memory, or the booking must be a conditional insert that the database rejects on overlap. Postgres can enforce this with an exclusion constraint: `EXCLUDE USING gist (room WITH =, during WITH &&)` on a `tstzrange` column, which turns a race into a clean constraint violation that the losing request retries. The `room WITH =` part needs the `btree_gist` extension (`CREATE EXTENSION btree_gist`), which lets a plain scalar column sit next to the range in a GiST constraint ([Postgres docs](https://www.postgresql.org/docs/current/rangetypes.html)). Without a constraint, "search, then insert if free" is textbook write skew: two transactions each see the room free and insert different rows, so snapshot isolation lets both commit. Kleppmann uses exactly a meeting-room booking to illustrate it. Postgres's Serializable level monitors for this and aborts one transaction with a serialization failure that the application must retry ([Postgres docs](https://www.postgresql.org/docs/current/transaction-iso.html)), but a constraint is cheaper and states the rule where every writer must obey it.
 - **People are not locked.** Locking every attendee's calendar while searching would serialise half the company behind one all-hands. Treat people's free/busy as advisory: search with it, but allow a person to end up double-booked if two meetings land at once, and let them decline one.
-- **Boundaries.** Use half-open intervals everywhere. With closed intervals, a meeting ending at 10:00 blocks one starting at 10:00, and the bug appears only for back-to-back bookings.
-- **Time zones and daylight saving.** Store UTC. Search windows given in local time ("9 to 5 for everyone") must be converted per attendee with a real tz database, because 9:00 in London and 9:00 in New York are different instants, and the offset changes on different dates in the two cities.
+- **Boundaries.** Use half-open intervals everywhere. With closed intervals, a meeting ending at 10:00 blocks one starting at 10:00, and the bug appears only for back-to-back bookings. The standards agree: iCalendar defines `DTEND` as the non-inclusive end of an event ([RFC 5545](https://datatracker.ietf.org/doc/html/rfc5545#section-3.6.1)), and Postgres range constructors default to `[)`, lower bound included and upper excluded ([Postgres docs](https://www.postgresql.org/docs/current/rangetypes.html)).
+- **Time zones and daylight saving.** Store UTC. Search windows given in local time ("9 to 5 for everyone") must be converted per attendee with a real tz database, because 9:00 in London and 9:00 in New York are different instants, and the offset changes on different dates in the two cities. Converting once is not enough for future meetings, because governments change the rules. A meeting stored only as a UTC instant keeps that instant when the rule changes and so silently moves on the attendee's wall clock. Keep the organizer's local time and zone id for future and recurring events, and re-derive the instant when the tz database updates (see In the wild). RFC 5545 gives the same advice for recurring events: give `DTSTART` a local time with a zone reference so all instances start at the same local time regardless of zone changes ([RFC 5545](https://datatracker.ietf.org/doc/html/rfc5545#section-3.8.5.3)).
 - **Organizer leaves.** If the organizer's account is deactivated, either transfer ownership or cancel and notify. Do not leave orphaned room bookings that nobody can cancel.
 - **Ghost meetings.** Rooms booked and never used waste space. A check-in requirement (release the room if nobody checks in within 10 minutes) is a scheduled job with an injected clock, built on the same interval model.
+
+## In the wild
+- **Egypt, 2016: daylight saving cancelled two days before it started.** The tz database had Egypt starting DST on 7 July 2016. The government reversed at short notice and release 2016f, published on 5 July, removed it. Any calendar that had already converted future local meetings to UTC under the old rule was an hour off until it re-derived them ([IANA tz NEWS](https://data.iana.org/time-zones/tzdb/NEWS)).
+- **Lebanon, 2023: three tz releases in a week.** Release 2023b (23 March) moved Lebanon's DST start to 20/21 April, and 2023c (28 March) reverted to the earlier data after the decision was reversed. A system that re-indexed on 2023b and not again on 2023c kept wrong local times for a month ([IANA tz NEWS](https://data.iana.org/time-zones/tzdb/NEWS)).
+- **Microsoft Azure, 2012: the leap-day certificate.** An agent computed a certificate expiry as "today plus one year", which on 29 February gave a date that does not exist. The same class of bug hits recurring-meeting code that adds a year or a month by bumping fields ([Azure blog](https://azure.microsoft.com/en-us/blog/summary-of-windows-azure-service-disruption-on-feb-29th-2012/)).
 
 ## Down the stack
 
@@ -141,7 +146,7 @@ sequenceDiagram
 `schedule` returns a meeting whose interval lies inside the search window, during which every participant had no busy interval and the chosen room had no booking, and no earlier start satisfies the same conditions; otherwise it returns nothing and changes nothing. After it returns, no other meeting overlaps it in the same room. `cancel` by the organizer removes the meeting from the room and every calendar; `decline` removes only that attendee's busy interval.
 
 ### Layer 2: The mechanism
-The search uses an event-point argument: if a start `s` is feasible and `s` is not the window start, sliding it earlier eventually hits either the window start or the end of some busy interval, so the earliest feasible start is in the set made of the window start plus every busy end inside the window. With `k` busy intervals across participants and rooms, that is at most `k + 1` candidates. Each candidate is checked against each calendar with a binary search in a sorted list (find the last interval starting before the candidate's end, check whether it ends after the candidate's start), so the cost is O(k × p × log n) for `p` participants. An alternative is to merge all participants' busy lists into one sorted union (a k-way merge with a heap) and walk the gaps, which is what free/busy APIs such as Google Calendar's `freebusy.query` and Microsoft Graph's `findMeetingTimes` expose to clients. For a room's own schedule, an interval tree or a balanced tree keyed by start gives O(log n) overlap checks and inserts.
+The search uses an event-point argument: if a start `s` is feasible and `s` is not the window start, sliding it earlier eventually hits either the window start or the end of some busy interval, so the earliest feasible start is in the set made of the window start plus every busy end inside the window. With `k` busy intervals across participants and rooms, that is at most `k + 1` candidates. Each candidate is checked against each calendar with a binary search in a sorted list (find the last interval starting before the candidate's end, check whether it ends after the candidate's start), so the cost is O(k × p × log n) for `p` participants. An alternative is to merge all participants' busy lists into one sorted union (a k-way merge with a heap) and walk the gaps, which is what free/busy APIs expose to clients. Google Calendar's [`freebusy.query`](https://developers.google.com/calendar/api/v3/reference/freebusy/query) returns busy blocks for up to 50 calendars per request (`calendarExpansionMax`), so a 300-person all-hands needs batching. Microsoft Graph's [`findMeetingTimes`](https://learn.microsoft.com/en-us/graph/api/user-findmeetingtimes) treats every person as a required attendee, takes rooms as a separate attendee type, and returns ranked suggestions with a confidence value, the soft-constraint model this lesson uses. For a room's own schedule, an interval tree or a balanced tree keyed by start gives O(log n) overlap checks and inserts.
 
 ### Layer 3: The machine
 A week of a busy person's calendar is about 40 intervals; at 16 bytes per interval (two 64-bit integers) that is 640 bytes, ten cache lines. Checking 10 people and 20 rooms against 200 candidate starts is about 6,000 binary searches of six or seven comparisons each, a few tens of microseconds on one core. The slow parts are elsewhere: loading calendars from a database (one indexed range query per participant, each around 1 ms), and in a distributed product, fetching free/busy from another organization's server over HTTPS (50 to 300 ms). That is why real schedulers batch free/busy reads, cache them for a short time and re-check only the room at commit.
@@ -154,7 +159,7 @@ A week of a busy person's calendar is about 40 intervals; at 16 bytes per interv
 
 ## Extensibility
 
-- **Recurring meetings.** Store a rule (RRULE) on a series and expand occurrences within a horizon when searching. Room booking becomes "every occurrence must be free", with per-occurrence exceptions.
+- **Recurring meetings.** Store a rule (RRULE, defined in [RFC 5545](https://datatracker.ietf.org/doc/html/rfc5545#section-3.3.10)) on a series and expand occurrences within a horizon when searching. Room booking becomes "every occurrence must be free", with per-occurrence exceptions.
 - **Working hours and preferences.** A new `SlotFinder` intersects the search window with each attendee's working hours in their own time zone before scanning candidates.
 - **Optional attendees.** Search first with required attendees only, then rank candidates by how many optional attendees are free. That is a scoring strategy, not a change to the scheduler.
 - **Room equipment.** Add a specification filter (video, whiteboard, wheelchair access) to `RoomSelector`. Capacity is just one predicate among several.
@@ -959,6 +964,26 @@ func (s *MeetingScheduler) Agenda(user string) []Entry {
 - Rooms as hard constraints and people as soft ones, with a clear explanation of what changes if that is reversed.
 - Strategies for slot finding and room selection, and observers for notifications fired outside the lock.
 - Time-zone and working-hours handling, and a mention of recurrence as the main extension.
+
+## Sources and further study
+**Primary**
+- [RFC 5545: iCalendar](https://datatracker.ietf.org/doc/html/rfc5545#section-3.6.1): `DTEND` as the non-inclusive end, and the rules for local, UTC and zoned date-times in recurring events.
+- [IANA time zone database release notes](https://data.iana.org/time-zones/tzdb/NEWS): the record of government rule changes, such as Egypt 2016 and Lebanon 2023, that move future meetings.
+- [PostgreSQL: transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html): what Serializable detects that snapshot isolation misses.
+
+**Systems docs**
+- [PostgreSQL: btree_gist](https://www.postgresql.org/docs/current/btree-gist.html): the extension that makes `room WITH =` usable inside an exclusion constraint.
+- [Microsoft Graph: findMeetingTimes](https://learn.microsoft.com/en-us/graph/api/user-findmeetingtimes): required and optional attendees, resources and confidence-ranked suggestions.
+- [Google Calendar API: Recurring events](https://developers.google.com/calendar/api/guides/recurringevents): how a production API stores a rule plus a time zone and expands instances.
+
+**Books**
+- *Designing Data-Intensive Applications* (1st edition), Martin Kleppmann: chapter 7 "Transactions" works through write skew with a meeting-room booking and shows why constraints or serializable isolation are needed.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral) for Strategy, Observer and Command, chapter 4 (Structural) for Facade.
+- *Head First Design Patterns*, Freeman and Robson: chapter 1 (Strategy), chapter 2 (Observer) and chapter 6 (Command).
+
+**Other curricula**
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): the pattern behind reschedule and cancel with an audit trail.
+- [Refactoring.Guru: Observer](https://refactoring.guru/design-patterns/observer): subscription mechanics for invitations and room display panels.
 
 ## Watch
 - [Design a Meeting Scheduler: Class Diagram, Design Patterns, Concurrency and Code (Devaraj Umapathi)](https://www.youtube.com/watch?v=e3MaS40kv8I): an end-to-end low-level design with a concurrency section.

@@ -7,7 +7,7 @@ minutes: 17
 - Bridge splits one class hierarchy that varies in two directions into two hierarchies joined by a reference: an *abstraction* (what the caller works with) holds an *implementor* (how the low-level work is done), and each side grows on its own.
 - The win is arithmetic. Four message kinds times three delivery formats is twelve subclasses by inheritance and seven classes with a bridge. Adding a fifth format costs one class instead of four.
 - The design work is in the implementor interface: a small set of primitives that every backend can offer, coarse enough to be cheap across the boundary and complete enough that the abstraction never asks "which backend are you?".
-- Unlike Adapter, a bridge is designed up front, before the second backend exists or as soon as the second axis appears. Go's `database/sql` (abstraction) over `database/sql/driver` (implementor) is the textbook production example.
+- Unlike Adapter, a bridge is designed up front, before the second backend exists or as soon as the second axis appears. Go's `database/sql` (abstraction) over `database/sql/driver` (implementor) is the textbook production example ([package docs](https://pkg.go.dev/database/sql/driver)).
 - Agents asked for "Slack support" will add `SlackAlert`, `SlackDigest` and `SlackReport` next to the email versions. Review asks which axis is varying and whether one new implementor class would do.
 
 ## How it works
@@ -46,7 +46,7 @@ This is where bridges succeed or fail. The implementor interface should be:
 Optional capabilities are the hard part. Go solves them with optional interfaces: the abstraction checks with a type assertion whether the implementor also implements a richer interface, uses it if so, and falls back to the primitives otherwise.
 
 ### Bridge, Adapter, Strategy
-Adapter and Bridge both put an interface between a client and a concrete class. An adapter is written after the fact to make an existing class fit an interface it was not built for (see Adapter). A bridge is designed in advance so both sides can grow. In practice a bridge's concrete implementors are often adapters over vendor SDKs: the bridge sets the interface, adapters satisfy it.
+The Gang of Four state the intent as decoupling an abstraction from its implementation so the two can vary independently (*Design Patterns*, ch. 4). Adapter and Bridge both put an interface between a client and a concrete class. An adapter is written after the fact to make an existing class fit an interface it was not built for (see Adapter). A bridge is designed in advance so both sides can grow. In practice a bridge's concrete implementors are often adapters over vendor SDKs: the bridge sets the interface, adapters satisfy it.
 
 Strategy (see Strategy) has the same object diagram as the core of a bridge: an object holding an interface-typed field. The difference is scope. A strategy is one interchangeable algorithm inside an otherwise fixed class. A bridge separates a whole layer, with its own hierarchy of abstractions on top that all share the implementor. If only one class on the abstraction side will ever exist, call it a strategy and stop there.
 
@@ -54,22 +54,22 @@ Strategy (see Strategy) has the same object diagram as the core of a bridge: an 
 Agents extend whatever axis they find: given `EmailAlert` and asked for Slack, they write `SlackAlert`, then `SlackDigest`. The reverse failure is also common: asked to "use the Bridge pattern", an agent produces `AbstractMessage`, `MessageImplementor`, `MessageImplementorFactory` and one implementor. Ask two questions in review. Are there really two axes that change independently, with at least two points on each today or on the roadmap? And does any abstraction inspect the implementor's concrete type (`isinstance(fmt, SlackFormat)`)? If it does, a primitive is missing from the interface.
 
 ### The same shape elsewhere
-Bridge is how operating systems survive hardware churn. The Linux virtual filesystem is an abstraction (path lookup, permissions, the page cache, `open`, `read`, `write`) over implementors that fill in `struct file_operations` and `struct inode_operations` tables: ext4, XFS, NFS, procfs. A new filesystem gets every syscall for free. Python's `logging` has the same split: `Logger` decides whether and where a record goes (levels, propagation), and `Handler` subclasses decide how bytes leave the process (stream, file, syslog, HTTP). The problem shape is *fan-out* of combinations: when two concerns multiply, keep them as separate types and let composition do the multiplying at runtime.
+Bridge is how operating systems survive hardware churn. The Linux virtual filesystem is an abstraction (path lookup, permissions, the page cache, `open`, `read`, `write`) over implementors that fill in `struct file_operations` and `struct inode_operations` tables: ext4, XFS, NFS, procfs. A new filesystem gets every syscall for free ([kernel VFS docs](https://docs.kernel.org/filesystems/vfs.html)). Python's `logging` has the same split: `Logger` decides whether and where a record goes (levels, propagation), and `Handler` subclasses decide how bytes leave the process (stream, file, syslog, HTTP) ([logging flow](https://docs.python.org/3/howto/logging.html)). The problem shape is *fan-out* of combinations: when two concerns multiply, keep them as separate types and let composition do the multiplying at runtime.
 
 ## Down the stack
 
 ### Layer 1: The contract
-The abstraction promises its clients behaviour that does not depend on which implementor is plugged in, apart from documented differences (a plain-text format cannot show bold). The implementor promises its primitives' semantics: inputs, outputs, errors, and thread safety. Two things are part of that contract and are often left unstated. First, who owns concurrency: `sql.DB` is safe for concurrent use by many goroutines, while a `driver.Conn` is used by one goroutine at a time, and `database/sql` guarantees that so driver authors do not have to lock. Second, what happens when a capability is missing: return a specific error the abstraction recognises (Go's `driver.ErrSkip`) rather than a generic failure.
+The abstraction promises its clients behaviour that does not depend on which implementor is plugged in, apart from documented differences (a plain-text format cannot show bold). The implementor promises its primitives' semantics: inputs, outputs, errors, and thread safety. Two things are part of that contract and are often left unstated. First, who owns concurrency: `sql.DB` is safe for concurrent use by many goroutines ([database/sql docs](https://pkg.go.dev/database/sql)), while the driver docs say a returned connection is used by one goroutine at a time ([driver docs](https://pkg.go.dev/database/sql/driver)), and `database/sql` guarantees that so driver authors do not have to lock. Second, what happens when a capability is missing: return a specific error the abstraction recognises (Go's `driver.ErrSkip`) rather than a generic failure.
 
 ### Layer 2: The mechanism
-Go's `database/sql` is a bridge you can read in an afternoon. The abstraction side is `DB`, `Tx`, `Stmt`, `Rows` and `Row`: connection pooling, retries on bad connections, transaction lifecycle, and scanning into Go types. The implementor side is `driver.Driver`, `driver.Conn`, `driver.Stmt` and `driver.Rows`, deliberately small: `Prepare`, `Close`, `Begin`, and `Rows.Next(dest []driver.Value)` which fills one whole row per call. Optional interfaces carry the extras. If a connection implements `driver.QueryerContext`, `database/sql` calls it directly; if not, or if it returns `driver.ErrSkip`, it falls back to prepare, query and close. `driver.SessionResetter` and `driver.Validator` let the pool ask a connection whether it can be reused. The abstraction grew pooling limits, `context` support and `sql.Null[T]` over the years without breaking a single driver, because those features live on the abstraction side.
+Go's `database/sql` is a bridge you can read in an afternoon. The abstraction side is `DB`, `Tx`, `Stmt`, `Rows` and `Row`: connection pooling, retries on bad connections, transaction lifecycle, and scanning into Go types. The implementor side is `driver.Driver`, `driver.Conn`, `driver.Stmt` and `driver.Rows`, deliberately small: `Prepare`, `Close`, `Begin`, and `Rows.Next(dest []driver.Value)` which fills one whole row per call. Optional interfaces carry the extras. If a connection implements `driver.QueryerContext`, `database/sql` calls it directly; if not, or if it returns `driver.ErrSkip`, it falls back to prepare, query and close. `driver.SessionResetter` and `driver.Validator` let the pool ask a connection whether it can be reused ([driver docs](https://pkg.go.dev/database/sql/driver)). The abstraction grew pooling limits, `context` support and `sql.Null[T]` over the years without breaking a single driver, because those features live on the abstraction side.
 
 JDBC has the same structure in Java, with `java.sql.Connection` and friends as the implementor interface vendors ship.
 
 ### Layer 3: The machine
 The bridge costs one pointer in the abstraction (8 bytes on 64-bit) and one indirect call per primitive. In Go, an interface value is two words, an itab pointer and a data pointer; a call loads the method's address from the itab and branches to it, around 1 to 2 ns when the branch predictor has seen the target. The compiler cannot inline through the interface, and a concrete implementor stored in an interface field usually escapes to the heap, so building a bridged object costs an allocation that a concrete field would not.
 
-The cost that matters is the *number* of crossings. A renderer that calls `bullet()` once per item pays a few nanoseconds per item, nothing next to building the string. A driver whose implementor interface returned one column per call would cross the boundary rows times columns times; `Rows.Next` filling a slice keeps it to once per row, and network protocols batch further (Postgres sends many `DataRow` messages per TCP segment). In kernels, indirect calls got more expensive after Spectre, because retpoline mitigations turn each one into a sequence that defeats prediction, costing tens of cycles. Linux added `static_call` in 5.10 to patch hot function-pointer calls into direct calls, which is the kernel devirtualising its own bridges.
+The cost that matters is the *number* of crossings. A renderer that calls `bullet()` once per item pays a few nanoseconds per item, nothing next to building the string. A driver whose implementor interface returned one column per call would cross the boundary rows times columns times; `Rows.Next` filling a slice keeps it to once per row, and network protocols batch further (Postgres sends many `DataRow` messages per TCP segment). In kernels, indirect calls got more expensive after Spectre, because retpoline mitigations turn each one into a sequence that defeats prediction, costing tens of cycles. Linux 5.10 added static calls, which use code patching so a hot function-pointer call becomes a direct call ([KernelNewbies](https://kernelnewbies.org/Linux_5.10)); that is the kernel devirtualising its own bridges.
 
 In JavaScript, the call site `this.fmt.heading(...)` gets an inline cache keyed on the implementor's hidden class; V8 turns it megamorphic, with a slower lookup, once it has seen more than four shapes. In CPython, every `self.fmt.heading` is two attribute lookups and a bound method, roughly 50 to 100 ns.
 
@@ -98,6 +98,11 @@ A SaaS company had 5 notification kinds and 3 channels implemented as 15 classes
 The refactor introduced a `Format` implementor with five primitives (`heading`, `paragraph`, `bullet`, `link`, `join`) and a length budget the format reports. Message kinds shrank to 5 classes that build output from primitives; formats became 3 classes. Total: 8 classes, about 1,500 lines, and the runbook rule exists once. Adding Microsoft Teams later was one class of 90 lines and a contract test suite run against it, instead of 5 classes.
 
 Performance was a non-issue: a 200-item digest makes about 202 primitive calls, roughly 16 us in CPython, against 30 to 200 ms for the provider's HTTP call. The one design subtlety was SMS: the abstraction asks the format for its budget once per message and truncates with "and N more" itself, instead of calling a `fits()` primitive per item.
+
+## In the wild
+- **Go `database/sql`, since Go 1: one pool, many databases.** The standard library keeps pooling, transactions and scanning in `database/sql` and asks drivers for a small interface plus optional fast paths. A driver that lacks `QueryerContext`, or returns `ErrSkip`, still works through prepare, query and close ([driver docs](https://pkg.go.dev/database/sql/driver)). That is why the same `sql.DB` code runs on Postgres, MySQL and SQLite drivers written by different teams.
+- **Linux VFS, documented design: filesystems fill in operation tables.** The VFS owns path lookup and the common file model, and each filesystem supplies `struct file_operations` and `struct inode_operations` ([kernel VFS docs](https://docs.kernel.org/filesystems/vfs.html)). One syscall layer serves ext4, NFS and procfs without knowing which is underneath.
+- **Linux kernel, 2018 to 2020: Spectre makes bridge crossings expensive.** After the January 2018 Spectre disclosures, retpolines made every indirect call costlier, and developers began avoiding function pointers on hot paths ([LWN, 2020](https://lwn.net/Articles/815908/)). Static calls, merged in Linux 5.10, patch such calls into direct ones ([KernelNewbies](https://kernelnewbies.org/Linux_5.10)). The pattern stayed; the cost per crossing changed, which is why implementor interfaces should be coarse.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -664,6 +669,26 @@ func (d *Digest) Render() string {
 - Optional capabilities with fallbacks (a chart becomes a data table in CSV), declared by the format and handled in one place.
 - A contract test suite every format must pass, and a registry or factory that selects the format by name at the edge.
 - Awareness of the cost: one indirect call per primitive is negligible next to I/O, while chatty primitives against remote APIs are not.
+
+## Sources and further study
+**Primary**
+- [database/sql/driver package](https://pkg.go.dev/database/sql/driver): the implementor interface, its optional interfaces and `ErrSkip`.
+- [database/sql package](https://pkg.go.dev/database/sql): the abstraction side, including the concurrency promise on `DB` and the `Null[T]` type.
+- [Linux kernel: Overview of the VFS](https://docs.kernel.org/filesystems/vfs.html): the operation tables each filesystem fills in.
+
+**Systems docs**
+- [Python logging HOWTO](https://docs.python.org/3/howto/logging.html): the flow chart that shows loggers deciding and handlers emitting.
+- [LWN: Avoiding retpolines with static calls](https://lwn.net/Articles/815908/): why indirect calls became a performance problem and the proposed fix.
+- [KernelNewbies: Linux 5.10](https://kernelnewbies.org/Linux_5.10): the release that included static calls.
+- [Oracle: java.sql package](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/package-summary.html): JDBC, the Java counterpart of the driver interface.
+
+**Books**
+- *Design Patterns: Elements of Reusable Object-Oriented Software*, Gamma, Helm, Johnson and Vlissides: chapter 4 (Structural Patterns), the Bridge entry and its comparison with Adapter.
+- *Head First Design Patterns*, Freeman and Robson: the Bridge pattern appears in the appendix "Leftover Patterns"; chapter 7 covers Adapter, the pattern it is most often confused with.
+
+**Other curricula**
+- [SourceMaking: Bridge](https://sourcemaking.com/design_patterns/bridge): frames the problem as subclassing that locks interface to implementation, using a thread scheduler and platforms.
+- [Java Design Patterns: Bridge](https://java-design-patterns.com/patterns/bridge/): a Java implementation with real-world uses listed.
 
 ## Watch
 - [Bridge Design Pattern (Derek Banas)](https://www.youtube.com/watch?v=9jIgSsIfh_8): builds a bridge between remote controls and devices in Java step by step.

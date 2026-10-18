@@ -5,7 +5,7 @@ minutes: 22
 
 ## In one minute
 - Seen as an object model, an online exchange is an account ledger (cash and shares, each split into total and held), an order book, and an order lifecycle. Matching is the famous part; holds and the lifecycle are where most real bugs live.
-- Reserve before you route. A buy order locks `quantity x limit price` of cash and a sell order locks the shares when it is accepted. Without holds, two orders spend the same dollar.
+- Reserve before you route (US regulators now require brokers with market access to have controls that block orders exceeding credit or capital limits, per [SEC Rule 15c3-5](https://www.sec.gov/litigation/admin/2013/34-70694.pdf)). A buy order locks `quantity x limit price` of cash and a sell order locks the shares when it is accepted. Without holds, two orders spend the same dollar.
 - Order types differ in when they become live and what price they accept. Model the differences as data plus a small set of behaviours (validation, trigger condition, price acceptance), not as a deep class hierarchy.
 - Stop orders are dormant orders with a trigger. They wake on a trade, in a defined order, and must be re-checked against the account, because the money may be gone.
 - This lesson is the in-process object model. For sequencers, replicated journals, multicast market data and microsecond latency, see [Design Stock Exchange](../sdi/design-stock-exchange.md).
@@ -32,7 +32,7 @@ Start by asking which nouns own state that changes under concurrent requests.
 
 - **Account** owns cash in integer cents as two numbers: `total` and `held`. `available = total - held`. It also owns one **Position** per symbol with the same split for shares.
 - **Order** is the unit of intent: id, account id, symbol, side, type, quantity, remaining, optional limit and stop prices, time in force and status. It changes only through lifecycle transitions.
-- **OrderType** is an enum (MARKET, LIMIT, STOP, STOP_LIMIT). These map one-to-one onto FIX tag 40, which is how real brokers send them.
+- **OrderType** is an enum (MARKET, LIMIT, STOP, STOP_LIMIT). These map onto FIX tag 40, which is how real brokers send them: 1 Market, 2 Limit, 3 Stop and 4 Stop limit ([FIX 4.4 dictionary](https://www.onixs.biz/fix-dictionary/4.4/tagNum_40.html)). The dictionary lists many more (pegged, market-if-touched, on-close), so say which subset you support.
 - **Hold** is the reservation an accepted order places on an account. In code it is often just the `held` counters plus the order's remaining quantity, but naming it keeps the invariant visible.
 - **OrderBook** holds one symbol's resting limit orders. Its internals belong to the system design lesson; here it accepts an order and emits trades.
 - **Trade** is an immutable record: buy order id, sell order id, symbol, price, quantity, sequence number.
@@ -149,9 +149,9 @@ Two details in that diagram matter. The fill releases the hold at the limit pric
 
 - **State** for the order lifecycle. The legal transitions are few and strict: PENDING (dormant stop) to NEW or REJECTED; NEW to PARTIALLY_FILLED, FILLED or CANCELLED; PARTIALLY_FILLED to FILLED or CANCELLED. Terminal states accept nothing. A transition table keyed by (status, event) is easier to audit than scattered `if` chains, and makes "fill on a cancelled order" an explicit error. The [State](state.md) lesson shows the class-per-state version; a table is enough here.
 - **Chain of Responsibility** for pre-trade validation. Checks are independent and grow over time: positive quantity, tick grid, lot size, price band, symbol halted, account restricted, available funds. Each passes or returns a reason code; new regulation adds a link. See [Chain of Responsibility](chain-of-responsibility.md).
-- **Strategy** for order-type behaviour. A market order accepts any price; a limit order accepts prices at or better than its limit; a stop order has a trigger predicate (buy stops fire when the trade price rises to the stop, sell stops when it falls to it). Encoding "accepts price" and "is triggered by" as small functions per type keeps the matching loop free of type checks.
+- **Strategy** for order-type behaviour. A market order accepts any price; a limit order accepts prices at or better than its limit; a stop order has a trigger predicate (buy stops fire when the trade price rises to the stop, sell stops when it falls to it). Encoding "accepts price" and "is triggered by" as small functions per type keeps the matching loop free of type checks. Two details from the SEC's investor bulletin are easy to miss. A triggered stop becomes a *market* order and a triggered stop-limit becomes a *limit* order, so the stop price is a trigger, not a guaranteed fill price. And firms differ on what counts as reaching the stop: some use only last-sale prices, others use quotes ([SEC Investor Bulletin](https://www.investor.gov/additional-resources/news-alerts/alerts-bulletins/investor-bulletin-stop-stop-limit-trailing-stop)). Write down which your exchange uses; this lesson uses trade prices. In the flow above, S7 re-enters the book as a limit order because it is a stop-limit; a plain buy stop would need the market-order hold rules below.
 - **Observer** for execution reports. The user channel, audit log and risk monitor all need every report; the exchange should not know they exist.
-- **Command** for inbound requests. `PlaceOrder`, `CancelOrder` and `Deposit` are serialisable commands with a sequence number. Logging commands rather than state lets you rebuild the exchange by replay, the idea behind event sourcing and LMAX.
+- **Command** for inbound requests. `PlaceOrder`, `CancelOrder` and `Deposit` are serialisable commands with a sequence number. Logging commands rather than state lets you rebuild the exchange by replay, the idea behind event sourcing and LMAX. Fowler's write-up of LMAX describes business logic running on a single thread in memory, journaling input events to files, and recovering by loading a nightly snapshot and replaying the day's journal in under a minute ([Fowler](https://martinfowler.com/articles/lmax.html)). Azure's event-sourcing guidance adds the cost side: handlers must tolerate duplicate events, and projections are eventually consistent ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing)).
 - **Façade**: `Exchange` is the single entry point that enforces the order validate, hold, route, apply, notify.
 
 A pattern that does not belong: a `Singleton` exchange. Inject one instance per process from `main`, so tests can create twenty.
@@ -165,16 +165,21 @@ A pattern that does not belong: a `Singleton` exchange. Inject one instance per 
 - **Market orders and holds.** A market buy has no limit, so the hold is unknown. Convert it to a limit with a protection band (say 5 percent above the last trade) or hold the full balance; never accept an unbounded buy.
 - **Cancel races fill.** Whichever the book processes first wins. The cancel releases the hold on the quantity remaining at that moment, not the original quantity.
 
+## In the wild
+- **Knight Capital, 2012: an order router kept sending child orders and lost $460 million in 45 minutes.** New code reused a flag that had once switched on retired "Power Peg" logic, and it was deployed to seven of eight servers. Orders carrying the flag hit the eighth server, which still ran Power Peg, and because the cumulative-quantity check had been moved, that server kept sending child orders without regard to fills already received. For 212 parent orders it produced 4 million executions in 154 stocks, about $3.5 billion net long and $3.15 billion net short, and a loss over $460 million. The SEC fined Knight $12 million, citing missing controls under Rule 15c3-5, which requires pre-trade limits on erroneous orders and on exceeding credit and capital thresholds ([SEC order](https://www.sec.gov/litigation/admin/2013/34-70694.pdf)). A hold that is checked before routing, and a quantity-remaining invariant, are exactly the defences this lesson builds.
+- **Nasdaq, 2012: the Facebook IPO cross looped on late cancels.** Members entered over 496,000 orders into the opening cross, where tests had been capped at 40,000. The price and volume calculation took 20 ms instead of the usual 1 to 2 ms, a cancel arrived during it, validation failed and forced a recalculation, and further cancels kept it looping. Nasdaq finished the cross by failing over to a copy of the matching engine with the validation code removed, which left the exchange holding the other side of late cancels and breached order-priority rules; the SEC fined it $10 million ([SEC order](https://www.sec.gov/litigation/admin/2013/34-69655.pdf)). It is the "cancel races fill" edge case at 500,000 orders.
+- **LMAX, c. 2011: a retail exchange built as one deterministic in-memory thread.** The Business Logic Processor holds all state in memory using event sourcing, with input events journaled to files, replicated processors for failover and a restart that replays a day of journals in under a minute ([Fowler](https://martinfowler.com/articles/lmax.html)). The design trades database transactions for determinism, the same trade-off as this lesson's single serialization point.
+
 ## Down the stack
 
 ### Layer 1: The contract
 For every account, always, `0 <= held <= total` for cash and each position. Accepting an order either places a hold covering its worst case, or changes nothing and returns REJECTED. A fill of `q` at price `p` on a buy order with limit `L` requires `p <= L` and `q <= remaining`, and moves exactly `q x L` out of held and `q x p` out of total. Cancelling releases the hold on the remaining quantity. Terminal orders never change again.
 
 ### Layer 2: The mechanism
-The account is a pair of integers per asset, and each order can derive its outstanding hold (`remaining x limit` for buys, `remaining` shares for sells). Dormant stops sit in two heaps per symbol: buy stops in a min-heap by stop price, sell stops in a max-heap. On each trade the exchange pops every stop the price crosses, then activates them in placement sequence. In FIX, each transition produces an ExecutionReport (MsgType 8) whose OrdStatus (tag 39) is 0 New, 1 Partially filled, 2 Filled, 4 Canceled or 8 Rejected, so the state table and the wire protocol line up.
+The account is a pair of integers per asset, and each order can derive its outstanding hold (`remaining x limit` for buys, `remaining` shares for sells). Dormant stops sit in two heaps per symbol: buy stops in a min-heap by stop price, sell stops in a max-heap. On each trade the exchange pops every stop the price crosses, then activates them in placement sequence. In FIX, each transition produces an ExecutionReport (MsgType 8) whose OrdStatus (tag 39) is 0 New, 1 Partially filled, 2 Filled, 4 Canceled or 8 Rejected, so the state table and the wire protocol line up. The full dictionary has more states than the lesson's table, among them A Pending New, 6 Pending Cancel, E Pending Replace, 5 Replaced and C Expired ([FIX 4.4 dictionary](https://www.onixs.biz/fix-dictionary/4.4/tagNum_39.html)). The pending states exist because a cancel or amend request is itself asynchronous: between asking and the book's answer, the order may still fill. If you add cancel-replace, add those states.
 
 ### Layer 3: The machine
-An account update is two 64-bit integer writes, a few nanoseconds in L1 cache. What costs time is coordination: a contended mutex falls into a futex syscall and costs microseconds, a database row lock with a WAL `fsync` costs 0.1 to 1 ms on NVMe. So production exchanges keep books and balances in memory on single-threaded loops and journal input commands in batches, one `fsync` per thousands of orders. A heap of 10,000 stops is 14 levels deep, so finding triggered stops is cheap; a cascade costs its trades.
+An account update is two 64-bit integer writes, a few nanoseconds in L1 cache. What costs time is coordination: a contended mutex falls into a futex syscall and costs microseconds, a database row lock with a WAL `fsync` costs 0.1 to 1 ms on NVMe. So production exchanges keep books and balances in memory on single-threaded loops and journal input commands in batches, one `fsync` per thousands of orders. LMAX reported about 6 million orders per second on one thread of a 2011-era Nehalem server, after well-factored code lifted early in-memory throughput from roughly 10K to 100K transactions per second ([Fowler](https://martinfowler.com/articles/lmax.html)). A heap of 10,000 stops is 14 levels deep, so finding triggered stops is cheap; a cascade costs its trades.
 
 ### Why it's built this way
 1. A negative balance is a loss someone absorbs, so every order reserves its worst case before it trades.
@@ -1173,6 +1178,24 @@ func (m *OrderManager) Status(id string) string {
 - Stop orders kept dormant, triggered by trades, processed through a queue in placement order, and re-checked or pre-held with the trade-off stated.
 - Pre-trade validation as a chain of independent checks, order types as data plus small strategies, and observers for reports and audit.
 - A clear boundary with the distributed design: per-symbol single-threaded books and command logs for replay.
+
+## Sources and further study
+**Primary**
+- [SEC order against Knight Capital (Release 34-70694)](https://www.sec.gov/litigation/admin/2013/34-70694.pdf): the regulator's account of the 2012 incident and of Rule 15c3-5's pre-trade controls.
+- [SEC order against Nasdaq (Release 34-69655)](https://www.sec.gov/litigation/admin/2013/34-69655.pdf): the Facebook opening-cross failure, with timings and the order-priority breach.
+- [SEC Investor Bulletin: stop, stop-limit and trailing stop orders](https://www.investor.gov/additional-resources/news-alerts/alerts-bulletins/investor-bulletin-stop-stop-limit-trailing-stop): what a trigger turns into and how brokers define reaching the stop.
+
+**Systems docs**
+- [Azure Architecture Center: Event Sourcing pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing): append-only logs, replay, snapshots, optimistic concurrency and idempotent handlers.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides, chapter 5 (Behavioral Patterns): State, Strategy, Observer, Command and Chain of Responsibility, all used here.
+- *Head First Design Patterns*, Freeman and Robson, chapter 6 (Command) and chapter 10 (State).
+- *System Design Interview Volume 2*, Alex Xu and Sahn Lam, chapter 13 "Stock Exchange": the distributed counterpart to this in-process model.
+- *Designing Data-Intensive Applications*, Martin Kleppmann, 1st edition chapter 11 "Stream Processing": event logs and deriving state from them.
+
+**Other curricula**
+- [Refactoring.Guru: Command](https://refactoring.guru/design-patterns/command): frames Command as turning a request into an object that can be queued, logged and undone, the basis for replayable order commands.
 
 ## Watch
 - [How to Build an Exchange (Jane Street)](https://www.youtube.com/watch?v=b1e4t2k2KJY): how real exchanges structure order handling as deterministic state machines fed by a sequenced log.

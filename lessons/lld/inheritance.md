@@ -45,17 +45,19 @@ class AuditedStore(Store):
 ### The fragile base class
 Months later the storage team speeds up `put_many` with `self._data.update(pairs)`. Every `Store` test passes, and `AuditedStore` silently stops auditing bulk writes. An implementation detail changed and a subclass in another repository broke. That is the fragile base class problem, and the main reason "favour composition over inheritance" became standard advice. A wrapper that holds a `Store` and implements both methods cannot be broken this way.
 
+Built-in types show the same trap. In CPython an overridden `__getitem__` in a `dict` subclass is not called by the built-in `get()`, and the PyPy documentation notes that CPython has no rule at all for when built-in methods call overrides ([PyPy docs](https://doc.pypy.org/en/latest/cpython_differences.html)). The Java library carries older scars: `Properties` extends `Hashtable`, so `put` accepts non-String values, and its Javadoc calls that use strongly discouraged ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html)).
+
 ### Designing a class to be extended
 If you do want subclasses, design for them on purpose:
-- **Declare the extension points.** Make most methods `final` (Kotlin does this by default) and expose a few hooks with documented call timing.
+- **Declare the extension points.** Make most methods `final` (Kotlin does this by default, so a class must be marked `open` to be extended ([Kotlin docs](https://kotlinlang.org/docs/inheritance.html))) and expose a few hooks with documented call timing.
 - **Document self-use.** If `put_many` calls `put`, say so, and treat changing it as breaking.
 - **No overridable calls from constructors.** In Java and C# the override runs before the child's fields are initialised.
 - **Keep it shallow.** Five levels means reading five files to know what one method does.
 
 ### Multiple inheritance and method order
-With two parents that both define `save`, the language needs a rule. C++ makes you qualify the call (`A::save`) and, for a shared grandparent, choose `virtual` inheritance or get two copies. Python computes a *method resolution order* with C3: one list in which every class precedes its parents and each declared base order is kept. If no such list exists, Python refuses to create the class. The practice task implements C3.
+With two parents that both define `save`, the language needs a rule. C++ makes you qualify the call (`A::save`) and, for a shared grandparent, choose `virtual` inheritance or get two copies. Python computes a *method resolution order* with [C3](https://docs.python.org/3/howto/mro.html): one list in which every class precedes its parents and each declared base order is kept. If no such list exists, Python refuses to create the class. The practice task implements C3.
 
-Go has no inheritance. Embedding promotes a struct's methods to the outer type, but the embedded type's self-calls always reach its own methods. Go keeps reuse and drops open recursion, removing the fragile base class problem by construction.
+Go has no inheritance. Embedding promotes a struct's methods to the outer type, but the embedded type's self-calls always reach its own methods. Go keeps reuse and drops open recursion (the receiver of an embedded method is the inner value, never the outer one ([Effective Go](https://go.dev/doc/effective_go))), removing the fragile base class problem by construction.
 
 ### Reviewing agent-written code
 Asked to remove duplication, agents produce a `BaseHandler` full of `if self.kind == ...` branches, or chains like `AuthedRetryingClient`. Flag overrides that only disable a method, `isinstance` checks in the base, and depth beyond two. Ask for a helper function or a composed collaborator.
@@ -69,7 +71,7 @@ A fragile base class is the *trust but verify* shape: a consumer relies on behav
 A subclass instance is accepted wherever the parent type is, with every inherited member reachable. Overrides are chosen by the receiver's runtime type, including on the parent's self-calls. Nothing guarantees the parent's internal call graph between versions; it is only as stable as its documentation.
 
 ### Layer 2: The mechanism
-**C++ and Java.** A class's fields follow its parent's, so a parent field has the same offset in every subclass and a child pointer is a valid parent pointer. The method table keeps inherited methods in their parent's slots and appends new ones. Under the Itanium C++ ABI the vtable pointer sits at offset 0. With multiple inheritance the second base lives at a non-zero offset, so converting `Child*` to `Base2*` adds a constant, and calls through `Base2` go via "thunks" that adjust `this` back.
+**C++ and Java.** A class's fields follow its parent's, so a parent field has the same offset in every subclass and a child pointer is a valid parent pointer. The method table keeps inherited methods in their parent's slots and appends new ones. Under the Itanium C++ ABI the vtable pointer of the primary base sits at offset 0 ([Itanium ABI](https://itanium-cxx-abi.github.io/cxx-abi/abi.html)). With multiple inheritance the second base lives at a non-zero offset, so converting `Child*` to `Base2*` adds a constant, and calls through `Base2` go via "thunks" that adjust `this` back.
 
 **Python.** At class creation `type` computes `__mro__` with C3 and stores it as a tuple. Attribute lookup walks it, checking each class's `__dict__`, and CPython caches results per (type version tag, name); assigning a class attribute bumps the tag so stale entries miss. Zero-argument `super()` continues the search in `type(self).__mro__` after the current class, which is why `super()` in a mixin can reach a sibling rather than the parent.
 
@@ -78,7 +80,7 @@ A subclass instance is accepted wherever the parent type is, with every inherite
 **Go.** An embedded struct is a field stored inline, plus compiler-generated forwarding methods on the outer type. There is no override table because nothing can be overridden.
 
 ### Layer 3: The machine
-Inherited field access costs nothing extra in C++, Java or Go: one load at a fixed offset regardless of depth. Size is every level's fields plus padding. On 64-bit HotSpot with compressed class pointers the header is 12 bytes and objects round up to 8, so five levels adding one `int` each make a 32-byte object. A polymorphic C++ object pays 8 bytes for one vtable pointer. A CPython method-cache miss probes one dictionary per class in the MRO, roughly tens of nanoseconds for a deep hierarchy, and monkey patching classes at runtime keeps invalidating the cache. In V8, call sites that see many hidden classes fall back to generic lookups, often several times slower than a cached load.
+Inherited field access costs nothing extra in C++, Java or Go: one load at a fixed offset regardless of depth. Size is every level's fields plus padding. On 64-bit HotSpot the classic header is 96 bits (12 bytes) and objects round up to 8 bytes. Compact object headers shrink it to 64 bits; they became a product feature in JDK 25 ([JEP 519](https://openjdk.org/jeps/519)) and the default in JDK 27 ([JEP 534](https://openjdk.org/jeps/534)). Either way, five levels adding one `int` each make a 32-byte object (12 + 20 = 32, or 8 + 20 = 28 rounded up). A polymorphic C++ object pays 8 bytes for one vtable pointer. A CPython method-cache miss probes one dictionary per class in the MRO, roughly tens of nanoseconds for a deep hierarchy, and monkey patching classes at runtime keeps invalidating the cache. In V8, call sites that see many hidden classes fall back to generic lookups, often several times slower than a cached load.
 
 ### Why it's built this way
 1. Code compiled against the parent must work on unseen children, so parent fields go first and keep their offsets.
@@ -107,6 +109,11 @@ Audit volume falls 30 percent overnight. Nothing alerts on it, so the gap surfac
 
 The fix: `AuditedStore` became a wrapper implementing both methods, plus a compliance-owned contract test asserting that writes through every public method reach the audit log.
 
+## In the wild
+- **Java standard library, since 1.0: `Stack` and `Properties`.** `Stack` extends `Vector` and `Properties` extends `Hashtable`, so both inherit methods that break their intent. The `Stack` Javadoc recommends `Deque` implementations instead, and the `Properties` Javadoc says `put` and `putAll` can insert non-String entries, which makes a later `store` fail ([Stack Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html), [Properties Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html)).
+- **CPython and PyPy: subclassing `dict` and `list`.** Overridden methods on built-in subclasses are, as an approximation, never called by other built-in methods of the same object, so an overridden `__getitem__` does not affect `get()`. PyPy documents the rule and where its behaviour differs from CPython's ([PyPy docs](https://doc.pypy.org/en/latest/cpython_differences.html)). The standard library offers `collections.UserDict`, a wrapper, as an easier base ([Python docs](https://docs.python.org/3/library/collections.html)).
+- **Kotlin, design decision: closed by default.** Kotlin classes and members are `final` unless marked `open`, so a base class has to opt in to being extended and its extension points are visible in the source ([Kotlin docs](https://kotlinlang.org/docs/inheritance.html)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -119,7 +126,7 @@ The fix: `AuditedStore` became a wrapper implementing both methods, plus a compl
 - A subclass relies on a self-call the parent later removes. Fix: compose, or have the parent document and test self-use.
 - An overridable method called from a constructor reads child fields that are still null. Fix: no overridable calls during construction; use a factory.
 - A subclass overrides a method to throw "not supported", crashing code that holds the parent type. Fix: it is not a subtype; split the interface or compose.
-- A shared base class gains a method whose name collides with one in a team's subclass, silently overriding it. Fix: mark overrides explicitly (`@Override`, TypeScript `override` with `noImplicitOverride`, `typing.override`) so tools flag accidental ones.
+- A shared base class gains a method whose name collides with one in a team's subclass, silently overriding it. Fix: mark overrides explicitly (`@Override`, TypeScript `override` with [`noImplicitOverride`](https://www.typescriptlang.org/tsconfig/noImplicitOverride.html), Python's [`typing.override`](https://docs.python.org/3/library/typing.html)) so tools flag accidental ones.
 - Python mixins listed in the wrong order, so `LoggingMixin.save` never runs. Fix: assert the expected `__mro__` in a test.
 
 ## Leadership lens
@@ -475,6 +482,27 @@ func Lookup(bases map[string][]string, defines map[string][]string, cls, method 
 - A migration to composition: pluggable request builders and interceptors instead of overridable methods.
 - Hedging behind an opt-in flag, `send` made final in the next major version, and a deprecation window.
 - The SDK team owns the extension points and documents when each hook runs.
+
+## Sources and further study
+**Primary**
+- [Kotlin: inheritance](https://kotlinlang.org/docs/inheritance.html): classes and members are final by default; `open` marks the extension points.
+- [Python typing: `override`](https://docs.python.org/3/library/typing.html): a checker error when a decorated method overrides nothing.
+- [JEP 519: Compact Object Headers](https://openjdk.org/jeps/519): the object header shrinking from 96 to 64 bits, which changes per-object overhead.
+
+**Systems docs**
+- [PyPy: differences from CPython](https://doc.pypy.org/en/latest/cpython_differences.html): when overridden methods on built-in subclasses are and are not called.
+- [Java `Properties` Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Properties.html): a standard-library example of inheriting methods that violate the class's invariants.
+- [Java `Stack` Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Stack.html): the library's own advice to prefer a `Deque` over an inherited `Vector`.
+
+**Books**
+- *Refactoring*, Martin Fowler (2nd ed.), chapter 12 "Dealing with Inheritance": Replace Subclass with Delegate and Replace Superclass with Delegate.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 1: class versus interface inheritance, and the advice to favour object composition.
+- *Effective Java* (3rd ed.), Joshua Bloch, items 18 and 19: favour composition, and design and document for inheritance or prohibit it.
+- *Clean Architecture*, Robert C. Martin, chapter 9 (Liskov Substitution): when inheritance gives a true subtype.
+
+**Other curricula**
+- [Refactoring.Guru: Replace Inheritance with Delegation](https://refactoring.guru/replace-inheritance-with-delegation): the step-by-step mechanical version of the composition fix this lesson recommends.
+- [refactoring.com: Replace Subclass with Delegate](https://refactoring.com/catalog/replaceSubclassWithDelegate.html): Fowler's catalogue entry for the same move.
 
 ## Watch
 - [The Flaws of Inheritance (CodeAesthetic)](https://www.youtube.com/watch?v=hxGOiiR9ZKg): a short, concrete case for composition over inherited code.

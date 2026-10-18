@@ -13,13 +13,13 @@ minutes: 15
 ## How it works
 
 ### Where the phrase comes from
-The phrase is commonly attributed to Kelly Johnson, the engineer who led Lockheed's Skunk Works, and to the idea that an aircraft should be repairable in the field by an average mechanic with basic tools. The software lesson is the same: the person who matters is the one fixing the system at 3 a.m. with partial knowledge, not the one who designed it with full context.
+The phrase is reportedly coined by Kelly Johnson, the engineer who led Lockheed's Skunk Works, and is tied to the story of an aircraft that had to be repairable in the field by an average mechanic with basic tools ([Wikipedia](https://en.wikipedia.org/wiki/KISS_principle)). The software lesson is the same: the person who matters is the one fixing the system at 3 a.m. with partial knowledge, not the one who designed it with full context.
 
 ### Simple versus easy
-Rich Hickey's distinction is the most useful lens. *Simple* is about structure: one role, one concept, not interleaved with others. *Easy* is about familiarity: a library you already know, a generator that writes the code for you. Easy things can produce complex results. An ORM that lazily loads relations is easy to use, and it tangles data access with object navigation, so a loop over 200 orders can quietly issue 201 queries. A plain SQL query with a join is less easy and more simple: what it does is visible where it is written.
+Rich Hickey's distinction is the most useful lens. *Simple* is about structure: one role, one concept, not interleaved with others; the word's root means "one fold", where "complex" means braided together. *Easy* is about familiarity: a library you already know, a generator that writes the code for you, and its root means "near at hand" ([Hickey, Simple Made Easy](https://www.infoq.com/presentations/Simple-Made-Easy/)). Easy things can produce complex results. An ORM that lazily loads relations is easy to use, and it tangles data access with object navigation, so a loop over 200 orders can quietly issue 201 queries. A plain SQL query with a join is less easy and more simple: what it does is visible where it is written.
 
 ### Essential and accidental complexity
-Fred Brooks split complexity into essential (inherent in the problem) and accidental (introduced by our tools and choices). Payroll rules, timezone handling and currency rounding are essential; you can organise them well but not delete them. A message bus between two functions in the same process, a plugin system with one plugin, or a configuration language for three settings are accidental. KISS is the discipline of noticing which kind you are adding.
+Fred Brooks split complexity into essential (inherent in the problem) and accidental (introduced by our tools and choices) ([No Silver Bullet](https://worrydream.com/refs/Brooks_1986_-_No_Silver_Bullet.pdf)). Google's SRE book uses the same split to tell operators to push back when accidental complexity enters a system they run ([SRE book, ch. 9](https://sre.google/sre-book/simplicity/)). Payroll rules, timezone handling and currency rounding are essential; you can organise them well but not delete them. A message bus between two functions in the same process, a plugin system with one plugin, or a configuration language for three settings are accidental. KISS is the discipline of noticing which kind you are adding.
 
 ### What a simple design looks like
 Consider feature flags. A team designs a rule engine: a DSL parsed into an AST, a plugin registry for operators, and a caching layer. The actual requirement is: enable a flag for internal users, exclude one country, and roll out to a percentage of everyone else. A list of rules evaluated in order, first match wins, does that:
@@ -39,17 +39,17 @@ There is no single metric, but these work in review:
 
 - **Concepts a reader must hold** to understand one request path. Count files opened and types traced.
 - **Moving parts that can fail independently**: processes, queues, caches, background jobs.
-- **Branches per function**: cyclomatic complexity above about 10 to 15 is a common review threshold.
+- **Branches per function**: cyclomatic complexity above about 10 to 15 is a common review threshold. McCabe's own 1976 paper called a limit of 10 "reasonable, but not magical" ([McCabe](http://www.literateprogramming.com/mccabe.pdf)), and Ruff's C901 check defaults to 10 ([Ruff settings](https://docs.astral.sh/ruff/settings/)).
 - **Indirection depth**: how many calls from the handler to the line that does the work.
 
 ### KISS and its neighbours
-KISS pulls in the same direction as YAGNI ("you aren't gonna need it"), which says not to build for speculative requirements. It sometimes pulls against DRY: removing duplication can introduce an abstraction harder to read than the two copies. Kent Beck's design rules give a useful priority order: passes the tests, reveals intention, has no duplication, has the fewest elements. Clarity comes before deduplication; fewest elements comes last but still counts.
+KISS pulls in the same direction as YAGNI ("you aren't gonna need it"), which says not to build for speculative requirements. It sometimes pulls against DRY: removing duplication can introduce an abstraction harder to read than the two copies. Kent Beck's design rules give a useful priority order: passes the tests, reveals intention, has no duplication, has the fewest elements ([Fowler](https://martinfowler.com/bliki/BeckDesignRules.html)). Clarity comes before deduplication; fewest elements comes last but still counts.
 
 ### Reviewing agent-written code
-Asked for a payment retry, an agent may produce a `RetryPolicyFactory`, three strategy classes, an abstract base and a YAML loader, all for one retry rule. Each piece is reasonable in isolation, and the whole is 400 lines where 30 would do. The fix is to ask for the minimal version first and add structure when a second real case appears. Agents also add defensive layers (a cache "for performance", a retry around an idempotency-unsafe call) without measuring; ask what problem each layer solves and what evidence shows it exists.
+Asked for a payment retry, an agent may produce a `RetryPolicyFactory`, three strategy classes, an abstract base and a YAML loader, all for one retry rule. Each piece is reasonable in isolation, and the whole is 400 lines where 30 would do. Google's reviewer guide names this directly: over-engineering is code more generic than it needs to be, and reviewers should push the author to solve the problem known today ([Google eng-practices](https://google.github.io/eng-practices/review/reviewer/looking-for.html)). The fix is to ask for the minimal version first and add structure when a second real case appears. Agents also add defensive layers (a cache "for performance", a retry around an idempotency-unsafe call) without measuring; ask what problem each layer solves and what evidence shows it exists.
 
 ### The same shape elsewhere
-KISS is the *partial failure* shape seen from the design side. Each independent component is another thing that can be slow, down or inconsistent, and failures multiply: five components at 99.9 percent availability each, all on the request path, give about 99.5 percent. The same reasoning drives "choose boring technology" in infrastructure, and checklists over improvisation in aviation and surgery: fewer novel parts, fewer novel failures.
+KISS is the *partial failure* shape seen from the design side. Each independent component is another thing that can be slow, down or inconsistent, and failures multiply: five components at 99.9 percent availability each, all on the request path, give about 99.5 percent, because a composite availability is the product of its parts ([Azure Well-Architected](https://learn.microsoft.com/en-us/azure/well-architected/reliability/metrics)). The same reasoning drives "choose boring technology" in infrastructure ([McKinley](https://mcfunley.com/choose-boring-technology), and the SRE book's "virtue of boring" in [chapter 9](https://sre.google/sre-book/simplicity/)), and checklists over improvisation in aviation and surgery: fewer novel parts, fewer novel failures.
 
 ## Down the stack
 
@@ -62,14 +62,14 @@ Most accidental complexity enters through mechanisms that do work invisibly. Ref
 On the build side, every module and package is a node in the build graph. More nodes mean more edges, longer incremental rebuilds when a widely imported package changes, and more targets in CI. Splitting code across deploy units is the most expensive form of structure: an interface between two services needs a schema, versioning, retries, timeouts and an on-call owner, where an interface between two packages needs only a function signature.
 
 ### Layer 3: The machine
-A direct function call costs about a nanosecond and is often inlined to nothing. An indirect call through an interface or function pointer is similar when predicted, and costs roughly 15 to 20 cycles on a misprediction; more importantly, it blocks inlining and the optimisations that follow. A reflection-based call in Java or Go is commonly tens to hundreds of times slower than a direct call. Each layer also tends to allocate: wrapper objects, boxed values, intermediate collections, which become GC work.
+A direct function call costs about a nanosecond and is often inlined to nothing. An indirect call through an interface or function pointer is similar when predicted, and costs roughly 15 to 20 cycles on a misprediction; more importantly, it blocks inlining and the optimisations that follow. Reflection used to be the classic slow path in Java, but since JDK 18 core reflection runs on method handles, and when the `Method` object sits in a `static final` field the JIT can fold it, which JEP 416 measured 43 to 57 percent faster than the old implementation ([JEP 416](https://openjdk.org/jeps/416)). The remaining cost of reflection is less about nanoseconds than about visibility: the compiler can no longer check the call. Each layer also tends to allocate: wrapper objects, boxed values, intermediate collections, which become GC work.
 
 The step change is the network. A call to another process in the same data centre costs on the order of 0.1 to 1 ms once serialisation, the kernel network stack and a TCP round trip are included, which is five to six orders of magnitude slower than an in-process call, and it can fail halfway. Binary size and startup also grow with complexity: a service that pulls in a large framework can take seconds to start, which matters for autoscaling and serverless cold starts. Simple designs are usually fast designs because the machine, like the reader, does less.
 
 ### Why it's built this way
 1. People hold only a few things in working memory at once, so understanding degrades sharply as concepts per path grow.
 2. Most of a system's cost is in maintenance and operation, done by people with less context than the original author.
-3. Every component is a failure mode and every layer is work for the machine, so cost grows with parts, not with lines.
+3. Every component is a failure mode and every layer is work for the machine, so cost grows with parts, not with lines. Google's SRE book puts the same point bluntly: every line of code added to a service is a liability ([SRE book, ch. 9](https://sre.google/sre-book/simplicity/)).
 4. So add parts only when a present requirement forces them, and prefer mechanisms (plain calls, data, one process) whose behaviour is visible where they are used.
 
 ## Diagram
@@ -86,9 +86,13 @@ flowchart TD
 ```
 
 ## Worked example
-A team builds email and push notifications for an app that sends about 50 messages per second, peaking at 200. The first design uses Kafka, three microservices (intake, templating, delivery), a rules DSL for who gets what, and a Redis cache for templates. It takes four engineers a quarter to build. In the first six months it has nine incidents: two consumer-lag pile-ups, a schema mismatch between intake and templating, a cache returning stale templates after an edit, and several deploy-ordering failures. End-to-end p99 latency is 1.8 seconds, mostly queueing.
+An illustrative case, with plausible rather than measured numbers: a team builds email and push notifications for an app that sends about 50 messages per second, peaking at 200. The first design uses Kafka, three microservices (intake, templating, delivery), a rules DSL for who gets what, and a Redis cache for templates. It takes four engineers a quarter to build. In the first six months it has nine incidents: two consumer-lag pile-ups, a schema mismatch between intake and templating, a cache returning stale templates after an edit, and several deploy-ordering failures. End-to-end p99 latency is 1.8 seconds, mostly queueing.
 
 A rewrite keeps the essential parts: templates, user preferences, provider retries. It drops the rest. Messages go into a Postgres table with a `status` column; one worker process selects pending rows with `FOR UPDATE SKIP LOCKED`, renders the template in-process and calls the provider. Postgres handles a few thousand simple inserts per second on modest hardware, so 200 per second is far below its limits. The rules DSL becomes a list of preference checks in code. The new system is about 1,500 lines instead of 9,000, runs as one deployable, and has had one incident in the following six months (a provider outage, handled by retries). p99 latency fell to 300 ms. If volume ever grows a hundredfold, partitioning the table or adding a queue is a known, bounded change.
+
+## In the wild
+- **npm, 2016: left-pad.** A maintainer unpublished 273 packages in a naming dispute, including `left-pad`, a tiny string-padding helper. Within minutes hundreds of failures per minute appeared as projects and their dependents failed to install, because many large trees (Babel and Atom among them) pulled it in transitively. A replacement published as 1.0.0 did not satisfy a pin on 0.0.3, so npm re-published the original from backup; the disruption lasted 2.5 hours. npm then restricted unpublishing ([npm blog](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm)). A dependency tree is a set of moving parts you do not own.
+- **Knight Capital, 2012: code nobody needed anymore.** The "Power Peg" order logic had been unused since 2003 but stayed callable. When new code reused its flag and one of eight servers missed the deploy, that server ran Power Peg and sent millions of unintended orders, 4 million executions in 45 minutes and a loss of about $460 million. The SEC fined Knight $12 million ([SEC order](https://www.sec.gov/litigation/admin/2013/34-70694.pdf)). Google's SRE book cites the case as the reason to delete code instead of gating it behind a flag ([SRE book, ch. 9](https://sre.google/sre-book/simplicity/)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -573,6 +577,24 @@ func Evaluate(flags map[string]Flag, name string, u User) (bool, error) {
 - Keeping the essential complexity: idempotent job runs or a lease with expiry, retries with backoff, and a clear owner for alerts.
 - Named upgrade triggers (scheduling lag above a threshold, single-process CPU saturation, a need for cross-region execution) and the bounded change each would require.
 - Answering "eventually" with cost: the distributed design adds leader election, queue operations and a DSL to maintain now, for a scale that may never arrive.
+
+## Sources and further study
+**Primary**
+- [McCabe, A Complexity Measure (1976)](http://www.literateprogramming.com/mccabe.pdf): defines cyclomatic complexity and the "10" threshold as a reasonable but not magical limit.
+
+**Systems docs**
+- [Google SRE book, ch. 9: Simplicity](https://sre.google/sre-book/simplicity/): boring software, minimal APIs, deleting dead code, and why every added line is a liability.
+- [Google eng-practices: what to look for](https://google.github.io/eng-practices/review/reviewer/looking-for.html): reviewers should treat over-engineering as a defect.
+- [Azure Well-Architected: reliability metrics](https://learn.microsoft.com/en-us/azure/well-architected/reliability/metrics): composite availability as a product of component availabilities.
+- [JEP 416: reimplement core reflection with method handles](https://openjdk.org/jeps/416): the change that made old "reflection is slow" figures out of date.
+
+**Books**
+- *Refactoring*, Fowler (2nd ed.), ch. 3 "Bad Smells in Code": speculative generality, dead code and long functions as named smells with fixes.
+- *Software Engineering at Google*, Winters, Manshreck and Wright, ch. 21 "Dependency Management": why each dependency carries long-term cost.
+- *Clean Architecture*, Martin, ch. 15 "What Is Architecture?": architecture as keeping options open at low cost.
+
+**Other curricula**
+- [Refactoring.Guru: Speculative Generality](https://refactoring.guru/smells/speculative-generality): treats unused hooks and abstract classes as a smell to be deleted, with a note that framework code is the exception.
 
 ## Watch
 - [Simple Made Easy (Rich Hickey, Strange Loop 2011)](https://www.youtube.com/watch?v=SxdOUGdseq4): the distinction between simple and easy, and how familiar tools can produce tangled systems.

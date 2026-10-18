@@ -37,14 +37,14 @@ Each run now stores its text and a pointer to one of 23 styles. Equality checks 
 Callers must never construct flyweights directly, or they will create duplicates that defeat the sharing. A factory (see Factory Method) owns a map from intrinsic key to instance and returns the existing one when it can. That map is the pool, and it is where the engineering lives: when entries are created, who may create them, when they can be removed, and how concurrent callers are kept from creating two copies of the same key.
 
 ### Where you already use flyweights
-- **String interning.** Python's `sys.intern(s)` returns one canonical string for each value; CPython interns identifiers and attribute names automatically so dictionary lookups can compare pointers first. Java interns string literals in a JVM-wide table.
-- **Small value caches.** CPython preallocates integers from -5 to 256, and Java's `Integer.valueOf` returns cached objects for -128 to 127. That is why `a is b` happens to be true for small integers and false for large ones.
-- **Hidden classes.** V8 gives objects with the same property layout a shared *map* (hidden class) that describes field names and offsets. Each object stores a pointer to the map, not its own copy of the layout.
+- **String interning.** Python's `sys.intern(s)` returns one canonical string for each value; CPython interns identifiers and attribute names automatically so dictionary lookups can compare pointers first. Java interns string literals in a JVM-wide table, and since JDK 7 that table lives in the main heap rather than the permanent generation ([JDK 7 notes](https://www.oracle.com/java/technologies/javase/jdk7-relnotes.html)).
+- **Small value caches.** CPython preallocates integers from -5 to 256 ([C API docs](https://docs.python.org/3/c-api/long.html)), and Java's `Integer.valueOf` always caches -128 to 127 ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html)). That is why `a is b` happens to be true for small integers and false for large ones.
+- **Hidden classes.** V8 gives objects with the same property layout a shared *map* (hidden class) that describes field names and offsets. Each object stores a pointer to the map, not its own copy of the layout ([V8 docs](https://v8.dev/docs/hidden-classes)).
 - **File formats.** In an `.xlsx` file, each cell stores a style index (`s="3"`) into a shared `cellXfs` table, and strings live once in `sharedStrings.xml`, referenced by number.
 - **GPU instancing.** A forest of 100,000 trees uploads one mesh and draws it with one instanced draw call; each tree contributes only a transform matrix.
 
 ### Flyweight, Singleton, Prototype and caching
-A singleton is one instance per type (see Singleton). A flyweight is one instance per distinct *value*, potentially thousands. Prototype copies an object so the copy can diverge (see Prototype); flyweight shares precisely because nothing will diverge. A cache stores results to save time and may evict an entry and recompute it; a flyweight pool stores instances to save memory, and evicting a live entry would break identity, because the next caller would get a different object for the same value. The State lesson's stateless state objects are a small flyweight: one shared instance per state.
+A singleton is one instance per type (see Singleton). A flyweight is one instance per distinct *value*, potentially thousands. The Gang of Four list "does not depend on object identity" as a condition for using the pattern (*Design Patterns*, ch. 4), so treat pointer equality as an optimisation that holds only for instances that came from the factory. Prototype copies an object so the copy can diverge (see Prototype); flyweight shares precisely because nothing will diverge. A cache stores results to save time and may evict an entry and recompute it; a flyweight pool stores instances to save memory, and evicting a live entry would break identity, because the next caller would get a different object for the same value. The State lesson's stateless state objects are a small flyweight: one shared instance per state.
 
 ### Reviewing agent-written code
 Agents model data one object per row, which is right until a profile says otherwise. When asked to "reduce memory", they may add a module-level `dict` cache with no bound, keyed by something that comes from requests, or they share an object that something later mutates. Check in review that the shared type is immutable (`@dataclass(frozen=True)`, `readonly` fields, unexported fields in Go), that the pool has a lifetime story (weak references, reference counts or a fixed key space), and that the key space is not controlled by untrusted input.
@@ -58,9 +58,9 @@ Flyweight is the *duplicates* problem shape applied to memory: the same value is
 The factory promises that for two equal keys it returns the same instance for as long as either caller holds it, so identity comparison is valid. The flyweight promises it never changes after construction, which is what makes it safe to share across threads without locks. If the pool releases entries, the contract states when: on the last release (reference counting) or some time after the last reference is dropped (weak references and GC). It must never drop an entry that someone still holds, or the next `get` for that key returns a second instance and identity checks silently start failing.
 
 ### Layer 2: The mechanism
-Go 1.23's `unique` package is a general flyweight factory. `unique.Make[T comparable](v T)` returns a `Handle[T]`, which is a pointer to a canonical copy of `v`; comparing two handles is a pointer comparison, however large `T` is. Internally the canonical copies live in a concurrent hash-trie map whose values are held weakly, so once no handle refers to an entry, the garbage collector can reclaim it and a background cleanup removes the map slot. The standard library's `net/netip` uses it to share IPv6 zone strings across addresses.
+Go 1.23's `unique` package is a general flyweight factory. `unique.Make[T comparable](v T)` returns a `Handle[T]`, which is a pointer to a canonical copy of `v`; comparing two handles is a pointer comparison, however large `T` is ([Go blog](https://go.dev/blog/unique)). Internally the canonical copies live in a concurrent hash-trie map whose values are held weakly, so once no handle refers to an entry, the garbage collector can reclaim it and a background cleanup removes the map slot. The standard library's `net/netip` uses it to share address details such as IPv6 zone names across addresses ([Go blog](https://go.dev/blog/unique)).
 
-Java has two flyweight systems for strings. `String.intern()` looks up a native hash table, the `StringTable`, whose bucket count is tunable with `-XX:StringTableSize`. G1's string deduplication (`-XX:+UseStringDeduplication`) does it lazily: during GC, it hashes the backing arrays of young strings and points duplicates at one shared array, without changing string identity. CPython's interned strings sit in a dictionary keyed by the string itself; since 3.12, statically allocated strings and small integers are *immortal* objects whose reference counts are never decremented, removing refcount writes on hot shared objects.
+Java has two flyweight systems for strings. `String.intern()` looks up a native hash table, the `StringTable`, whose bucket count is tunable with `-XX:StringTableSize`. G1's string deduplication (`-XX:+UseStringDeduplication`, off by default and documented as requiring G1 in the [JDK 21 `java` man page](https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html)) does it lazily: during GC, it hashes the backing arrays of young strings and points duplicates at one shared array, without changing string identity. CPython's interned strings sit in a dictionary keyed by the string itself; since 3.12, statically allocated objects such as identifiers and small integers are *immortal*, so their reference counts are never changed, removing refcount writes on hot shared objects ([PEP 683](https://peps.python.org/pep-0683/)).
 
 V8's hidden classes form a transition tree. Adding property `x` then `y` to an empty object moves it from map M0 to M1 to M2, and every object built in that order ends at the same M2. Inline caches at property access sites record "map M2 means `y` is at offset 16", so sharing the map is also what makes property access fast.
 
@@ -96,6 +96,11 @@ A spreadsheet service holds open workbooks in memory for real-time collaboration
 The team interned formats with `unique.Make[CellFormat]` and stored a `unique.Handle[CellFormat]` per cell. Per-cell format memory fell from 220 bytes to 8, so 5 million cells use 40 MB plus about 90 KB for the 412 canonical formats. Copy-and-paste of a 100,000-cell range no longer allocated 100,000 formats, and "are these two cells formatted the same?" became a pointer comparison, which made the autofit and conditional-format passes about 3 times faster.
 
 Two things needed care. Edits create a new format and swap the handle, never modifying a shared one. And imports from untrusted files could contain millions of distinct formats; the import path caps distinct formats per workbook at 64,000, the same order of limit spreadsheet applications apply, and rejects files beyond it.
+
+## In the wild
+- **CPython 3.12, 2023: immortal objects stop copy-on-write churn.** Servers such as Instagram's load a Python application, then fork workers that share memory pages copy-on-write. Because even reading an object changed its reference count, shared pages were copied anyway. PEP 683 made shared objects (static types, identifiers, small ints) immortal, so their refcounts are never written ([PEP 683](https://peps.python.org/pep-0683/)). It shipped in Python 3.12 and is a flyweight lifetime decision: shared objects never die.
+- **Java 7, 2011: the intern table moves out of PermGen.** `String.intern()` stored strings in the fixed-size permanent generation,. JDK 7 moved interned strings into the main heap, where they are garbage collected like other objects. Oracle warned that applications making heavy use of `intern()` would see larger heap differences ([JDK 7 notes](https://www.oracle.com/java/technologies/javase/jdk7-relnotes.html)).
+- **Go 1.23, 2024: `unique` and `net/netip`.** `netip.Addr` stays a small comparable value by interning its rarely-varying detail (such as the IPv6 zone) with `unique.Make`; handles compare as pointers and canonical copies are reclaimed once unreferenced, which required adding weak-pointer support to the runtime ([Go blog](https://go.dev/blog/unique)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -791,6 +796,26 @@ func (d *Document) Delete(index int) error {
 - Copy-on-write edits: changing one feature's colour interns a new style and swaps that feature's index; shared styles are never mutated.
 - A bound on distinct styles per document and a fallback (reject or degrade) for hostile imports, plus release of unused styles.
 - Awareness that workers do not share objects: send the style table once (or in a `SharedArrayBuffer`) and pass indices, so the flyweight survives the thread boundary.
+
+## Sources and further study
+**Primary**
+- [PEP 683: Immortal Objects](https://peps.python.org/pep-0683/): why shared objects stop changing their refcounts, and the cost-benefit argument.
+- [Python C API: integer objects](https://docs.python.org/3/c-api/long.html): the documented small-integer cache range.
+- [Java SE 21: Integer.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html): the guaranteed cache range of -128 to 127.
+
+**Systems docs**
+- [JDK 7 release notes](https://www.oracle.com/java/technologies/javase/jdk7-relnotes.html): interned strings moved from the permanent generation to the main heap.
+- [JDK 21 java command reference](https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html): the string deduplication flag and its G1 requirement.
+- [JEP 192: String Deduplication in G1](https://openjdk.org/jeps/192): the motivation, with roughly a quarter of live heap in strings and about half of those duplicates in the applications studied.
+- [Go blog: new unique package](https://go.dev/blog/unique): handles, weak pointers and the `net/netip` example.
+
+**Books**
+- *Design Patterns: Elements of Reusable Object-Oriented Software*, Gamma, Helm, Johnson and Vlissides: chapter 2 (the document editor case study, which motivates flyweight with characters) and chapter 4 (Structural Patterns), the Flyweight entry.
+- *Head First Design Patterns*, Freeman and Robson: appendix "Leftover Patterns", the short Flyweight entry.
+
+**Other curricula**
+- [SourceMaking: Flyweight](https://sourcemaking.com/design_patterns/flyweight): frames the pattern as sharing for fine-grained objects and splits state into intrinsic and extrinsic.
+- [Java Design Patterns: Flyweight](https://java-design-patterns.com/patterns/flyweight/): a Java example with real-world uses listed.
 
 ## Watch
 - [Flyweight Design Pattern (Derek Banas)](https://www.youtube.com/watch?v=0vV-R2926ss): builds a flyweight factory in Java and measures the difference in object count and speed.

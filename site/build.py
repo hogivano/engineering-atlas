@@ -617,6 +617,31 @@ STATIC_CSS = (
 )
 
 
+SOCIAL_TITLE = "Engineering Atlas: what's behind the app your agent built"
+SOCIAL_DESC = ("Free, open curriculum for app builders and engineers in the AI era: system design, scaling, "
+               "debugging and incident response. 457 lessons with practice, mock interviews and sources you can check.")
+
+
+def social_meta():
+    """Open Graph and Twitter tags for the homepage, so shared links show a large preview card."""
+    base, e = site_url(), html.escape
+    return (f'<title>Engineering Atlas</title>\n'
+            f'<link rel="canonical" href="{base}/">\n'
+            '<meta property="og:type" content="website">\n'
+            '<meta property="og:site_name" content="Engineering Atlas">\n'
+            f'<meta property="og:title" content="{e(SOCIAL_TITLE)}">\n'
+            f'<meta property="og:description" content="{e(SOCIAL_DESC)}">\n'
+            f'<meta property="og:url" content="{base}/">\n'
+            f'<meta property="og:image" content="{base}/og-image.png">\n'
+            '<meta property="og:image:width" content="1200">\n<meta property="og:image:height" content="630">\n'
+            '<meta property="og:image:alt" content="Engineering Atlas: what\'s behind the app your agent built">\n'
+            '<meta property="og:locale" content="en_US">\n'
+            '<meta name="twitter:card" content="summary_large_image">\n'
+            f'<meta name="twitter:title" content="{e(SOCIAL_TITLE)}">\n'
+            f'<meta name="twitter:description" content="{e(SOCIAL_DESC)}">\n'
+            f'<meta name="twitter:image" content="{base}/og-image.png">\n')
+
+
 def site_url():
     return (os.environ.get("SITE_URL") or "https://engineeringatlas.netlify.app").rstrip("/")
 
@@ -655,7 +680,10 @@ def static_lesson_page(key, L, all_lessons, course_title):
         '<meta property="og:type" content="article">\n'
         f'<meta property="og:url" content="{esc(url)}">\n'
         '<meta property="og:site_name" content="Engineering Atlas">\n'
-        '<meta name="twitter:card" content="summary">\n'
+        f'<meta property="og:image" content="{site_url()}/og-image.png">\n'
+        '<meta property="og:image:width" content="1200">\n<meta property="og:image:height" content="630">\n'
+        '<meta name="twitter:card" content="summary_large_image">\n'
+        f'<meta name="twitter:image" content="{site_url()}/og-image.png">\n'
         f'<meta name="twitter:title" content="{esc(title)}">\n'
         f'<meta name="twitter:description" content="{esc(desc)}">\n'
         f'<style>{STATIC_CSS}</style>\n'
@@ -935,6 +963,7 @@ def main():
              '<link rel="icon" href="/favicon.ico" sizes="any">\n<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">\n<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">\n<meta name="theme-color" content="#7c3aed">\n'
              '<meta name="description" content="Free, open curriculum for software engineers in the AI era: '
              'system design, problem solving, debugging and incident response, with practice and mock interviews.">\n'
+             + social_meta() +
              '<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}'
              'body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>\n'
              '</head>\n<body>\n')
@@ -943,6 +972,7 @@ def main():
     lean = dict(data, lessons=split["meta"], build=split["build"], split=True)
     lean_blob = json.dumps(lean, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     lean_page = page.replace(blob, lean_blob)
+    lean_page = lean_page.replace("<title>Engineering Atlas</title>", "", 1)  # the head already has one
     (dist / "index.html").write_text(shell + lean_page + "\n</body>\n</html>\n", encoding="utf8")
     modules = {m["id"]: {"title": m["title"], "lessons": m.get("lessons", [])} for p in data["phases"] for m in p["modules"]}
     (dist / "modules.json").write_text(json.dumps(modules, ensure_ascii=False, separators=(",", ":")), encoding="utf8")

@@ -43,7 +43,7 @@ Behind `Buffer`, storage can be a plain string for tests, a gap buffer (an array
 The Interfaces lesson covers how languages dispatch such a contract, and the Encapsulation lesson covers keeping the hidden part safe. Abstraction is the step before both: deciding which concept to expose.
 
 ### Deep and shallow
-John Ousterhout's measure is depth: the functionality a module provides divided by the size of its interface. Unix file I/O is deep: five calls (`open`, `read`, `write`, `lseek`, `close`) hide block allocation, caching, permissions, device drivers and dozens of filesystems. A `UserManager` whose methods each forward to one `UserRepository` method is shallow: it adds a file, a name and a stack frame, and hides nothing.
+John Ousterhout's measure is depth: the functionality a module provides divided by the size of its interface ([Ousterhout, Talks at Google](https://www.youtube.com/watch?v=bmSAYlu0NcY)). Unix file I/O is deep: five calls (`open`, `read`, `write`, `lseek`, `close`) hide block allocation, caching, permissions, device drivers and dozens of filesystems. A `UserManager` whose methods each forward to one `UserRepository` method is shallow: it adds a file, a name and a stack frame, and hides nothing.
 
 A useful test: inline the layer in your head. If callers would be just as clear calling the thing underneath, the layer is shallow and costs reading time for nothing.
 
@@ -51,26 +51,28 @@ A useful test: inline the layer in your head. If callers would be just as clear 
 An abstract class is a partial implementation with holes that subclasses fill. It fits when implementations share real code that runs in a fixed order (the Template Method lesson). It is the wrong tool for sharing helpers, because it ties every subclass to the base forever, and in Java or C# spends the single base class; a helper module or composition does that job without the coupling.
 
 ### The wrong abstraction
-Two report exporters share 60 percent of their code, so someone extracts a `BaseExporter`. A third exporter needs one step skipped, so the base gets a `skip_header` flag. A fourth needs a different order, so the base gets a hook. After a year the base class has nine flags, and every change risks one of six subclasses. Sandi Metz's advice applies: duplication is far cheaper than the wrong abstraction. When an abstraction needs flags to serve its callers, inline it back into them and look for the real shared concept again. A common rule is to wait until the third instance before extracting.
+Two report exporters share 60 percent of their code, so someone extracts a `BaseExporter`. A third exporter needs one step skipped, so the base gets a `skip_header` flag. A fourth needs a different order, so the base gets a hook. After a year the base class has nine flags, and every change risks one of six subclasses. Sandi Metz's advice applies: [duplication is far cheaper than the wrong abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction). When an abstraction needs flags to serve its callers, inline it back into them and look for the real shared concept again. A common rule is to wait until the third instance before extracting.
 
 ### Leaky abstractions
-Joel Spolsky's law: all non-trivial abstractions leak. TCP presents a reliable byte stream, but a pulled cable still surfaces as a timeout minutes later. An ORM presents objects, but a loop that touches `order.customer` issues one query per order (the N+1 problem). A `List` presents indexing, but a linked list makes `get(i)` linear. The leak is usually in the cost model or the failure model, which the interface does not mention. The honest response is to document them as part of the contract, as Down the stack shows.
+Joel Spolsky's [law of leaky abstractions](https://www.joelonsoftware.com/2002/11/11/the-law-of-leaky-abstractions/): all non-trivial abstractions leak. TCP presents a reliable byte stream, but a pulled cable still surfaces as a timeout minutes later. An ORM presents objects, but a loop that touches `order.customer` issues one query per order (the N+1 problem). A `List` presents indexing, but a linked list makes `get(i)` linear. The leak is usually in the cost model or the failure model, which the interface does not mention. The honest response is to document them as part of the contract, as Down the stack shows.
 
 ### Reviewing agent-written code
 Agents produce abstraction-shaped code quickly: an `AbstractBaseProcessor`, a `ProcessorFactory`, a `ProcessorManager`, generic type parameters nobody instantiates twice. It looks designed and passes tests. In review, ask for each layer: what decision does it hide, and how many implementations exist today? Push back on base classes that only share helpers, on managers that only forward, and on generic code with one concrete use. Ask for the cost and failure notes on any abstraction others will build on.
 
 ### The same shape elsewhere
-An abstraction boundary is a contract between levels, the same shape as a storage engine API or a cloud service. Amazon S3's original model hid replication behind "put then get", and for years list-after-write was only eventually consistent, a leak that broke data pipelines until S3 became strongly consistent in 2020. Kubernetes presents "desired state" but leaks scheduling and eviction to anyone running stateful workloads.
+An abstraction boundary is a contract between levels, the same shape as a storage engine API or a cloud service. Amazon S3's original model hid replication behind "put then get", and for years list-after-write was only eventually consistent, a leak that broke data pipelines until S3 became strongly consistent in December 2020, at which point GET, PUT and LIST all returned the latest write ([AWS News Blog](https://aws.amazon.com/blogs/aws/amazon-s3-update-strong-read-after-write-consistency/)). Kubernetes presents "desired state" but leaks scheduling and eviction to anyone running stateful workloads.
 
 ## Down the stack
 
 ### Layer 1: The contract
 A complete abstraction states three things: operations (inputs and outputs), costs (which operations are cheap, which are linear, which do I/O) and failures (what errors exist, and what state is left after one). A gap buffer's contract is: `insert` and `delete` at or near the previous edit are O(1) amortised; an edit far away costs O(distance) to move the gap; `text()` is O(n). Callers can then write code that is fast on purpose, not by luck.
 
-### Layer 2: The mechanism
-Abstract types are enforced differently in each language. Python's `abc.ABC` records abstract methods at class creation and refuses to instantiate a class that leaves any unimplemented; a `Protocol` describes the shape for type checkers only. Java marks the class `ACC_ABSTRACT`, so the JVM throws `InstantiationError` on `new`, and an abstract method has no bytecode; a subclass compiled against an older base that missed a new abstract method throws `AbstractMethodError` at the call. TypeScript `abstract` is checked by `tsc` and erased: the emitted class is ordinary JavaScript. Go has no abstract classes: an interface plus a struct you embed gives the same split between required methods and shared code.
+Failure semantics need the same precision. PostgreSQL once assumed that a failed `fsync` could simply be retried. On Linux the kernel may have discarded the failed pages and marked them clean, so the retry can report success with the data gone. PostgreSQL's `data_sync_retry` setting is off by default, which means a failed flush of a data file raises a PANIC and restarts the server instead of risking a false success ([PostgreSQL docs](https://www.postgresql.org/docs/current/runtime-config-error-handling.html)).
 
-Leaks come from mechanisms below the abstraction. A `write()` on Linux returns once bytes are copied into the page cache; durability needs `fsync` on the file and, after a rename or create, on the directory, because the "file" abstraction does not promise either. An array presents uniform O(1) access, but memory is fetched in 64-byte cache lines and 4 KB pages, so access order changes speed. A Python list presents "insert anywhere", implemented as a `memmove` of every element after the position.
+### Layer 2: The mechanism
+Abstract types are enforced differently in each language. Python's `abc.ABC` records abstract methods at class creation and refuses to instantiate a class that leaves any unimplemented ([Python docs](https://docs.python.org/3/library/abc.html)); a `Protocol` describes the shape for type checkers only. Java marks the class `ACC_ABSTRACT`, so the JVM throws `InstantiationError` on `new`, and an abstract method has no bytecode; a subclass compiled against an older base that missed a new abstract method throws `AbstractMethodError` at the call. TypeScript `abstract` is checked by `tsc` and erased: the emitted class is ordinary JavaScript. Go has no abstract classes: an interface plus a struct you embed gives the same split between required methods and shared code.
+
+Leaks come from mechanisms below the abstraction. A `write()` on Linux returns once bytes are copied into the page cache; durability needs `fsync` on the file and, after a rename or create, on the directory, because the "file" abstraction does not promise either ([fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html)). An array presents uniform O(1) access, but memory is fetched in 64-byte cache lines and 4 KB pages, so access order changes speed. A Python list presents "insert anywhere", implemented as a `memmove` of every element after the position.
 
 ### Layer 3: The machine
 The numbers are what make the leaks matter. Writing to the page cache takes microseconds; `fsync` on an NVMe SSD takes tens of microseconds to a few milliseconds, and on a network disk several milliseconds, so a "save" that calls `fsync` per keystroke is 1,000 times slower than one that does not. Summing a 4096 x 4096 matrix of 4-byte integers row by row reads each 64-byte cache line once; column by column touches a new line, and often a new page, on every access, and runs several times slower for the same O(n) work.
@@ -79,7 +81,7 @@ The editor example shows the same at small scale. Inserting one character at the
 
 ### Why it's built this way
 1. Programs are too large to hold in one head, so each part must be usable without knowing its inside.
-2. Hiding the inside lets the implementation change, so abstractions are drawn around decisions likely to change (Parnas's information hiding).
+2. Hiding the inside lets the implementation change, so abstractions are drawn around decisions likely to change (Parnas's [information hiding](https://www.win.tue.nl/~wstomv/edu/2ip30/references/criteria_for_modularization.pdf)).
 3. Hardware is not uniform (caches, pages, disks, networks), so any simple model of it is approximate and some cost leaks.
 4. Leaks cannot be removed without giving up the simplicity, so good abstractions document their cost and failure models instead.
 
@@ -100,6 +102,11 @@ flowchart TD
 A notes app stored each document as a single string and rebuilt it on every keystroke: `doc = doc[:pos] + ch + doc[pos:]`. For a 20 KB note that is a 20 KB copy, about 2 us, invisible. Then customers pasted log files into notes. At 5 MB a keystroke cost about 1 ms to copy, plus allocating a 5 MB string that the garbage collector had to reclaim; typing stuttered at roughly 30 to 60 ms per key once GC pauses landed.
 
 Because every edit already went through a `Buffer` interface with `insert`, `delete` and `text`, the team swapped in a gap buffer in one pull request of about 150 lines. Typing cost fell to under 1 us per key regardless of document size. The leak they then found was `text()`: the autosave and the word counter each called it on every keystroke, materialising the whole 5 MB document twice per key. Adding `length()` and an incremental word count to the abstraction, and debouncing autosave to once per second, removed it. The interface grew by two operations, both motivated by the cost model.
+
+## In the wild
+- **Amazon S3, 2006 to 2020: "put then get" leaked for 14 years.** S3 hid replication behind a simple object API, but after a PUT there was a small window in which the data was durably stored yet not visible to every GET or LIST. Big data and data-lake workloads, such as those on EMR, needed the most recent listing, so they built workarounds. On 1 December 2020 AWS made all GET, PUT and LIST operations strongly consistent at no extra charge, so the leak was closed below the abstraction and callers could delete their workarounds ([AWS News Blog](https://aws.amazon.com/blogs/aws/amazon-s3-update-strong-read-after-write-consistency/)).
+- **PostgreSQL on Linux, 2018: the `fsync` failure model leaked.** Craig Ringer reported at the end of March that PostgreSQL assumed a successful `fsync` covered all data written since the previous successful call. When a buffered write hits a hardware error, filesystems usually drop the affected pages and mark them clean, so that assumption fails and a retry can succeed falsely. The project's answer was to treat a failed flush as fatal; the documented `data_sync_retry` default now raises a PANIC ([LWN](https://lwn.net/Articles/752063/), [PostgreSQL docs](https://www.postgresql.org/docs/current/runtime-config-error-handling.html)).
+- **NATS JetStream, 2025-12: "acknowledged" did not mean durable.** Jepsen found that JetStream acknowledged a publish at once but, by default, fsynced only about every two minutes. In a simulated power failure one run lost 131,418 of 930,005 acknowledged messages. NATS then documented the risk of its default fsync policy ([Jepsen](https://jepsen.io/analyses/nats-2.12.1)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -804,6 +811,25 @@ func ApplyEdits(b Buffer, edits []Edit) (string, error) {
 - The cost model as part of the contract: which operations are O(1) at the cursor, which are O(n), and that full-text materialisation is expensive; incremental consumers subscribe to changes instead of calling `text()`.
 - Composition over a base class: one interface with several implementations selected by size, rather than a hierarchy with shared helpers.
 - A failure and durability model for saving: what "saved" means (acknowledged by a replicated log, or `fsync` on the server), surfaced to the user honestly.
+
+## Sources and further study
+**Primary**
+- [Amazon S3 strong read-after-write consistency (AWS News Blog)](https://aws.amazon.com/blogs/aws/amazon-s3-update-strong-read-after-write-consistency/): the announcement that removed a well-known leak in a widely used storage abstraction.
+- [Python `abc` module](https://docs.python.org/3/library/abc.html): how abstract methods are declared and enforced at instantiation.
+
+**Systems docs**
+- [PostgreSQL error-handling settings](https://www.postgresql.org/docs/current/runtime-config-error-handling.html): `data_sync_retry` and why a failed flush cannot be retried safely.
+- [fsync(2), Linux man-pages](https://man7.org/linux/man-pages/man2/fsync.2.html): what the file abstraction does and does not promise about directory entries and metadata.
+- [PostgreSQL's fsync() surprise (LWN)](https://lwn.net/Articles/752063/): the 2018 discussion of how kernel error reporting broke a database's durability assumption.
+- [Oracle Java tutorial: abstract methods and classes](https://docs.oracle.com/javase/tutorial/java/IandI/abstract.html): the language-level definition and when a class is declared abstract.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 1: the principle of programming to an interface rather than an implementation.
+- *Refactoring*, Martin Fowler (2nd ed.), chapter 3 (the Middle Man and Speculative Generality smells) and chapter 7 (Inline Class, Remove Middle Man): how to delete shallow layers.
+- *A Philosophy of Software Design*, John Ousterhout: the argument for deep modules, and the source of this lesson's depth measure.
+
+**Other curricula**
+- [Refactoring.Guru: Bridge](https://refactoring.guru/design-patterns/bridge): uses "abstraction" for a high-level control layer that delegates to an implementation hierarchy, a narrower meaning than this lesson's.
 
 ## Watch
 - [A Philosophy of Software Design (John Ousterhout, Talks at Google)](https://www.youtube.com/watch?v=bmSAYlu0NcY): deep versus shallow modules, and why interface size is the cost of an abstraction.

@@ -122,19 +122,23 @@ sequenceDiagram
 
 - **State, as enums with guarded transitions.** Both machines are small, and their states differ in which operations are legal, not in rich behaviour. Each operation checks the current state of the trip and of the driver together, under one lock.
 - **Strategy** for the driver locator and the pricing policy. The locator changes as the city grows (sort, then grid, then H3 cells with ring search); pricing changes by market (airport flat fares, minimum fares, time-of-day rates). The matcher depends only on the interfaces.
-- **Snapshot of volatile inputs.** Surge is read once, when the rider requests and sees the price, and stored on the trip. The same idea applies to the rate card version. Anything that feeds the fare is copied onto the trip.
+- **Snapshot of volatile inputs.** Surge is read once, when the rider requests and sees the price, and stored on the trip. The same idea applies to the rate card version. Anything that feeds the fare is copied onto the trip. Surge is also local by design: Uber describes computing it from supply and demand inside each H3 hexagon of a city ([Uber Engineering](https://www.uber.com/en-DE/blog/h3/)), so the multiplier you snapshot is the one for the pickup cell at request time.
 - **Observer** for side effects: the rider app hears "driver assigned", the driver app hears "offer", analytics hears everything. Publishing happens after the state change commits.
 - **Façade** for the two apps, with idempotent operations: a repeated "accept" from a flaky phone finds the trip already assigned and returns a stable answer instead of corrupting state.
 - **Singleton, avoided.** Each city or cell needs its own matcher with its own clock and locator; that is wiring in `main`, not a property of the class.
 
 ## Concurrency and edge cases
 
-- **Two trips, one driver.** Rider P and rider Q request from the same corner. Without a hold, both offers go to driver A, A accepts both, and one rider waits forever. The hold (driver state "offered") is set in the same critical section that picks the driver, so the second request sees A as unavailable and goes to B.
+- **Two trips, one driver.** Rider P and rider Q request from the same corner. Without a hold, both offers go to driver A, A accepts both, and one rider waits forever. The hold (driver state "offered") is set in the same critical section that picks the driver, so the second request sees A as unavailable and goes to B. This is not a textbook worry: Uber's engineers describe a matching race in which a new trip offer is linked to a driver who is going offline at the same moment, a concurrent read-modify-write on one entity ([Uber Engineering](https://www.uber.com/us/en/blog/fulfillment-platform-rearchitecture/)).
 - **Late accept.** Driver B taps accept 200 ms after the timeout. If `tick` already moved the offer on, B is "not offered". If `tick` has not run yet, `respond` itself checks the deadline and treats the answer as expired. Either way, the decision depends only on the clock and the offer time, not on which code path ran first.
 - **Decline loops.** A driver who declined must not be offered the same trip again, or two nearby drivers ping-pong until the rider gives up. The trip keeps a set of drivers already tried.
 - **Rider cancels during an offer.** Release the held driver in the same step, or that driver is stuck in "offered" and silently out of the pool.
 - **Duplicate requests.** A double-tapped "request" hits the one-active-trip rule; with an idempotency key the client gets the first trip id back instead.
 - **Rounding.** Do fare arithmetic in integer cents and define the order: compute each component with floor division, sum them, apply surge, then apply the minimum. Write it down, because support will ask.
+
+## In the wild
+- **Uber, 2021: from last-write-wins to transactions for trip fulfilment.** Uber's 2014-era fulfilment platform, the source of truth for trips with over a million concurrent users, favoured availability, and under split-brain events such as deploys and region failovers its last-write-wins behaviour let concurrent writes overwrite each other. Matching could pair a trip with a driver going offline at the same instant, and accepting a batch offer needed all-or-nothing updates. The rebuild moved to Google Cloud Spanner (nam3 multi-region) with cross-row transactions, serialised conflicting updates, and a separate component for at-least-once post-commit work such as offer-expiry timers ([Uber Engineering](https://www.uber.com/us/en/blog/fulfillment-platform-rearchitecture/)). It is the hold-and-offer problem of this lesson, at the scale where a mutex stops being enough.
+- **Uber, 2018: H3 hexagons for per-cell pricing and nearby search.** Uber open-sourced H3 and describes using it to compute surge from supply and demand per hexagon, with hexagons chosen because each has a single centre-to-neighbour distance; a `kRing` call returns every cell within grid distance k, approximating a radius query. Its compaction example reduces California at resolution 6 from 10,633 cells to 901 mixed-resolution cells ([Uber Engineering](https://www.uber.com/en-DE/blog/h3/)). This is the production form of the `DriverLocator` interface.
 
 ## Down the stack
 
@@ -142,10 +146,10 @@ sequenceDiagram
 `request` returns a trip that is either offered to exactly one available driver (now held) or ended as no drivers. `respond` from the offered driver within the timeout either assigns the trip or moves the offer to the next nearest untried driver; any other response changes nothing visible to that driver. After `tick`, no offer older than the timeout is outstanding. `finish` returns `max(minimum, (base + per_km × meters / 1000 + per_min × seconds / 60) × surge / 100)` with floor division at each step. `cancel` releases any held or assigned driver and returns the fee that the grace rule implies.
 
 ### Layer 2: The mechanism
-In one process: a hash map of drivers, a hash map of trips and one mutex around both, because every interesting operation touches a trip and a driver together. Picking the next driver sorts available, untried drivers by distance then id. At city scale this becomes a grid or H3 index: the pickup's cell and its rings are scanned outwards until enough candidates are found, which is the [Design Uber](../sdi/design-uber.md) lesson's core. Offer expiry is a min-heap keyed by `offeredAt + timeout`, with stale entries skipped on pop because the trip may already have moved on; a hierarchical timing wheel does the same with O(1) inserts when there are millions of timers. When the state lives in a database, the hold is a conditional update, `UPDATE drivers SET state = 'offered', trip_id = $1 WHERE id = $2 AND state = 'available'`, and a zero row count means another matcher got that driver first; try the next candidate.
+In one process: a hash map of drivers, a hash map of trips and one mutex around both, because every interesting operation touches a trip and a driver together. Picking the next driver sorts available, untried drivers by distance then id. At city scale this becomes a grid or H3 index: the pickup's cell and its rings are scanned outwards until enough candidates are found (H3 calls this `gridDisk`, named `kRing` before version 4, and it can leave zero entries in its output when the disk crosses a pentagon cell, so the caller must tolerate gaps) ([H3 renames](https://h3geo.org/docs/library/migration-3.x/functions), [H3 traversal API](https://h3geo.org/docs/api/traversal)). This is the [Design Uber](../sdi/design-uber.md) lesson's core. Offer expiry is a min-heap keyed by `offeredAt + timeout`, with stale entries skipped on pop because the trip may already have moved on; a hierarchical timing wheel does the same with O(1) start and stop when there are millions of timers ([Varghese and Lauck](http://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf)). When the state lives in a database, the hold is a conditional update, `UPDATE drivers SET state = 'offered', trip_id = $1 WHERE id = $2 AND state = 'available'`, and a zero row count means another matcher got that driver first; try the next candidate.
 
 ### Layer 3: The machine
-The mutex is never the bottleneck. A busy city might see 50 requests per second and a few hundred driver responses; each critical section is microseconds of work (sorting a few dozen nearby candidates and flipping two enums), against a lock cost of roughly 20 ns uncontended. The real latency is the network to the driver's phone: a push over a mobile connection takes 100 ms to several seconds, which is why the offer timeout is measured in seconds, not milliseconds. One more machine-level fact matters for fairness: timeouts must use a monotonic clock, because an NTP step on the server could otherwise expire every outstanding offer at once.
+The mutex is never the bottleneck. A busy city might see 50 requests per second and a few hundred driver responses; each critical section is microseconds of work (sorting a few dozen nearby candidates and flipping two enums), against a lock cost of roughly 20 ns uncontended. The real latency is the network to the driver's phone: a push over a mobile connection takes 100 ms to several seconds, which is why the offer timeout is measured in seconds, not milliseconds. One more machine-level fact matters for fairness: timeouts must use a monotonic clock, because an NTP step on the server could otherwise expire every outstanding offer at once. Go's `time.Now()` carries both readings and `Sub` uses the monotonic one when both values have it. The monotonic reading is stripped by `Round(0)`, `UTC` and serialisation, and on some systems it stops during sleep ([Go time docs](https://pkg.go.dev/time)), so keep offer deadlines as in-memory `Time` values and never reload them from a database for comparison.
 
 ### Why it's built this way
 1. Drivers are scarce and riders wait in real time, so a driver must not be offered two trips at once.
@@ -156,7 +160,7 @@ The mutex is never the bottleneck. A busy city might see 50 requests per second 
 
 ## Extensibility
 
-- **Batch offers:** offer to the top three drivers at once and assign the first acceptor. The trip holds a set of offered drivers; acceptance releases the others. The driver state machine stays the same.
+- **Batch offers:** offer to the top three drivers at once and assign the first acceptor. The trip holds a set of offered drivers; acceptance releases the others. The driver state machine stays the same. Uber's platform team notes that accepting a batch offer must update all related entities all-or-nothing, which their older saga with propose, commit and cancel steps made hard and a single Spanner transaction made simple ([Uber Engineering](https://www.uber.com/us/en/blog/fulfillment-platform-rearchitecture/)).
 - **Vehicle classes (XL, premium, accessible):** a `VehicleType` on driver and trip, and a locator filter. Pricing becomes a table per vehicle type.
 - **Scheduled rides:** a trip created in a `scheduled` state that enters offering at pickup time minus the expected driver ETA, reusing the same timer heap.
 - **Shared rides:** a driver can hold a small number of compatible trips, and the hold becomes capacity rather than a single flag. This is a large change in the matcher, which is the right place for it.
@@ -1322,6 +1326,26 @@ func (s *RideService) DriverState(driverID string) (string, error) {
 - Fare as a pure function of the trip record: distance, duration, surge snapshotted at request, minimum fare and documented rounding in integer cents.
 - A locator interface that can grow from a sort to a grid or H3 index without touching the matcher, with the city-scale index left to the system design discussion.
 - Batch offers as a set of holds with first-acceptor-wins and release of the rest, and the observation that this trades driver annoyance for rider wait time.
+
+## Sources and further study
+**Primary**
+- [Hashed and hierarchical timing wheels (Varghese and Lauck, SOSP 1987)](http://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf): the data structure behind cheap expiry of millions of offer timers.
+
+**Systems docs**
+- [H3: library function renames from 3.x to 4.x](https://h3geo.org/docs/library/migration-3.x/functions): why older write-ups say `kRing` and current code says `gridDisk`.
+- [H3: grid traversal API](https://h3geo.org/docs/api/traversal): `gridDisk`, `gridDiskDistances` and the pentagon caveat for neighbour search.
+- [Go `time` package](https://pkg.go.dev/time): monotonic clock readings, which operations strip them, and the sleep caveat.
+- [Uber Engineering: H3, Uber's hexagonal hierarchical spatial index](https://www.uber.com/en-DE/blog/h3/): why hexagons and how surge is computed per cell.
+- [Uber Engineering: building a fulfilment platform with Spanner](https://www.uber.com/us/en/blog/fulfillment-platform-rearchitecture/): the matching races and batch-offer atomicity that motivated transactions.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides, chapter 5 (Behavioral Patterns): State, Strategy and Observer.
+- *Head First Design Patterns*, Freeman and Robson, chapter 10 (State) and chapter 2 (Observer).
+- *Designing Data-Intensive Applications*, Martin Kleppmann, 1st edition chapter 7 "Transactions": the lost-update and write-skew races behind a double-held driver.
+- *System Design Interview Volume 2*, Alex Xu and Sahn Lam, chapter 1 "Proximity Service": geohash and quadtree options for the nearest-driver query.
+
+**Other curricula**
+- [Refactoring.Guru: Observer](https://refactoring.guru/design-patterns/observer): frames Observer as a publisher notifying subscribers without knowing their classes, the model for rider, driver and analytics notifications.
 
 ## Watch
 - [Design Uber (LLD): Fare Calculation, Driver Matching, Real-time ETA, GeoHashing (Shubh Patel)](https://www.youtube.com/watch?v=fWWY6He81nk): class-level design covering fare strategies and matching.

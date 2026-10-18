@@ -31,7 +31,7 @@ Four parts of the system use it. The balance API calls `get`. The fraud worker c
 Now the finance team needs `export_csv` to stream rows instead of returning bytes. The balance API never touched exports, but its test fake no longer satisfies the interface, and neither does the fraud worker's. A one-line change for one team becomes a pull request touching five test files owned by three teams, and every service rebuilds. That is the cost the principle names: callers coupled to each other through methods they never call.
 
 ### The fix: role interfaces
-Split the interface by what callers need, not by what the implementation can do:
+Fowler's name for what you want is a [role interface](https://martinfowler.com/bliki/RoleInterface.html): one defined from a single kind of interaction between a supplier and a consumer, so that a supplier usually implements several. The opposite is a header interface that simply mirrors everything the supplier offers. Split the interface by what callers need, not by what the implementation can do:
 
 ```python
 class AccountReader(Protocol):
@@ -50,10 +50,13 @@ def review_txn(reader: AccountReader, freezer: AccountFreezer, txn: Txn) -> None
 The Postgres-backed `SqlAccountStore` still implements all of these; the database code is unchanged. What changed is that each function states its real needs in its signature. The fraud worker's fake is ten lines. The export change touches only the export job and the store. The signature also documents risk: a function that takes an `AccountReader` cannot freeze an account, which is least privilege enforced by the type checker.
 
 ### Who owns the interface
-A useful rule from Go applies everywhere: define the interface where it is consumed, not where it is implemented. The fraud package declares "I need something that can get and freeze accounts"; the storage package exports a concrete type. Each consumer writes down only what it calls, so interfaces stay small by construction. When the producer defines the interface, it lists everything it can do, and you are back to the fat interface.
+A useful rule from Go applies everywhere: define the interface where it is consumed, not where it is implemented. The Go team's review guidance says exactly this, and adds that the implementing package should return concrete types so new methods can be added without breaking callers, and that you should not define interfaces on the implementor side "for mocking" ([Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)). The fraud package declares "I need something that can get and freeze accounts"; the storage package exports a concrete type. Each consumer writes down only what it calls, so interfaces stay small by construction. When the producer defines the interface, it lists everything it can do, and you are back to the fat interface.
+
+### Small core, optional extensions
+When most consumers need a tiny contract but some want a faster or richer one, keep the core minimal and add extension interfaces that embed it. Go's `io/fs` package, added in Go 1.16, is the clean example: `fs.FS` has a single method, `Open`, and optional interfaces such as `ReadDirFS` embed `FS` and add one method for file systems that can do better ([io/fs docs](https://pkg.go.dev/io/fs)). A helper function like `fs.ReadDir` checks whether the value implements the extension and falls back to `Open` plus the core methods otherwise. The design document for `io/fs` describes this as the extension pattern, and points to `io.WriteString` and `io.StringWriter` as an older example ([Go proposal](https://github.com/golang/proposal/blob/master/design/draft-iofs.md)). Callers keep depending on the narrow role, and the fast path is an optimisation they never see.
 
 ### Splitting too far
-The principle has a failure mode that shows up just as often. A codebase with `AccountGetter`, `AccountGetterByOwner`, `AccountSaver`, `AccountSaverWithAudit` and forty more single-method interfaces, each used by one function, has traded coupling for indirection. Readers cannot tell which concrete type is behind a parameter. Renames ripple through dozens of declarations. Mocks multiply.
+The principle has a failure mode that shows up just as often. Go's own proverb says "the bigger the interface, the weaker the abstraction" ([Go Proverbs](https://go-proverbs.github.io/)), but a thousand one-method interfaces are not the goal either. A codebase with `AccountGetter`, `AccountGetterByOwner`, `AccountSaver`, `AccountSaverWithAudit` and forty more single-method interfaces, each used by one function, has traded coupling for indirection. Readers cannot tell which concrete type is behind a parameter. Renames ripple through dozens of declarations. Mocks multiply.
 
 Signs you have gone too far:
 - An interface has exactly one implementation and one caller, and neither is a test boundary.
@@ -71,9 +74,9 @@ The problem shape is fan-out of change: one edit reaches many dependents. GraphQ
 An interface promises a set of method signatures and their behaviour. A client that names an interface is promised it can call those methods on any value it receives, and it is exposed to every change in that set. The testable claim of the principle: the number of clients that must change when one method changes should equal the number of clients that call that method.
 
 ### Layer 2: The mechanism
-Each language checks the contract differently, which affects how cheap small interfaces are. Go uses structural typing at compile time: any type with the right method set satisfies an interface without declaring it, so splitting an interface costs nothing on the implementation side. An interface value is two words: a pointer to an `itab` (holding the interface type, the concrete type, and an array of function pointers) and a pointer to the data. The runtime builds an `itab` the first time a concrete type is converted to an interface type and caches it in a global hash table, so a narrower interface means a smaller function array, not more work per call.
+Each language checks the contract differently, which affects how cheap small interfaces are. Go uses structural typing at compile time: any type with the right method set satisfies an interface without declaring it, so splitting an interface costs nothing on the implementation side. An interface value is two words ([Russ Cox on Go interfaces](https://research.swtch.com/interfaces)): a pointer to an `itab` (holding the interface type, the concrete type, and an array of function pointers) and a pointer to the data. The runtime builds an `itab` the first time a concrete type is converted to an interface type and caches it in a global hash table, so a narrower interface means a smaller function array, not more work per call.
 
-TypeScript checks shapes at compile time and erases them; at runtime there is only a JavaScript object, and V8 finds methods through the object's hidden class (its "shape") and the prototype chain, with inline caches at each call site. Python's `typing.Protocol` is checked only by tools such as mypy; at runtime, a method call is an attribute lookup through the type's method resolution order, sped up by a per-type cache. Java is nominal (`implements`), and the JIT turns `invokeinterface` calls into inline caches once a call site has seen one or two types.
+TypeScript checks shapes at compile time and erases them; at runtime there is only a JavaScript object, and V8 finds methods through the object's hidden class (its "shape") and the prototype chain, with inline caches at each call site. Python's `typing.Protocol` ([PEP 544](https://peps.python.org/pep-0544/)) is checked only by tools such as mypy; at runtime, a method call is an attribute lookup through the type's method resolution order, sped up by a per-type cache. Java is nominal (`implements`), and the JIT turns `invokeinterface` calls into inline caches once a call site has seen one or two types.
 
 ### Layer 3: The machine
 A call through an interface is an indirect call: load the function pointer, jump to it. With a warm branch target predictor it costs about 1 to 3 ns. The real costs are elsewhere. The compiler usually cannot inline through an interface, which blocks follow-on optimisations in hot loops. In Go, storing a non-pointer value in an interface often forces a heap allocation (about 20 to 50 ns plus later garbage collection work), which escape analysis reports with `go build -gcflags=-m`. In V8, a call site that sees more than four object shapes goes megamorphic and falls back to a slower generic lookup. None of this depends on interface size; a fat interface and a thin one dispatch at the same speed. What costs is the number of distinct types flowing through a hot call site.
@@ -81,7 +84,7 @@ A call through an interface is an indirect call: load the function pointer, jump
 ### Why it's built this way
 1. Code is changed more often than it is written.
 2. A change to a type reaches everything that names the type, whether or not it uses the changed part.
-3. In the 1990s, when Robert Martin described the principle, that meant hours of C++ recompilation; today it means CI time, fake updates and cross-team reviews.
+3. In the 1990s, when Robert Martin formulated the principle while consulting for Xerox on a printer system where even small changes meant a full redeployment cycle ([Wikipedia](https://en.wikipedia.org/wiki/Interface_segregation_principle)), that meant hours of C++ recompilation; today it means CI time, fake updates and cross-team reviews.
 4. Narrow interfaces shrink the set of things each client names, so each change reaches fewer clients.
 5. Modern structural typing makes narrow interfaces nearly free to declare, so the remaining cost is cognitive, which is why over-splitting is the failure to watch for now.
 
@@ -103,6 +106,11 @@ A Go service has a `Storage` interface with 14 methods used by 9 packages. Over 
 They split `Storage` into four consumer-owned interfaces: `BlobReader` (2 methods), `BlobWriter` (3), `BlobLister` (2) and `Admin` (7, used only by the admin CLI). The concrete `s3Store` is untouched. In the next quarter, changes touched an average of 1.9 packages. Test fakes shrank from about 200 lines to between 10 and 40 each.
 
 They also tried, and reverted, one interface per method. Call sites then asked for three or four interfaces at a time, each constructor took four parameters that were the same object, and the team merged them back into the four roles that matched the four kinds of callers.
+
+## In the wild
+- **Xerox, early 1990s: the printer system with one fat `Job` class.** Robert Martin, consulting for Xerox on a new multifunction printer system (stapling, faxing and more), met software where almost every task called a single `Job` class. A staple job therefore knew about every method meant for print jobs, and as the code grew even a small change took a redeployment cycle of about an hour. The fix was one interface per job type, all implemented by `Job`. This is the story the principle is usually traced to ([Wikipedia](https://en.wikipedia.org/wiki/Interface_segregation_principle)).
+- **Go, 2020: `io/fs` is one method plus optional extensions.** Rather than a fat file-system interface, the standard library defines `FS` with a single `Open` method and lets implementations opt in to `ReadDirFS`, `ReadFileFS`, `StatFS`, `GlobFS` and others. Code written against `FS` works with an embedded asset bundle, a zip file or a test fake, and each implementation adds only the capabilities it has ([io/fs docs](https://pkg.go.dev/io/fs)).
+- **Go standard library: `io.Reader` and `io.Writer`.** Each has one method; `io.ReadWriter` is just the two embedded together, and the package composes further groups such as `ReadWriteSeeker` the same way. Callers ask for the smallest role they need, which is why one `Read` signature serves files, sockets and test buffers alike ([io docs](https://pkg.go.dev/io)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -652,6 +660,22 @@ func TotalSize(r Reader, keys []string) int {
 - Replacing the shared mock with small per-role fakes, so each test owns its fake.
 - Treating downcasts to the wide type as a review blocker and giving those callers an explicit role instead.
 - Naming the cost of over-splitting and merging roles that are always requested together.
+
+## Sources and further study
+**Primary**
+- [Go proposal: file system interfaces (io/fs design draft)](https://github.com/golang/proposal/blob/master/design/draft-iofs.md): the reasoning behind a minimal `FS` plus extension interfaces.
+- [Go Proverbs](https://go-proverbs.github.io/): "the bigger the interface, the weaker the abstraction", in the Go team's own words.
+
+**Systems docs**
+- [Go `io/fs` package](https://pkg.go.dev/io/fs): `FS`, `ReadDirFS`, `StatFS` and the helper functions that fall back when an extension is missing.
+- [Go `io` package](https://pkg.go.dev/io): single-method roles (`Reader`, `Writer`, `Closer`) and the interfaces composed from them.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin: chapter 10, "ISP: The Interface Segregation Principle".
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 1, the "program to an interface, not an implementation" guideline that makes narrow interfaces possible.
+
+**Other curricula**
+- [Refactoring.Guru: Facade](https://refactoring.guru/design-patterns/facade): shows the opposite move, hiding a wide subsystem behind one deliberately small interface for a given client.
 
 ## Watch
 - [Uncle Bob's SOLID Principles Made Easy, in Python (ArjanCodes)](https://www.youtube.com/watch?v=pTB30aXS77U): refactors one small program through all five principles, including interface segregation.

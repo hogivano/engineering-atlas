@@ -31,7 +31,7 @@ class Bundle:
 ```
 
 ### Uniform interface versus safe interface
-Put `add` and `remove` on the shared interface and callers treat every node identically, but `add` on a leaf must fail at runtime. Put them only on the composite and the type system stops you adding a child to a leaf. Most modern code keeps reads (`price`, `size`, `render`) on the shared interface and building on the concrete composite. The DOM is the well-known exception: every `Node` has `appendChild`, and calling it on a text node throws `HierarchyRequestError`.
+Put `add` and `remove` on the shared interface and callers treat every node identically, but `add` on a leaf must fail at runtime. Put them only on the composite and the type system stops you adding a child to a leaf. Most modern code keeps reads (`price`, `size`, `render`) on the shared interface and building on the concrete composite. The DOM is the well-known exception: every `Node` has `appendChild`, and calling it on a text node throws `HierarchyRequestError` ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Node/appendChild)). The Gang of Four weigh the same trade: transparency (every node has the child operations) against safety (the type system rules out misuse), and note that a leaf can make the transparent version tolerable by treating `add` as an error (*Design Patterns*, ch. 4).
 
 ### Combining rules are the design
 How a parent combines its children encodes business meaning. A folder's size is a sum. A health group is healthy if all children are, or if a quorum is. A composite rate limiter (see Design a Rate Limiter) allows a request only if every child does, and must decide about tokens already spent by children that said yes. Write the rule down, including the empty case: is an empty bundle free, is an empty health group healthy? Most bugs live in the empty and partially failed cases.
@@ -43,7 +43,7 @@ A composite that accepts any child can become a graph by accident. A bundle that
 - One parent: a node already attached elsewhere must be detached first. If you truly want one subtree in many places, you have a directed acyclic graph with parent lists, and must decide whether a shared leaf counts once or once per path.
 - Unique names among siblings when children are addressed by name, as in file paths.
 
-A parent pointer makes the first two checks cheap: walk up from `self` looking for `child`, costing the tree's depth rather than its size. The DOM refuses to insert an ancestor into its own descendant the same way.
+A parent pointer makes the first two checks cheap: walk up from `self` looking for `child`, costing the tree's depth rather than its size. The DOM refuses to insert an ancestor into its own descendant the same way: `appendChild` throws when the insertion would create a cycle ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Node/appendChild)).
 
 ### Cached aggregates
 Recomputing `price()` across a 5,000-node tree on every page view is wasteful when the tree changes hourly. Cache each composite's aggregate and invalidate upward: when a child changes, mark the parent dirty, and its parent, up to the root. Reads recompute only dirty subtrees. Browser layout marks boxes "needs layout" up the ancestor chain the same way, and Merkle trees rehash only the changed path.
@@ -52,7 +52,7 @@ Recomputing `price()` across a 5,000-node tree on every page view is wasteful wh
 Asked to "support nested bundles", an agent usually adds a recursive `price()` and nothing else. Check that `add` rejects cycles and double attachment, that the empty case is defined, that depth is capped, and that hot aggregates are cached with upward invalidation. Leftover `isinstance` checks in callers mean the interface is missing an operation.
 
 ### The same shape elsewhere
-Composite is the *fan-out* shape as an object: one request goes to every child and the answers fold back up. Linux cgroups v2 has the same shape: a parent's memory limit bounds its children, and usage is charged up the hierarchy. So do query planners, whose `AND` and `OR` nodes combine child predicates.
+Composite is the *fan-out* shape as an object: one request goes to every child and the answers fold back up. Linux cgroups v2 has the same shape: processes are organised hierarchically, and a cgroup's `memory.max` is a hard limit on its usage ([kernel docs](https://docs.kernel.org/admin-guide/cgroup-v2.html)). So do query planners, whose `AND` and `OR` nodes combine child predicates.
 
 ## Down the stack
 
@@ -60,14 +60,14 @@ Composite is the *fan-out* shape as an object: one request goes to every child a
 Every operation on the shared interface means the same for a group as for a leaf, with a documented combining rule and result for zero children. The structure is finite and acyclic, each node has one parent (or a declared sharing model), and a read after a mutation reflects it. A cache must be invisible: `price()` returns exactly what a fresh recursive computation would.
 
 ### Layer 2: The mechanism
-The data structure is a node with a child list and usually a parent pointer. The DOM's `Node` exposes `parentNode`, `firstChild`, `lastChild`, `previousSibling` and `nextSibling`: children form a doubly linked list, so insertion and removal are O(1). React's Fiber nodes use `child`, `sibling` and `return` pointers, which let React walk the tree with a loop instead of recursion, so rendering can pause and resume between nodes.
+The data structure is a node with a child list and usually a parent pointer. The DOM's `Node` exposes `parentNode`, `firstChild`, `lastChild`, `previousSibling` and `nextSibling`: children form a doubly linked list, so insertion and removal are O(1). React's Fiber nodes use `child`, `sibling` and `return` pointers, which let React walk the tree with a loop instead of recursion, so rendering can pause and resume between nodes ([React Fiber architecture notes](https://github.com/acdlite/react-fiber-architecture)).
 
-Since Go 1.20 an error can implement `Unwrap() []error`, and `errors.Join(a, b)` returns one. `errors.Is` and `errors.As` traverse the resulting tree in pre-order, depth first, calling `Unwrap` at each node: a composite in the standard library.
+Since Go 1.20 an error can implement `Unwrap() []error`, and `errors.Join(a, b)` returns one ([Go 1.20 notes](https://go.dev/doc/go1.20)). `errors.Is` and `errors.As` traverse the resulting tree in pre-order, depth first, calling `Unwrap` at each node ([errors package](https://pkg.go.dev/errors)): a composite in the standard library.
 
 ### Layer 3: The machine
 Each node is a separate heap allocation. A Go node with a name string (16 bytes), a child slice (24), a parent pointer (8) and a cached int (8) is 56 bytes, rounded to the 64-byte size class, plus the slice's backing array. A CPython node with a `__dict__` is over 200 bytes; `__slots__` brings it to roughly 70. Nodes are allocated at different times, so siblings rarely share a cache line, and walking a million nodes pays roughly a DRAM miss per node, 80 to 100 ns: about 0.1 s per full walk, against a few milliseconds to scan the same data packed in an array.
 
-Each child call is an indirect call: a Go itab lookup, a C++ or Java vtable call, or a V8 property access that stays fast while the call site sees few node shapes. Recursion costs a stack frame per level. CPython's default recursion limit is 1,000, so a 1,500-deep tree raises `RecursionError`; goroutine stacks start at a few KB and grow by copying, so Go survives deep trees but pays for each growth.
+Each child call is an indirect call: a Go itab lookup, a C++ or Java vtable call, or a V8 property access that stays fast while the call site sees few node shapes. Recursion costs a stack frame per level. CPython's default recursion limit is 1,000, so a 1,500-deep tree raises `RecursionError` (the limit guards the C stack and is adjustable with `sys.setrecursionlimit`, per the [sys docs](https://docs.python.org/3/library/sys.html)); goroutine stacks start at a few KB and grow by copying, so Go survives deep trees but pays for each growth.
 
 Concurrency adds a cost. Upward invalidation touches every ancestor, so per-node locks force writers to lock a path in a fixed order to avoid deadlock. Many systems take one lock for the whole tree, or make it immutable and copy the changed path, so readers traverse an old version without locks.
 
@@ -110,6 +110,11 @@ With cached aggregates, a read is one dirty-flag check, under 10 ns. Writes are 
 
 The rollout found one bug: the ERP feed set a product's price field directly, so nothing marked its parents dirty and kits showed old prices for an hour. The fix made `cents` private behind `set_price()`, which walks up the parents, plus a nightly job that recomputes every bundle from scratch and alerts on any mismatch.
 
+## In the wild
+- **jackson-databind, 2022: deeply nested JSON overflows the stack.** A parser that builds a tree by recursion also recurses on hostile input: CVE-2020-36518 let a small, deeply nested JSON document trigger a Java stack overflow and a denial of service in jackson-databind 2.12 and 2.13, fixed in 2.12.6.1 and 2.13.2.1 ([GitHub advisory](https://github.com/advisories/GHSA-57j2-w4cx-62h2)). Jackson 2.15 then made a limit the default: `StreamReadConstraints` caps nesting depth at 1,000 open objects or arrays unless you override it ([Jackson wiki](https://github.com/FasterXML/jackson-core/wiki/StreamReadConstraints)).
+- **Protocol Buffers, documented limits: depth is a product decision.** Protobuf messages are composites (messages contain messages), and unmarshaling fails past a fixed nesting depth: 100 in Java and C++, 10,000 in Go, with a plan to reduce Go's to 100 ([protobuf limits](https://protobuf.dev/programming-guides/proto-limits/)). The same wire format therefore accepts different trees in different languages.
+- **Go 1.20, 2023: errors become trees.** Before 1.20 an error wrapped at most one other error. Allowing `Unwrap() []error` turned the wrapping chain into a composite, and `errors.Is` and `errors.As` were changed to walk it depth first, so a caller asks the same question of one error or of a joined group ([Go 1.20 notes](https://go.dev/doc/go1.20), [errors package](https://pkg.go.dev/errors)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -123,7 +128,7 @@ The rollout found one bug: the ERP feed set a product's price field directly, so
 - A cycle introduced by an import, then a stack overflow on every request touching that tree. Fix: check ancestors in `add` and cap depth at the API.
 - Mutating a leaf's field directly so cached ancestors go stale. Fix: make aggregated fields private behind methods that invalidate upward, and run a periodic full recompute that compares results.
 - Undefined empty cases: an empty health group reported healthy, so a misconfigured check with no members passed for months. Fix: decide and test the result for zero children, and often reject empty composites.
-- Deep recursion on user-supplied trees (nested comments, imported org charts). Fix: iterate with an explicit stack, or reject excess depth.
+- Deep recursion on user-supplied trees (nested comments, imported org charts). Fix: iterate with an explicit stack, or reject excess depth. Parsers learned this the hard way (see In the wild).
 - One node attached to two parents by accident, so a change for one customer edits another's bundle. Fix: enforce one parent, and make sharing an explicit, separate operation.
 
 ## Leadership lens
@@ -769,6 +774,27 @@ func (b *Bundle) Names() []string {
 - Cached effective permissions with invalidation pushed down, since here children depend on parents: propagation follows the direction of dependency.
 - Invariants enforced in the write API (no cycles, one parent, depth cap), not only in the UI.
 - Storage trade-offs: adjacency list for cheap moves, materialized path or closure table for fast ancestor queries.
+
+## Sources and further study
+**Primary**
+- [MDN: Node.appendChild](https://developer.mozilla.org/en-US/docs/Web/API/Node/appendChild): the DOM's composite rules, including the exceptions for cycles and for parents that cannot hold children.
+- [Go 1.20 release notes](https://go.dev/doc/go1.20): the change that made error wrapping a tree.
+- [Go errors package](https://pkg.go.dev/errors): the pre-order, depth-first traversal contract of `Is` and `As`.
+- [Linux kernel: Control Group v2](https://docs.kernel.org/admin-guide/cgroup-v2.html): hierarchical organisation of processes and the `memory.max` hard limit.
+
+**Systems docs**
+- [Jackson StreamReadConstraints](https://github.com/FasterXML/jackson-core/wiki/StreamReadConstraints): the default nesting-depth limit added in 2.15.
+- [GitHub advisory for CVE-2020-36518](https://github.com/advisories/GHSA-57j2-w4cx-62h2): the stack overflow from deeply nested JSON and the patched versions.
+- [Protocol Buffers: proto limits](https://protobuf.dev/programming-guides/proto-limits/): per-language nesting depth limits.
+- [Python sys module](https://docs.python.org/3/library/sys.html): what the recursion limit protects.
+
+**Books**
+- *Design Patterns: Elements of Reusable Object-Oriented Software*, Gamma, Helm, Johnson and Vlissides: chapter 4 (Structural Patterns), the Composite entry, including transparency versus safety and caching of aggregates.
+- *Head First Design Patterns*, Freeman and Robson: chapter 9 (the Iterator and Composite Patterns), traversing a menu tree with leaves and sub-menus.
+
+**Other curricula**
+- [SourceMaking: Composite](https://sourcemaking.com/design_patterns/composite): frames the pattern through its problem (querying each object's type before processing it) and ends with a checklist.
+- [Java Design Patterns: Composite](https://java-design-patterns.com/patterns/composite/): a worked Java implementation with real-world uses listed.
 
 ## Watch
 - [Composite Pattern, Design Patterns ep 14 (Christopher Okhravi)](https://www.youtube.com/watch?v=EWDmWbJ4wRA): the Gang of Four structure and the uniform versus safe interface debate.

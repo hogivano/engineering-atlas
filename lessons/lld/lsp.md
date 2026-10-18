@@ -39,12 +39,12 @@ Now every new implementation means editing callers. An LSP violation has turned 
 
 ### The "after"
 Three fixes, in order of importance:
-- **Write the contract down and test it.** "`get` after `put` returns the same bytes; `put` overwrites; `get` of a missing key returns `None`; `delete` of a missing key is a no-op; `list_keys` returns matching keys in ascending order." Then run one shared test suite against every implementation, including fakes used in other tests.
+- **Write the contract down and test it.** "`get` after `put` returns the same bytes; `put` overwrites; `get` of a missing key returns `None`; `delete` of a missing key is a no-op; `list_keys` returns matching keys in ascending order." Then run one shared test suite against every implementation, including fakes used in other tests ([Fowler on contract tests](https://martinfowler.com/bliki/ContractTest.html)).
 - **Make adapters absorb provider quirks.** The second cloud adapter catches the provider's 404 on delete. The cache wrapper invalidates on delete. The interface does not bend to the provider; the adapter does.
 - **Split interfaces that some implementations cannot honour.** The archive is not a `BlobStore`. It is a `BlobReader`. Callers that only read take a `BlobReader`; the type system now stops anyone handing an archive to the export writer.
 
 ### What the principle actually says
-Barbara Liskov stated the idea in a 1987 keynote, and Liskov and Jeannette Wing made it precise in 1994: a subtype must satisfy its supertype's specification. Concretely, for each operation:
+Barbara Liskov stated the idea in a [1987 keynote](https://www.cs.tufts.edu/~nr/cs257/archive/barbara-liskov/data-abstraction-and-hierarchy.pdf), and Liskov and Jeannette Wing made it precise in 1994 ([paper](https://www.cs.cmu.edu/~wing/publications/LiskovWing94.pdf)): a subtype must satisfy its supertype's specification. Concretely, for each operation:
 - **Preconditions cannot be strengthened.** If the interface accepts any key, an implementation cannot reject keys longer than 64 characters.
 - **Postconditions cannot be weakened.** If `list_keys` promises sorted output, returning keys in insertion order is a violation, even if it is "faster".
 - **Invariants must be preserved.** If a store promises read-your-writes, a cache that serves stale data breaks it.
@@ -53,16 +53,16 @@ Barbara Liskov stated the idea in a 1987 keynote, and Liskov and Jeannette Wing 
 The famous square-and-rectangle puzzle is the history constraint in miniature: a `Square` that keeps width and height equal breaks a caller that sets the width and expects the height to stay put. In backend code the same thing appears as read-only collections, eventually consistent replicas and "lite" API clients.
 
 ### When following it too zealously hurts
-- **Over-specified contracts.** If the contract says "`put` completes in under 5 ms" or "errors are `S3Error`", only one implementation can ever satisfy it. Specify what callers need; leave room for variation in latency, consistency details and error types. Hyrum's law says callers will depend on unspecified behaviour anyway, which is a reason to state what is promised and test exactly that.
+- **Over-specified contracts.** If the contract says "`put` completes in under 5 ms" or "errors are `S3Error`", only one implementation can ever satisfy it. Specify what callers need; leave room for variation in latency, consistency details and error types. [Hyrum's law](https://www.hyrumslaw.com/) says callers will depend on unspecified behaviour anyway, which is a reason to state what is promised and test exactly that.
 - **Forcing everything into one hierarchy.** If two things are only similar, do not make one a subtype of the other to reuse code. Compose instead.
 - **Interface explosion.** Splitting every interface into one-method pieces to avoid any possible violation makes signatures unreadable. Split along what callers actually use: readers and writers is a common, useful line.
-- **Rejecting known, documented compromises.** Java's `List` declares `add` as an "optional operation" that may throw `UnsupportedOperationException`. That is a weak contract, but a stated one. Sometimes a stated weakness beats a type hierarchy with forty interfaces.
+- **Rejecting known, documented compromises.** Java's `List` declares `add` as an "optional operation" that may throw `UnsupportedOperationException` ([Java SE docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html)). That is a weak contract, but a stated one. Sometimes a stated weakness beats a type hierarchy with forty interfaces.
 
 ### Reviewing agent-written code
 Ask an agent to "add a Google Cloud implementation of `BlobStore`" and it will produce a class with every method present. Look for the methods that were hard: `raise NotImplementedError`, `return nil` with a `// TODO`, an empty list where pagination was needed, an error swallowed to make a test pass. Each is a substitution failure waiting for production traffic. Also check the fakes an agent writes for tests: a fake store that never fails and always returns sorted results makes the caller's tests pass against behaviour no real store has. The review rule is simple: every implementation, including fakes, must run the shared contract suite in CI, and any new `isinstance` or type switch on an implementation type needs a written justification.
 
 ### The same shape elsewhere
-LSP is "trust but verify" applied to types. HTTP has the same rule at protocol level: RFC 9110 says GET is safe and idempotent, so caches, proxies and crawlers repeat GETs freely. A server that deletes data on GET is a substitution violation, and the bug report arrives when a link prefetcher deletes a customer's records. Payment gateway adapters, message queue clients and database drivers all carry the same risk.
+LSP is "trust but verify" applied to types. HTTP has the same rule at protocol level: [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.1) defines safe methods as essentially read-only, and GET is one, so caches, proxies and crawlers repeat GETs freely. A server that deletes data on GET is a substitution violation, and the bug report arrives when a link prefetcher deletes a customer's records. Payment gateway adapters, message queue clients and database drivers all carry the same risk.
 
 ## Down the stack
 
@@ -70,10 +70,10 @@ LSP is "trust but verify" applied to types. HTTP has the same rule at protocol l
 For the store interface, the contract is a list of testable statements: round trip (`get(k)` returns what `put(k, v)` wrote), overwrite, missing keys return "not found" rather than an error, delete is idempotent, and listing returns exactly the matching keys in sorted order. Each implementation may add guarantees (stronger consistency, versioning) but may not drop one. Concurrency is part of the contract too: Go's standard library says when a type is "safe for concurrent use by multiple goroutines", and an implementation that is not safe breaks callers that rely on that sentence.
 
 ### Layer 2: The mechanism
-Type systems check only the structural part of substitutability. Go and TypeScript use structural typing: any type with the right method set satisfies the interface, with no declaration of intent. Python's `typing.Protocol` does the same for mypy, and mypy also flags overrides whose signatures are incompatible with the base class. Signature rules follow variance: parameters may be widened (contravariance) and return types narrowed (covariance). TypeScript deliberately relaxes this: methods declared with method syntax are checked bivariantly in their parameters even under `--strict`, so an implementation that accepts a narrower argument type compiles. None of these checkers know that `list_keys` must be sorted. Behavioural rules live in documentation and in contract tests, the way Go's `io.Reader` docs spell out how `n` and `err` may combine and every reader in the standard library is tested against that.
+Type systems check only the structural part of substitutability. Go and TypeScript use structural typing: any type with the right method set satisfies the interface, with no declaration of intent. Python's `typing.Protocol` does the same for mypy, and mypy also flags overrides whose signatures are incompatible with the base class. Signature rules follow variance: parameters may be widened (contravariance) and return types narrowed (covariance). TypeScript deliberately relaxes this: `strictFunctionTypes` applies only to function syntax, not method syntax, so under `--strict` an implementation of a method that accepts a narrower argument type still compiles ([TypeScript docs](https://www.typescriptlang.org/tsconfig/strictFunctionTypes.html)). None of these checkers know that `list_keys` must be sorted. Behavioural rules live in documentation and in contract tests, the way Go's [`io.Reader` docs](https://pkg.go.dev/io#Reader) spell out how `n` and `err` may combine and every reader in the standard library is tested against that.
 
 ### Layer 3: The machine
-A call through an interface reaches the implementation by data, not by name. In C++ and Java the object header points to a vtable and the call reads a fixed slot. In Go an interface value is two machine words: a pointer to an itab (the concrete type plus its method pointers, built once per type and interface pair and cached in a global hash table) and a pointer to the data. Assigning a non-pointer struct to an interface may copy it to the heap. A call costs a couple of dependent loads plus an indirect branch, around 1 to 2 ns when predicted. In V8 the call site's inline cache records object shapes; a site that only sees one implementation is monomorphic and fast. In CPython the method is found through the type's MRO and a per-type cache.
+A call through an interface reaches the implementation by data, not by name. In C++ and Java the object header points to a vtable and the call reads a fixed slot. In Go an interface value is two machine words: a pointer to an itab ([Russ Cox](https://research.swtch.com/interfaces)) (the concrete type plus its method pointers, built once per type and interface pair and cached in a global hash table) and a pointer to the data. Assigning a non-pointer struct to an interface may copy it to the heap. A call costs a couple of dependent loads plus an indirect branch, around 1 to 2 ns when predicted. In V8 the call site's inline cache records object shapes; a site that only sees one implementation is monomorphic and fast. In CPython the method is found through the type's MRO and a per-type cache.
 
 Violations add cost the dispatch never had. A caller that works around a quirk with a type switch adds a comparison of type pointers per call and, more expensively, a branch that only one implementation exercises and that tests rarely cover. A cache wrapper that breaks read-your-writes typically does so for a performance reason: invalidation across processes needs a network round trip (0.5 ms or more in a data centre), and skipping it is the shortcut. The fix makes that cost explicit in the contract instead of hiding it.
 
@@ -102,6 +102,11 @@ A SaaS company stores 30 million report files across two clouds behind one `Blob
 The team writes a contract suite of 14 tests and runs it against all five implementations. On the first run it fails 9 assertions across three of them. Fixes take two days: catch 404 on delete, invalidate the cache on delete and overwrite, implement pagination in `list_keys`, and sort in the adapter. Two `isinstance` checks in the export service are deleted. The archive store moves to a separate `BlobReader` interface, and the compiler finds one caller that was passing it where writes were expected.
 
 Cost: the suite runs in 0.3 seconds against the in-memory store and about 20 seconds against real cloud buckets in a nightly job. In the following six months, storage incidents drop to zero, and a third provider's adapter (written mostly by an agent) passes the suite on its second attempt.
+
+## In the wild
+- **Ariane 5, 1996: a reused component with Ariane 4 assumptions.** The Ariane 5 inertial reference software was practically the same as on Ariane 4. An internal conversion of a horizontal-bias value from 64-bit floating point to 16-bit raised an Operand Error because Ariane 5 flew a different trajectory. Both units ran the same software and failed at about 36.7 seconds after the start of the launch sequence, and the rocket was lost ([Lions inquiry board report](https://www-users.cse.umn.edu/~arnold/disasters/ariane5rep.html)). The substitute met the old type's signature and broke the new caller's expectations.
+- **Google Web Accelerator, 2005: GET that was not safe.** The accelerator prefetched the content behind every link on a page, and ignored JavaScript confirmations, so apps that deleted data behind a plain GET link had items deleted. 37signals described it as Google clicking every link on the page, including "delete this" ([37signals](https://signalvnoise.com/archives2/google_web_accelerator_hey_not_so_fast_an_alert_for_web_app_designers)). Caches and prefetchers substitute freely for a browser because HTTP promises that GET is safe ([RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.1)).
+- **Java Collections: a documented weak contract.** `List.add` is marked "optional operation", so an immutable list is a legal `List` that throws on write ([Java SE docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html)). The weakness is stated, which lets callers decide whether they can rely on it.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -773,6 +778,24 @@ func CheckContract(newStore func() Store) []string {
 - A shared contract suite run against every adapter, using recorded or simulated processor responses with failure injection, plus reconciliation in production.
 - Removing name or type checks in callers by moving the difference behind the interface, with a deadline for doing so.
 - Idempotency keys on refunds so the retries that async completion invites cannot double-refund.
+
+## Sources and further study
+**Primary**
+- [RFC 9110, section 9.2.1: safe methods](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.1): a protocol-level behavioural contract that every client, cache and server is expected to honour.
+- [Ariane 501 Inquiry Board report](https://www-users.cse.umn.edu/~arnold/disasters/ariane5rep.html): what happens when a reused component's assumptions no longer hold.
+
+**Systems docs**
+- [Java SE: List](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html): optional operations as a stated, weakened contract.
+- [TypeScript: strictFunctionTypes](https://www.typescriptlang.org/tsconfig/strictFunctionTypes.html): what the compiler checks for method substitution and what it knowingly lets through.
+- [37signals: Google Web Accelerator, hey not so fast](https://signalvnoise.com/archives2/google_web_accelerator_hey_not_so_fast_an_alert_for_web_app_designers): the contemporary report of a GET-safety violation in the field.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin, chapter 9 "LSP: The Liskov Substitution Principle": the principle applied to architecture, including REST-style interfaces.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides, chapter 1 "Introduction": programming to an interface, and favouring object composition over class inheritance.
+- *Refactoring* (2nd ed.), Martin Fowler, chapter 12 "Dealing with Inheritance": replacing a subclass or superclass with delegation when the is-a relationship does not hold.
+
+**Other curricula**
+- [Refactoring.Guru: Refused Bequest](https://refactoring.guru/smells/refused-bequest): the smell of a subclass that redefines inherited methods to throw, a direct sign of an LSP breach.
 
 ## Watch
 - [The Power of Abstraction (Barbara Liskov, NC State)](https://www.youtube.com/watch?v=GDVAHA0oyJU): Liskov on data abstraction, its history and where the substitution idea came from.

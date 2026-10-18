@@ -19,11 +19,13 @@ Take the class diagram you already drew and mark each field as one of three thin
 An invariant is a sentence that must be true whenever no thread is in the middle of an operation. "A seat belongs to at most one active hold." "The sum of all account balances is constant." "The queue holds at most `capacity` items." "`size` equals the number of nodes in the list." Writing it down tells you two things: which fields must change together (they share a lock), and where the operation begins and ends (the critical section).
 
 ### Step 3: recognise the three bug shapes
-**Lost update.** `count += 1` is three steps: read `count` into a register, add one, write it back. Two threads both read 7 and both write 8; one increment vanishes. The same shape appears as `SELECT balance` followed by `UPDATE balance = ?` in a database, and as two browser tabs saving the same document.
+**Lost update.** `count += 1` is three steps: read `count` into a register, add one, write it back. Two threads both read 7 and both write 8; one increment vanishes. The same shape appears as `SELECT balance` followed by `UPDATE balance = ?` in a database, and as two browser tabs saving the same document. Python's GIL does not rescue you: it protects the interpreter, not your multi-step update, and the free-threaded build available since Python 3.13 drops the GIL entirely. Its docs say built-in types use internal locks per operation, yet still recommend your own locks for shared state ([Python docs](https://docs.python.org/3/howto/free-threading-python.html)).
 
 **Check-then-act.** `if seat.is_free(): seat.hold(user)` is correct with one thread and wrong with two, because the check is stale by the time the act runs. The general name is time-of-check to time-of-use (TOCTOU), and it is also a classic security bug: check a file's permissions, then open it, and an attacker swaps the file in between. The fix is never "check again"; it is to make check and act one atomic step.
 
-**Deadlock.** Thread 1 locks account A then B to transfer A to B; thread 2 locks B then A to transfer B to A. Each holds one lock and waits forever for the other. Deadlock needs four conditions at once: mutual exclusion, hold-and-wait, no preemption, and a circular wait. Break any one and it cannot happen. In application code the cheap one to break is circular wait: give locks a global order (by account id, by memory address, by level in a hierarchy) and always acquire in that order.
+**Deadlock.** Thread 1 locks account A then B to transfer A to B; thread 2 locks B then A to transfer B to A. Each holds one lock and waits forever for the other. Deadlock needs four conditions at once: mutual exclusion, hold-and-wait, no preemption, and a circular wait. Break any one and it cannot happen ([OSTEP ch. 32](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf)). In application code the cheap one to break is circular wait: give locks a global order (by account id, by memory address, by level in a hierarchy) and always acquire in that order.
+
+The mix in real code favours the first two shapes over deadlock. A study of 105 concurrency bugs fixed in MySQL, Apache, Mozilla and OpenOffice found 74 that were not deadlocks. It sorted them into atomicity violations (the lost update and check-then-act above) and order violations, where code assumes one step runs before another and nothing enforces it ([OSTEP ch. 32](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf)). So when you review, hunt for unprotected multi-step updates first and lock cycles second.
 
 Two quieter shapes are worth naming if time allows. **Unsafe publication**: one thread builds an object and stores a reference, another sees the reference before the fields, because nothing ordered the writes. **Liveness failures**: starvation (a writer that never gets a read-write lock because readers keep arriving) and livelock (two threads that keep backing off and retrying in step).
 
@@ -39,7 +41,7 @@ Start with the cheapest option that preserves the invariant.
 - **Finer locks.** Lock striping (hash the key to one of N locks) or per-entity locks, with a documented acquisition order. Only after measuring contention on the coarse lock.
 
 ### Step 5: wait correctly
-When a thread must wait for a condition (queue not empty, seat released), use a condition variable or a channel, never a sleep loop. Recheck the condition in a `while` loop after waking, because wakeups can be spurious and another thread may have consumed the condition first.
+When a thread must wait for a condition (queue not empty, seat released), use a condition variable or a channel, never a sleep loop. Recheck the condition in a `while` loop after waking, because wakeups can be spurious and another thread may have consumed the condition first. Under the Mesa semantics that nearly every system uses, a signal is only a hint that the state may have changed, so a `while` is always safe ([OSTEP ch. 30](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf)).
 
 ### The same shape elsewhere
 The three bug shapes are about interleaved steps over shared state, not about threads. Microservices have lost updates across two HTTP calls, and databases name the same shapes as isolation anomalies. Spot them in a class and you can spot them in a distributed system, which is why interviewers ask.
@@ -47,12 +49,12 @@ The three bug shapes are about interleaved steps over shared state, not about th
 ## Down the stack
 
 ### Layer 1: The contract
-A correct concurrent object is **linearizable**: every method call appears to take effect at one instant between its call and its return, and the resulting history is one that a single thread could have produced. A mutex promises two things, and engineers often remember only the first: mutual exclusion, and visibility. In the Go memory model, the n-th `Unlock` of a mutex is synchronized before the (n+1)-th `Lock` returns, so everything written before the unlock is visible after the next lock. A program with a data race (two unsynchronized accesses to one location, at least one a write) gets no such promise; in C and C++ its behaviour is undefined, and in Go and Java it may observe torn or stale values.
+A correct concurrent object is **linearizable**: every method call appears to take effect at one instant between its call and its return, and the resulting history is one that a single thread could have produced. A mutex promises two things, and engineers often remember only the first: mutual exclusion, and visibility. In the Go memory model, the n-th `Unlock` of a mutex is synchronized before the (n+1)-th `Lock` returns, so everything written before the unlock is visible after the next lock ([Go memory model](https://go.dev/ref/mem)). A program with a data race (two unsynchronized accesses to one location, at least one a write) gets no such promise; in C and C++ its behaviour is undefined, and in Go and Java it may observe torn or stale values.
 
 ### Layer 2: The mechanism
-A mutex is a word in memory plus a wait queue. Go's `sync.Mutex` is a 32-bit `state` holding a locked bit, a woken bit, a starving bit and a waiter count, plus a semaphore. `Lock` first tries one compare-and-swap from 0 to locked; if that fails it spins briefly, then parks the goroutine on the semaphore. If a waiter has waited more than 1 ms, the mutex switches to starvation mode and hands ownership directly to the oldest waiter, trading throughput for fairness. On Linux, pthread mutexes and the JVM's inflated monitors sleep through the `futex` syscall: user space handles the uncontended case alone, and the kernel is involved only when a thread must actually sleep or be woken. A read-write lock adds a reader count and must decide whether waiting writers block new readers; Go's `RWMutex` does, to avoid writer starvation.
+A mutex is a word in memory plus a wait queue. Go's `sync.Mutex` is a 32-bit `state` holding a locked bit, a woken bit, a starving bit and a waiter count, plus a semaphore. `Lock` first tries one compare-and-swap from 0 to locked; if that fails it spins briefly, then parks the goroutine on the semaphore. If a waiter has waited more than 1 ms, the mutex switches to starvation mode and hands ownership directly to the oldest waiter, trading throughput for fairness ([Go source](https://github.com/golang/go/blob/master/src/internal/sync/mutex.go); the file lived in `sync` before Go 1.24). On Linux, pthread mutexes and the JVM's inflated monitors sleep through the `futex` syscall: user space handles the uncontended case alone, and the kernel is involved only when a thread must actually sleep or be woken. A read-write lock adds a reader count and must decide whether waiting writers block new readers; Go's `RWMutex` does: a blocked `Lock` call excludes new readers, to avoid writer starvation ([Go source](https://go.dev/src/sync/rwmutex.go)).
 
-The Linux kernel's lockdep records every observed "held A while acquiring B" pair as an edge between lock classes and reports a cycle the first time it appears, even if that run did not hang: the ordering rule from Step 3, enforced by a tool.
+The Linux kernel's lockdep records every observed "held A while acquiring B" pair as an edge between lock classes and reports a cycle the first time it appears, even if that run did not hang: the ordering rule from Step 3, enforced by a tool ([kernel docs](https://www.kernel.org/doc/html/latest/locking/lockdep-design.html)).
 
 ### Layer 3: The machine
 Cores do not share memory directly; they share 64-byte cache lines (128 bytes on some ARM designs) kept coherent by a protocol in the MESI family. An uncontended lock or atomic on a line already in the local cache costs around 10 to 20 ns. When several cores hammer the same line, each atomic must pull the line exclusively into its own cache, and costs rise to roughly 50 to 200 ns, more across sockets. **False sharing** is the same cost for unrelated variables that happen to share a line: two per-thread counters 8 bytes apart can run several times slower than counters padded 64 bytes apart.
@@ -110,6 +112,11 @@ The ordered version breaks circular wait, and the balance check sits inside the 
 
 Now ask whether per-account locks were needed at all. Suppose the service handles 2,000 transfers per second and the critical section is 2 us of in-memory work. One global lock is busy 2,000 x 2 us = 4 ms per second, 0.4 percent of the time. Queueing delay at that utilisation is negligible, and the deadlock risk disappears because there is only one lock. At 200,000 transfers per second the same lock is busy 40 percent of the time and tail latency starts to climb (an M/M/1 queue at 40 percent utilisation already waits about 0.7 times the service time on average). That is the point to stripe or go per-account, and the arithmetic, not taste, should drive it.
 
+## In the wild
+- **AWS, 2025: DynamoDB's DNS race.** Two DNS Enactors updated the regional endpoint. One was unusually delayed, and by the time it applied its old plan, its "is this plan newer?" check was stale, so it overwrote a newer plan. The other Enactor's cleanup then deleted the old plan, which removed every IP address for the endpoint. The DynamoDB API errors lasted about 2.9 hours and needed manual repair. This is check-then-act across a long gap, and AWS disabled the automation worldwide afterwards ([AWS post-event summary](https://aws.amazon.com/message/101925/)).
+- **Therac-25, 1985 to 1987: a race in the operator-entry software.** Leveson and Turner traced one overdose to an operator who edited the treatment settings and returned to the command line within about 8 seconds, while the magnet setting took about 8 seconds. A shared flag showed only that the cursor had once reached the command line, so the later edit was missed. Six known accidents involved massive overdoses, and hardware interlocks had been removed, so software was the last safeguard ([Leveson and Turner, IEEE Computer 1993](https://www.se.rit.edu/~swen-342/resources/Leveson,%20Turner%20-%20An%20Investigation%20of%20the%20Therac-25%20Accidents%20-%20IEEE%20Computer%20v26n7%20-%201993-07.pdf)).
+- **Google Cloud, 2021: a race in the load balancer's config pipeline.** A race added six months earlier corrupted a config file after validation had run. Most endpoints of the global external load balancer returned 404 for about 33 minutes, and customer config changes were frozen for about 1 hour 53 minutes. The check ran before the write it was meant to guard ([Google Cloud incident report](https://status.cloud.google.com/incidents/6PM5mNd43NbMqjCZ5REh)).
+
 ## Trade-offs
 
 | Mechanism | Strengths | Weaknesses | Choose when |
@@ -124,10 +131,10 @@ Now ask whether per-account locks were needed at all. Suppose the service handle
 ## Pitfalls in production
 - **Lock held across I/O.** A network call inside a critical section turns a 2 us lock into a 50 ms lock and stalls every caller during a slow dependency. Copy what you need under the lock, release, then do the I/O.
 - **Callbacks under a lock.** Notifying observers while holding the lock lets foreign code take other locks in unknown order, the classic hidden deadlock. Collect the events, release, then notify.
-- **Leaking internal state.** A getter that returns the internal list lets callers iterate it while a writer mutates it. Return a copy or an immutable view. In Go, concurrent map access without a lock can crash the whole process with `fatal error: concurrent map writes`.
+- **Leaking internal state.** A getter that returns the internal list lets callers iterate it while a writer mutates it. Return a copy or an immutable view. In Go, concurrent map access without a lock can crash the whole process with `fatal error: concurrent map writes`; since Go 1.6 the runtime detects this on a best-effort basis, so a clean run proves nothing ([Go 1.6 notes](https://go.dev/doc/go1.6)).
 - **Double-checked locking done wrong.** Checking a lazily built singleton outside the lock without a memory barrier can hand out a half-built object. Use the language's once primitive (`sync.Once`, a static holder, a module-level value).
 - **Sleep-based tests.** `sleep(100ms)` to "let the other thread finish" is flaky on a loaded CI box and hides races on a fast one. Use latches, channels or a deterministic scheduler, and run the race detector (`go test -race`, ThreadSanitizer) in CI.
-- **Check-then-act across `await`.** Single-threaded runtimes still interleave at every suspension point. Re-validate after the await or move the decision into one synchronous block.
+- **Check-then-act across `await`.** Single-threaded runtimes still interleave at every suspension point. Re-validate after the await or move the decision into one synchronous block. MIT's course notes make the same point: code without an `await` cannot be interrupted, which is exactly what you rely on ([MIT 6.031](https://web.mit.edu/6.031/www/sp22/classes/23-mutual-exclusion/)).
 
 ## Leadership lens
 - In design review, ask three questions of any class with shared state: what is the invariant, which lock or owner protects it, and what is the lock order if there is more than one. If nobody can answer in a sentence, the code is not ready.
@@ -617,6 +624,26 @@ func Explore(threads [][]Op, init map[string]int) (Exploration, error) {
 - A hot-key plan: a single owner thread with a queue for the sale SKU, or splitting its stock into N sub-buckets that are drained independently.
 - Optimistic versioning loses under heavy conflict on the hot SKU (retry storms) and wins for the long tail of cold SKUs.
 - A test strategy that controls interleavings (deterministic scheduler, race detector in CI) instead of a load test.
+
+## Sources and further study
+**Primary**
+- [Common Concurrency Problems (OSTEP ch. 32)](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-bugs.pdf): the Lu et al. bug study, atomicity and order violations, and the four deadlock conditions with prevention strategies.
+- [Condition Variables (OSTEP ch. 30)](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf): Mesa semantics and why waits sit in a `while` loop.
+- [The Go Memory Model](https://go.dev/ref/mem): what a lock or channel guarantees about visibility.
+
+**Systems docs**
+- [Go sync.Mutex source](https://github.com/golang/go/blob/master/src/internal/sync/mutex.go): the state word, spinning and the 1 ms starvation switch.
+- [Go 1.6 release notes](https://go.dev/doc/go1.6): the first runtime detection of concurrent map misuse.
+- [Python free-threading HOWTO](https://docs.python.org/3/howto/free-threading-python.html): what stays safe without the GIL and why to use your own locks.
+- [AWS DynamoDB event summary, October 2025](https://aws.amazon.com/message/101925/): a production race between two automation workers.
+
+**Books**
+- *Java Concurrency in Practice* (Goetz and others, 2006): the standard text on safe publication, lock discipline and liveness hazards.
+- *Release It!* 2nd ed. (Nygard, 2018), Ch 4 "Stability Antipatterns": blocked threads and how a stuck lock spreads through a system.
+- *Operating Systems: Three Easy Pieces* (Arpaci-Dusseau), the concurrency part: locks, condition variables and common bugs, free online.
+
+**Other curricula**
+- [MIT 6.031 Reading 23, Mutual Exclusion](https://web.mit.edu/6.031/www/sp22/classes/23-mutual-exclusion/): frames the problem through interleaving and the single-threaded event loop, then deadlock as a cycle of waits.
 
 ## Watch
 - [Concurrency is not Parallelism (Rob Pike)](https://www.youtube.com/watch?v=oV9rvDllKEg): structuring a program as independent communicating parts, the "single owner" approach in depth.

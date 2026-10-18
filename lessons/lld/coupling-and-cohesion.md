@@ -5,7 +5,7 @@ minutes: 15
 
 ## In one minute
 - Coupling is how much one module must know about, or change with, another. Cohesion is how strongly the parts inside one module belong together. Good design aims for low coupling between modules and high cohesion within them.
-- The practical definition: two pieces of code are coupled if a change to one is likely to force a change to the other. Cohesive code is code that changes for the same reasons at the same time.
+- The practical definition: two pieces of code are coupled if a change to one is likely to force a change to the other ([Fowler, Reducing Coupling](https://martinfowler.com/ieeeSoftware/coupling.pdf)). Cohesive code is code that changes for the same reasons at the same time.
 - Both can be measured roughly: afferent coupling (who depends on me), efferent coupling (who I depend on), instability `Ce / (Ca + Ce)`, and lack of cohesion (LCOM) inside a class.
 - The useful rule is direction, not zero: depend toward stable things. A module everyone imports should itself import little.
 - Agents optimise locally. Agent-written changes often add one more import across a boundary or one more unrelated function to a "utils" file. Each looks harmless; together they erode structure. Review the dependency graph, not just the diff.
@@ -27,15 +27,20 @@ An order service in a Node backend has this layout: `orders/` holds the HTTP han
 The team splits by reason to change. `orders/domain` holds the state machine and rules and imports nothing outside the language. `orders/http` and `orders/storage` are adapters depending on the domain. Inventory exposes a small `StockReader` API instead of its tables. The date function moves into a tiny `shared/time` package with no dependencies of its own. The next similar change touches 7 files, all in `orders`.
 
 ### Measuring it
-Robert Martin's package metrics make the discussion concrete. For a module, afferent coupling `Ca` is the number of other modules that depend on it; efferent coupling `Ce` is the number it depends on. Instability is `I = Ce / (Ca + Ce)`, from 0 (everyone depends on me and I depend on nothing: hard to change, so it had better be stable) to 1 (nobody depends on me: free to change). The Stable Dependencies Principle says each dependency should point toward lower instability. An edge from a module with `I = 0.2` to one with `I = 0.8` is a warning: a widely used module now leans on a volatile one, so volatile changes ripple outward.
+Robert Martin's package metrics make the discussion concrete. For a module, afferent coupling `Ca` is the number of other modules that depend on it; efferent coupling `Ce` is the number it depends on. Instability is `I = Ce / (Ca + Ce)`, from 0 (everyone depends on me and I depend on nothing: hard to change, so it had better be stable) to 1 (nobody depends on me: free to change) ([definitions](https://en.wikipedia.org/wiki/Software_package_metrics)). The Stable Dependencies Principle says each dependency should point toward lower instability. An edge from a module with `I = 0.2` to one with `I = 0.8` is a warning: a widely used module now leans on a volatile one, so volatile changes ripple outward.
 
 For cohesion inside a class, LCOM4 counts groups of methods connected by shared fields. A score of 1 means the class is one idea. A score of 3 means three classes are hiding in one.
 
+### Names for the symptoms
+Two smells from the refactoring catalogue describe bad cohesion and bad coupling as developers feel them. [Divergent change](https://refactoring.guru/smells/divergent-change) is one module you edit for many unrelated reasons, which is low cohesion. [Shotgun surgery](https://refactoring.guru/smells/shotgun-surgery) is one change that forces small edits in many modules, which is scattered cohesion and high coupling. Counting both from version control gives the history-based metric used in Layer 1.
+
+The structural version shows up at scale too. When Shopify graphed the dependencies between the 37 components of its Rails monolith, every component depended on over half of the others, with many circular chains. The team did not reach for services first. They built a checker that reads static constant references and flags new bad edges in pull requests ([Shopify Engineering](https://shopify.engineering/shopify-monolith)).
+
 ### Too much of a good thing
-Chasing low coupling has its own failure mode. Splitting a cohesive module into five packages to reduce `Ce` per package adds indirection and interface churn without reducing the real cost of change. Event buses introduced "for decoupling" often make coupling worse: the dependency still exists, but now it is invisible, untyped and asynchronous. Duplicating code to avoid an import trades one kind of coupling for a quieter one, where two copies must be changed in step. Some coupling is necessary; a module with zero dependencies does nothing. The goal is coupling that is explicit, narrow and pointed in the right direction.
+Chasing low coupling has its own failure mode. Splitting a cohesive module into five packages to reduce `Ce` per package adds indirection and interface churn without reducing the real cost of change. Event buses introduced "for decoupling" often make coupling worse: the dependency still exists, but now it is invisible, untyped and asynchronous. Duplicating code to avoid an import trades one kind of coupling for a quieter one, where two copies must be changed in step; Fowler's point is that duplication always implies coupling ([Fowler](https://martinfowler.com/ieeeSoftware/coupling.pdf)). Some coupling is necessary; a module with zero dependencies does nothing. The goal is coupling that is explicit, narrow and pointed in the right direction.
 
 ### The same shape elsewhere
-This is the fan-out shape: one change, many receivers. In microservices it appears as the "distributed monolith", where services must be deployed together. In data platforms it appears as hundreds of dashboards reading one raw table, so a column rename breaks them all. In organisations it is Conway's law: module boundaries follow team boundaries, and a highly coupled codebase forces teams into constant coordination.
+This is the fan-out shape: one change, many receivers. In microservices it appears as the "distributed monolith", where services must be deployed together. In data platforms it appears as hundreds of dashboards reading one raw table, so a column rename breaks them all. In organisations it is [Conway's law](http://www.melconway.com/Home/Committees_Paper.html): module boundaries follow team boundaries, and a highly coupled codebase forces teams into constant coordination.
 
 ## Down the stack
 
@@ -43,14 +48,14 @@ This is the fan-out shape: one change, many receivers. In microservices it appea
 There is no runtime contract for coupling; the promise is economic. Low coupling promises that the expected number of modules touched per change stays small and predictable. That is testable from history: from version control, compute for each commit how many modules it touched, and how often pairs of modules change in the same commit (change coupling). High cohesion promises that most commits touching a module touch several of its parts together.
 
 ### Layer 2: The mechanism
-Static coupling metrics start from the import graph. Go exposes it directly with `go list -deps -json`; Python tools walk the `ast` for `import` nodes; JavaScript tools such as dependency-cruiser and madge resolve `import` and `require`; Java has `jdeps` and ArchUnit. From the graph, `Ca` and `Ce` are in-degree and out-degree after collapsing duplicate edges. Cycles are found with Tarjan's strongly connected components algorithm in `O(V + E)`; any component with more than one module is a set that can only be understood, tested and released together. LCOM4 is a union-find over methods, joining two methods when they read or write a common field. Change coupling comes from mining `git log`: count co-changes for each pair of files and divide by the changes of each.
+Static coupling metrics start from the import graph. Go exposes it directly with `go list -deps -json`; Python tools walk the `ast` for `import` nodes; JavaScript tools such as dependency-cruiser and madge resolve `import` and `require`; Java has `jdeps` and ArchUnit. From the graph, `Ca` and `Ce` are in-degree and out-degree after collapsing duplicate edges. Cycles are found with [Tarjan's strongly connected components algorithm](https://en.wikipedia.org/wiki/Tarjan%27s_strongly_connected_components_algorithm) in `O(V + E)`; any component with more than one module is a set that can only be understood, tested and released together. LCOM4 is a union-find over methods, joining two methods when they read or write a common field. Change coupling comes from mining `git log`: count co-changes for each pair of files and divide by the changes of each.
 
-Languages enforce some of this. Go rejects import cycles at compile time, and its `internal/` directories stop packages outside the parent tree from importing them. Java modules (`module-info.java`) export only named packages. Python and TypeScript enforce nothing by default, which is why lint rules such as import-linter contracts or dependency-cruiser's `forbidden` rules exist.
+Languages enforce some of this. Go rejects import cycles at compile time, and its `internal/` directories stop packages outside the parent tree from importing them ([Go 1.4 release notes](https://go.dev/doc/go1.4#internalpackages)). Java modules (`module-info.java`) export only named packages. Python and TypeScript enforce nothing by default, which is why lint rules such as import-linter contracts or dependency-cruiser's `forbidden` rules exist.
 
 ### Layer 3: The machine
 Coupling has physical costs in the build. Go compiles one package at a time in dependency order and caches the result keyed by the hashes of its inputs, including the export data of everything it imports. Editing a package with high afferent coupling invalidates the cache entry of every transitive dependent; in a large monorepo one edit to a core package can turn a 20-second incremental build into a 10-minute one. Bazel and similar systems have the same property at the action-graph level. Low `Ca` on volatile code keeps rebuilds small.
 
-Cohesion has a hardware analogue in memory layout. Fields used together should sit together: a CPU loads 64-byte cache lines, so a struct whose hot fields share one line costs one memory access instead of several. The opposite failure is false sharing: two unrelated counters, updated by different cores, that happen to share one cache line. Each write forces the line to move between cores, costing roughly 40 to 100 ns instead of about 1 ns for a local hit. Padding or splitting the struct (separating things that change independently) fixes it, which is cohesion and decoupling applied to bytes.
+Cohesion has a hardware analogue in memory layout. Fields used together should sit together: a CPU loads 64-byte cache lines, so a struct whose hot fields share one line costs one memory access instead of several. The opposite failure is [false sharing](https://en.wikipedia.org/wiki/False_sharing): two unrelated counters, updated by different cores, that happen to share one cache line. Each write forces the line to move between cores, costing roughly 40 to 100 ns instead of about 1 ns for a local hit. Padding or splitting the struct (separating things that change independently) fixes it, which is cohesion and decoupling applied to bytes.
 
 Across a network, runtime coupling multiplies failure. A request that synchronously calls five services, each 99.9% available, succeeds about 99.5% of the time, and its latency is the sum of theirs. Asynchronous messaging cuts that runtime coupling but keeps the schema coupling.
 
@@ -78,6 +83,11 @@ A Python monolith has 140 modules. The team extracts the import graph and finds 
 An LCOM4 pass on `common.utils` gives 11 components: eleven unrelated ideas in one file. Git history agrees: in the past year, 212 commits touched it and no two of those commits touched the same function more than twice.
 
 They split it into `common.time`, `common.retry` and `common.text` (each `Ce = 0`), move the billing-specific helpers into `billing`, and add an import-linter contract forbidding `common.*` from importing any domain package. Average modules affected per change, measured over the next two months of commits, dropped from 6.1 to 2.4. CLI cold start fell to 0.4 seconds because Stripe's SDK is no longer imported by default. CI time per pull request fell by about a third, mostly from smaller test selection.
+
+## In the wild
+- **NASA, 1999: Mars Climate Orbiter.** Ground software delivered thruster impulse data in pound-force seconds where the interface specification required newton-seconds. Trajectory effects were underestimated by a factor of 4.45 and the spacecraft was lost at Mars orbit insertion. No import or type linked the two sides; the coupling lived in an unchecked assumption about units ([NASA review board report](https://llis.nasa.gov/llis_lib/pdf/1009464main1_0641-mr.pdf)).
+- **npm, 2016: left-pad.** A maintainer unpublished his package kik and 272 others, including the tiny left-pad. Within minutes of 2:30 PM Pacific on 22 March there were hundreds of failures per minute as projects, and their dependents, failed to fetch it. Within ten minutes a functionally identical version was republished ([npm](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm)). A few lines of code had become a transitive dependency of thousands of builds.
+- **Shopify, 2020: a monolith where everything depended on everything.** With over 2.8 million lines of Ruby and 500,000 commits, its core monolith had a dependency graph so dense that each component depended on over half the others. Shopify added tooling that checks static references between components instead of splitting the system ([Shopify Engineering](https://shopify.engineering/shopify-monolith)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -619,6 +629,25 @@ func LCOM4(methods map[string][]string) int {
 - Enforcing the new structure with CI rules so it does not regress, including for agent-generated changes.
 - Recognising that an event bus hides coupling rather than removing it, and that schema contracts still bind producers and consumers.
 - Linking package boundaries to team ownership to reduce cross-team blocking.
+
+## Sources and further study
+**Primary**
+- [Conway, How Do Committees Invent? (1968)](http://www.melconway.com/Home/Committees_Paper.html): the original statement that a system's structure copies its builders' communication structure.
+- [Parnas, On the criteria to be used in decomposing systems into modules](https://www.win.tue.nl/~wstomv/edu/2ip30/references/criteria_for_modularization.pdf): modules should hide decisions likely to change, which is cohesion by reason to change.
+- [Go 1.4 release notes: internal packages](https://go.dev/doc/go1.4#internalpackages): the language-level rule that limits who may depend on a package.
+
+**Systems docs**
+- [Shopify: under deconstruction, the state of Shopify's monolith](https://shopify.engineering/shopify-monolith): measured component dependencies and a boundary checker in a very large codebase.
+- [npm: kik, left-pad and npm](https://blog.npmjs.org/post/141577284765/kik-left-pad-and-npm): the registry's own account of a transitive dependency failing at scale.
+- [NASA Mars Climate Orbiter mishap report](https://llis.nasa.gov/llis_lib/pdf/1009464main1_0641-mr.pdf): hidden interface coupling with a physical cost.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin, chapter 13 "Component Cohesion" and chapter 14 "Component Coupling": the stable dependencies principle and the instability metric.
+- *Refactoring* (2nd ed.), Martin Fowler, chapter 3 "Bad Smells in Code": divergent change and shotgun surgery as the two symptoms.
+
+**Other curricula**
+- [Refactoring.Guru: Shotgun Surgery](https://refactoring.guru/smells/shotgun-surgery): frames coupling as the cost of a change that fans out across classes.
+- [Azure Architecture Center: Anti-corruption layer](https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer): a translation layer that keeps one subsystem's model from leaking into another.
 
 ## Watch
 - [Continued Learning: The Beauty of Maintenance (Kent Beck, DDD Europe 2020)](https://www.youtube.com/watch?v=3gib0hKYjB0): Kent Beck on why the cost of software is the cost of changing it.

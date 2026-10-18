@@ -42,7 +42,7 @@ Most languages dispatch on the receiver only. If behaviour depends on two types,
 ### The expression problem
 Picture a grid with types as rows and operations as columns. Subclasses add a row cheaply but a new column edits every class. A `switch` per operation is the reverse.
 
-Choose by which axis grows. Third-party payment providers grow rows, so use interfaces. A compiler's syntax tree has fixed node types and keeps gaining passes, so use exhaustive matching. Java 21 sealed interfaces with pattern-matching `switch`, Rust enums, and TypeScript discriminated unions with a `never` check all fail to compile when a case is missing.
+Choose by which axis grows. Third-party payment providers grow rows, so use interfaces. A compiler's syntax tree has fixed node types and keeps gaining passes, so use exhaustive matching. Java 21 sealed interfaces with pattern-matching `switch` ([JEP 441](https://openjdk.org/jeps/441)), Rust enums, and TypeScript discriminated unions with a `never` check all fail to compile when a case is missing.
 
 ### Reviewing agent-written code
 Agents add another `elif isinstance(...)` branch because it is the smallest diff, or, asked to "make it extensible", build an abstract base with one subclass. Check that a new type needs edits in one place, that type switches are exhaustive and compiler-checked, and that overloads do not depend on static types the caller lacks: a Java `equals(Money other)` overloads rather than overrides `equals(Object)`, so collections never call it.
@@ -56,16 +56,18 @@ Dispatch is the *finding things fast* shape: map a key (the type) to a handler a
 For an overridden method, the most specific implementation for the receiver's runtime type runs, even when the static type is a parent or interface. Overloads are fixed at compile time from static argument types. Generic code is type-checked once (Java, Go, TypeScript) or per instantiation (C++ templates). Nothing promises how fast dispatch is.
 
 ### Layer 2: The mechanism
-**C++ and the JVM** give each class a vtable; a virtual call loads the vtable pointer, loads a fixed slot and calls it. Inherited methods keep their parent's slot, so the slot is a compile-time constant. The JIT first tries an inline cache: compare the receiver's class with the one last seen and jump straight to its method. HotSpot profiles receiver types and inlines sites seeing one or two classes behind a guard; sites seeing more are megamorphic and use the vtable.
+**C++ and the JVM** give each class a vtable; a virtual call loads the vtable pointer, loads a fixed slot and calls it. Inherited methods keep their parent's slot, so the slot is a compile-time constant. The JIT first tries an inline cache: compare the receiver's class with the one last seen and jump straight to its method. HotSpot profiles receiver types and inlines sites seeing one or two classes behind a guard; sites seeing more are megamorphic and use the vtable ([Shipilev](https://shipilev.net/blog/2015/black-magic-method-dispatch/)).
 
-**V8** keeps an inline cache per access and call site, keyed by hidden class ("map"): uninitialised, monomorphic, polymorphic (about four maps), then megamorphic with a global stub cache. Objects given the same properties in different orders get different maps, so a site turns polymorphic for no visible reason.
+**V8** keeps an inline cache per access and call site, keyed by hidden class ("map"): uninitialised, monomorphic, polymorphic (about four maps; V8's default limit is 4 ([flag definitions](https://github.com/v8/v8/blob/main/src/flags/flag-definitions.h))), then megamorphic with a global stub cache. Objects given the same properties in different orders get different maps, so a site turns polymorphic for no visible reason.
 
-**Generics.** C++ templates and Rust generics are monomorphised: one copy per type argument, so calls are direct and inlinable, at the cost of binary size. Java erases type parameters to `Object` and casts. Go uses GC shape stenciling: one copy per memory shape, all pointer types sharing one, plus a dictionary argument, so a method call on a type parameter is indirect and can be slower than an interface call.
+**Generics.** C++ templates and Rust generics are monomorphised: one copy per type argument, so calls are direct and inlinable, at the cost of binary size. Java erases type parameters to `Object` and casts. Go uses [GC shape stenciling](https://github.com/golang/proposal/blob/master/design/generics-implementation-dictionaries-go1.18.md): one copy per memory shape, all pointer types sharing one, plus a dictionary argument, so a method call on a type parameter is indirect and can be slower than an interface call.
 
-**Python** looks the method up on `type(obj)` through the MRO. CPython 3.11 and later specialise hot bytecode, turning `LOAD_ATTR` into a method-load variant guarded by the type's version tag. `singledispatch` caches class to implementation, walking the MRO on a miss.
+**Python** looks the method up on `type(obj)` through the MRO. CPython 3.11 and later specialise hot bytecode ([PEP 659](https://peps.python.org/pep-0659/)), turning `LOAD_ATTR` into a method-load variant guarded by the type's version tag. `singledispatch` caches class to implementation, walking the MRO on a miss, and `singledispatchmethod` dispatches on the first argument after `self` ([functools docs](https://docs.python.org/3/library/functools.html)).
 
 ### Layer 3: The machine
 A predicted virtual call is two dependent loads and an indirect branch, around 1 ns with L1 hits. A mispredicted indirect branch costs roughly 15 to 20 cycles, about 5 ns at 3.5 GHz. A loop over seven classes in random order defeats the branch target buffer; the same list grouped by class predicts almost perfectly. The larger cost is what the compiler cannot do through an indirect call: inline, hoist checks or vectorise. Layout matters more still: a list of polymorphic objects is a list of pointers to separate allocations, and each DRAM miss costs around 80 to 100 ns. A slice of one concrete struct is contiguous and prefetchable.
+
+Security mitigations also move these numbers. A kernel built with retpolines routes every indirect branch through a return-trampoline sequence so it cannot be steered by a poisoned predictor, and CPUs with Enhanced IBRS can skip retpoline because it is more efficient ([Linux kernel docs](https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/spectre.html)). The cost of an indirect call is a property of the CPU and kernel settings, not only of the language.
 
 ### Why it's built this way
 1. Callers must not know every type, so the decision is made from data the object carries (vtable pointer, hidden class, type object).
@@ -90,7 +92,12 @@ A nightly Go billing run prices 300 million usage records held as `Rater` interf
 
 The profile shows little time in the arithmetic. About half goes to cache misses chasing each interface's pointer to a separately allocated struct, and a noticeable share to mispredicted indirect calls. The team partitions records by type into seven slices of concrete structs (about 2.4 seconds of extra work) and processes each slice with a loop over the concrete type, so calls are direct and inlined.
 
-The run drops to about 9 seconds. The public API still accepts `Rater`, so new types plug in and use the generic path until they earn a specialised loop. The numbers are illustrative, but the ratio is typical when dispatch sits in a tight loop over pointer-heavy data.
+The run drops to about 9 seconds. The public API still accepts `Rater`, so new types plug in and use the generic path until they earn a specialised loop. On Go 1.21 or later, profile-guided optimisation may recover part of the gap without code changes, because it can devirtualise some interface calls by adding a concrete call to the most common callee ([Go 1.21 notes](https://go.dev/doc/go1.21)). The numbers are illustrative, but the ratio is typical when dispatch sits in a tight loop over pointer-heavy data.
+
+## In the wild
+- **Linux kernel: the VFS as polymorphism in C.** The virtual filesystem layer has no classes, yet every open file carries a `struct file_operations` of function pointers (`read`, `write`, `llseek` and many more) that each filesystem or device fills in. Callers invoke `file->f_op->read` without knowing whether a disk, pipe or socket answers, which is vtable dispatch written by hand ([kernel VFS docs](https://docs.kernel.org/filesystems/vfs.html)).
+- **Google and the Linux kernel, 2018: Spectre made indirect calls a security problem.** Branch-target injection exploits the CPU's indirect-branch predictor. Google published retpoline, a replacement sequence that isolates each indirect branch from speculation, and the Linux kernel adopted return trampolines for all indirect branches; CPUs with Enhanced IBRS can use a cheaper hardware mitigation instead ([Google](https://support.google.com/faqs/answer/7625886), [kernel docs](https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/spectre.html)). Every virtual or interface call is such a branch.
+- **Go 1.21, 2023: compiler devirtualisation from profiles.** With profile-guided optimisation the compiler can add a concrete call to the most common callee at an interface call site, enabling inlining. The release notes report 2 to 7% improvement on a representative program set, and Go 1.22 interleaved devirtualisation with inlining ([Go 1.21](https://go.dev/doc/go1.21), [Go 1.22](https://go.dev/doc/go1.22)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -700,6 +707,26 @@ func (c *CallSite) SlowLookups() int { return c.slow }
 - Grouping rules by type, or compiling a merchant's rules into a specialised evaluator, to keep hot sites monomorphic.
 - Contiguous rule parameters instead of pointer-chasing per rule object.
 - Profiling before restructuring, and a stable rule interface for teams that add rules.
+
+## Sources and further study
+**Primary**
+- [JEP 441: Pattern Matching for switch](https://openjdk.org/jeps/441): exhaustive switches over sealed hierarchies, the closed-set answer to the expression problem.
+- [PEP 659: Specializing Adaptive Interpreter](https://peps.python.org/pep-0659/): how CPython 3.11 caches attribute and method lookups per instruction.
+- [Python functools: singledispatch and singledispatchmethod](https://docs.python.org/3/library/functools.html): function-level dispatch on argument type.
+
+**Systems docs**
+- [The Black Magic of (Java) Method Dispatch (Aleksey Shipilev)](https://shipilev.net/blog/2015/black-magic-method-dispatch/): measured costs of monomorphic, bimorphic and megamorphic call sites on HotSpot.
+- [Linux kernel VFS documentation](https://docs.kernel.org/filesystems/vfs.html): tables of function pointers used as the object model.
+- [Go 1.21 release notes](https://go.dev/doc/go1.21): profile-guided optimisation and devirtualisation of interface calls.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 1 and chapter 5 (Strategy, State and Visitor): dynamic binding and double dispatch.
+- *Refactoring*, Martin Fowler (2nd ed.), chapter 10 "Simplifying Conditional Logic": Replace Conditional with Polymorphism.
+- *Head First Design Patterns* (2nd ed.), chapter 1: replacing inherited behaviour and conditionals with swappable behaviour objects.
+
+**Other curricula**
+- [Refactoring.Guru: Replace Conditional with Polymorphism](https://refactoring.guru/replace-conditional-with-polymorphism): the mechanical steps and when it applies.
+- [Microsoft C# docs: polymorphism](https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism): run-time type lookup for virtual methods in the CLR.
 
 ## Watch
 - [The Clean Code Talks: Inheritance, Polymorphism and Testing (Misko Hevery, Google TechTalks)](https://www.youtube.com/watch?v=4F72VULWFvc): replacing conditionals with polymorphism to make code testable.

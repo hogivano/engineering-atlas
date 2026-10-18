@@ -15,14 +15,14 @@ minutes: 18
 ### Start from the change, not the catalogue
 Design Patterns maps the fifteen common patterns to the problem shapes behind them. This lesson is about the decision itself: when a pattern is worth its cost, which of two similar patterns to use, and how to tell after the fact whether you chose well.
 
-The core idea goes back to David Parnas in 1972: decompose a system so that each module hides a decision that is likely to change. A design pattern is a reusable way of hiding one kind of decision. Strategy hides *which algorithm*. State hides *which stage*. Factory Method hides *which concrete type*. Adapter hides *whose interface*. Observer hides *who cares about this event*. So the first question is never "which pattern fits?" but "which decision here is likely to change, and how often?" If you cannot name the decision, no pattern is justified yet.
+The core idea goes back to David Parnas in 1972: begin with a list of difficult design decisions or decisions likely to change, and design each module to hide one of them ([Parnas](https://www.win.tue.nl/~wstomv/edu/2ip30/references/criteria_for_modularization.pdf)). A design pattern is a reusable way of hiding one kind of decision. Strategy hides *which algorithm*. State hides *which stage*. Factory Method hides *which concrete type*. Adapter hides *whose interface*. Observer hides *who cares about this event*. So the first question is never "which pattern fits?" but "which decision here is likely to change, and how often?" If you cannot name the decision, no pattern is justified yet.
 
 ### Evidence, in order of strength
 1. **A stated requirement.** "We are adding DHL next quarter" is direct evidence for a carrier seam.
 2. **Repeated conditionals.** The same `switch carrier` in rate quoting, label printing and tracking URLs means every new carrier edits three files, and sooner or later one is missed. This is the strongest signal you can find in code.
 3. **Change history.** If eleven of the last fifteen commits touching `billing.py` were "add plan X", the plan is an axis of change. Git log tells you what changed together; that is better evidence than anyone's guess.
 4. **Test pain.** Code that cannot be tested without a real clock, network or database needs a seam for that dependency (usually plain dependency injection, not a named pattern).
-5. **Speculation.** "We might support other databases" with no plan or date. This is not evidence. Write the direct code.
+5. **Speculation.** "We might support other databases" with no plan or date. This is not evidence. Write the direct code. Fowler counts four costs of building flexibility early: build, delayed value, carrying the complexity, and repair when the guess was wrong ([Yagni](https://martinfowler.com/bliki/Yagni.html)).
 
 ### The ladder
 Each rung adds indirection, so climb only as far as the evidence requires.
@@ -33,15 +33,15 @@ Each rung adds indirection, so climb only as far as the evidence requires.
 4. **An interface with classes.** Variants carry state, or have several related operations that must stay consistent (a carrier has `quote`, `label` and `tracking_url`). Grouping them in one class means adding a carrier is adding one file.
 5. **A framework or plugin system.** Variants are written by other teams or loaded at runtime. Registries, plugin discovery and versioned interfaces. Expensive, and right only when the people adding variants cannot edit your code.
 
-Joshua Kerievsky's *Refactoring to Patterns* describes this as moving towards a pattern (and sometimes away from one) through small, behaviour-preserving refactorings, instead of designing patterns in up front.
+Joshua Kerievsky's *Refactoring to Patterns* describes this as moving towards a pattern (and sometimes away from one) through small, behaviour-preserving refactorings, instead of designing patterns in up front. The standard mechanical step from a repeated conditional to Strategy or State is Fowler's Replace Conditional with Polymorphism ([catalog](https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html)).
 
 ### The rule of three
 A common heuristic: the first time, write it; the second time, notice the duplication; the third time, extract. Two repeated `switch` statements may be a coincidence. Three, all switching on the same key with the same cases, are a design that is asking for one place to hold the variation. The practice task automates exactly this: it finds discriminators switched on in several places, reports sites that are missing a case, and suggests a table, a switch, State or Strategy.
 
 ### Which axis moves: the expression problem
-Take shapes and operations on them (area, render, export). With operations as methods on shape classes, a new shape is one new class but a new operation edits every class. With operations as functions that `switch` on shape type (or a Visitor), a new operation is one function but a new shape edits every function. This is the *expression problem*, named by Philip Wadler, and no ordinary object-oriented or functional structure makes both cheap.
+Take shapes and operations on them (area, render, export). With operations as methods on shape classes, a new shape is one new class but a new operation edits every class. With operations as functions that `switch` on shape type (or a Visitor), a new operation is one function but a new shape edits every function. This is the *expression problem*, named by Philip Wadler in a 1998 note to the Java-genericity list ([Wadler](https://homepages.inf.ed.ac.uk/wadler/papers/expression/expression.txt)), and no ordinary object-oriented or functional structure makes both cheap.
 
-That turns a vague choice into a concrete question. Carriers in a shipping system: new carriers arrive every quarter, operations are stable, so put operations on carrier classes (Strategy). A compiler's syntax tree: node types are stable, new passes (type check, optimise, print) arrive often, so use a Visitor or pattern matching over a closed set of types. TypeScript discriminated unions with an exhaustive `switch` are the second choice made explicit: the compiler tells you every place a new variant needs handling.
+That turns a vague choice into a concrete question. Carriers in a shipping system: new carriers arrive every quarter, operations are stable, so put operations on carrier classes (Strategy). A compiler's syntax tree: node types are stable, new passes (type check, optimise, print) arrive often, so use a Visitor or pattern matching over a closed set of types. TypeScript discriminated unions with an exhaustive `switch` are the second choice made explicit, because a `never` check fails to compile when a case is missing ([TypeScript handbook](https://www.typescriptlang.org/docs/handbook/2/narrowing.html)). Java 21 offers the same with sealed types and `switch` patterns ([JEP 441](https://openjdk.org/jeps/441)). In both, the compiler tells you every place a new variant needs handling.
 
 ### Telling near neighbours apart
 - **Strategy or State.** Who changes the behaviour? If the caller chooses (pricing plan, compression level), it is Strategy. If the object moves itself between behaviours as events happen (an order going from paid to shipped), it is State. The tell in code: branches that assign the very field being switched on.
@@ -55,7 +55,7 @@ That turns a vague choice into a concrete question. Carriers in a shipping syste
 One place where a seam almost always pays: the boundary with something you do not control. A payment provider, an email vendor, a cloud SDK. Their API will change on their schedule, you will want a fake in tests, and you may switch vendors. An Adapter (or a small interface you own) at that edge is cheap and is justified by the boundary alone.
 
 ### Removing patterns
-Patterns should leave as readily as they arrive. A Strategy interface with one implementation after two years, a Factory that always builds the same class, an Observer with one subscriber: inline them. Sandi Metz's advice applies: duplication is far cheaper than the wrong abstraction. A wrong abstraction attracts conditionals (`if strategy.name == "legacy"`) that defeat its purpose, and every caller has to learn it.
+Patterns should leave as readily as they arrive. A Strategy interface with one implementation after two years, a Factory that always builds the same class, an Observer with one subscriber: inline them. Sandi Metz's advice applies: duplication is far cheaper than the wrong abstraction ([Metz](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction)). A wrong abstraction attracts conditionals (`if strategy.name == "legacy"`) that defeat its purpose, and every caller has to learn it.
 
 ### Choosing with a coding agent
 Agents pattern-match on vocabulary: "make it extensible" yields factories and abstract base classes, while "add DHL" next to a repeated `switch` yields another branch in each place, possibly missing one. Give agents the decision in concrete terms: "carriers vary; create a `Carrier` interface with `quote`, `label`, `tracking_url`, one class per carrier, and a map from code to carrier; replace the three switches". Then review that the axis named in the prompt is the one the structure isolates.
@@ -69,10 +69,10 @@ Choosing a pattern is choosing where to pay for change, the same decision made i
 A well-chosen pattern makes a precise promise: a change along its named axis touches one module, and no existing tests change. "Adding a carrier means adding one class and one registry entry" is testable: count the files in the pull request. A Strategy or State promises substitutability (every implementation honours the interface's contract, Liskov's rule). A conditional promises exhaustiveness when the language checks it. If a change along the named axis still touches five files, the pattern is not delivering its contract, whatever it is called.
 
 ### Layer 2: The mechanism
-There are three ways to dispatch on a variant, and every behavioural pattern uses one. **Conditional dispatch**: a `switch` compiled to a sequence of comparisons or, for dense integer cases, a jump table; TypeScript's `never` check and Rust's `match` make it exhaustive, and Go needs a linter such as `exhaustive` to do the same. **Virtual dispatch**: an interface call through a vtable in Java and C++, an itab in Go (an interface value is two words: type and method table pointer, and data pointer), or a prototype lookup with an inline cache in V8. **Table dispatch**: a hash map from key to function or object, which is what factory registries and strategy maps are. The expression problem follows from these: conditional dispatch keeps an operation's variants together; virtual dispatch keeps a type's operations together; table dispatch lets you add variants at runtime but loses compile-time exhaustiveness.
+There are three ways to dispatch on a variant, and every behavioural pattern uses one. **Conditional dispatch**: a `switch` compiled to a sequence of comparisons or, for dense integer cases, a jump table; TypeScript's `never` check and Rust's `match` make it exhaustive, and Go needs a linter such as [`exhaustive`](https://github.com/nishanths/exhaustive) to do the same. **Virtual dispatch**: an interface call through a vtable in Java and C++, an itab in Go (an interface value is two words: type and method table pointer, and data pointer), or a prototype lookup with an inline cache in V8. **Table dispatch**: a hash map from key to function or object, which is what factory registries and strategy maps are. The expression problem follows from these: conditional dispatch keeps an operation's variants together; virtual dispatch keeps a type's operations together; table dispatch lets you add variants at runtime but loses compile-time exhaustiveness.
 
 ### Layer 3: The machine
-A `switch` on a small dense integer becomes a bounds check plus an indirect jump through a table, about a nanosecond when predicted. A virtual call loads the method pointer (often an L1 hit, about 1 ns) and makes an indirect call; a mispredicted indirect branch costs roughly 15 to 20 cycles. The bigger cost is lost inlining: a compiler cannot inline through a call it cannot resolve, although JITs and Go's profile-guided optimisation (since Go 1.21) devirtualise hot interface calls that almost always hit one type. A map lookup hashes the key and probes a bucket, about 20 to 50 ns for a short string key. Allocation matters more than dispatch: a Strategy object created per request in Go escapes to the heap if stored in an interface, about 25 ns plus GC pressure, while a stateless strategy kept in a package-level map costs nothing per call. None of these numbers decides a design at 1,000 requests a second; they matter in inner loops running millions of times, where a switch or a table usually wins.
+A `switch` on a small dense integer becomes a bounds check plus an indirect jump through a table, about a nanosecond when predicted. A virtual call loads the method pointer (often an L1 hit, about 1 ns) and makes an indirect call; a mispredicted indirect branch costs roughly 15 to 20 cycles. The bigger cost is lost inlining: a compiler cannot inline through a call it cannot resolve, although JITs and Go's profile-guided optimisation (since Go 1.21) devirtualise hot interface calls that almost always hit one type ([Go 1.21 notes](https://go.dev/doc/go1.21)). A map lookup hashes the key and probes a bucket, about 20 to 50 ns for a short string key. Allocation matters more than dispatch: a Strategy object created per request in Go escapes to the heap if stored in an interface, about 25 ns plus GC pressure, while a stateless strategy kept in a package-level map costs nothing per call. None of these numbers decides a design at 1,000 requests a second; they matter in inner loops running millions of times, where a switch or a table usually wins.
 
 ### Why it's built this way
 1. Change is the dominant cost of software over its lifetime, and it arrives along a few axes, so designs isolate those axes.
@@ -106,6 +106,11 @@ Apply the questions. The axis is carriers, with one addition a year and a fourth
 Contrast `order.status` in the same codebase: five sites switch on it, and two of them assign `order.status = SHIPPED` inside branches. That is State, implemented as an enum plus a transition table since the status is already a database column.
 
 Cost: the carrier call now goes through one interface call (about a nanosecond) before a carrier API round trip of 150 to 400 ms. The pull request that adds DHL touches one new file and one registry line, and a test iterates over the registry asserting every carrier implements every method, so a missed case becomes a failed build instead of an incident.
+
+## In the wild
+- **Parnas, 1972: two decompositions of one program.** Parnas compared a flowchart-style split of a small indexing program with a split in which each module hides one design decision likely to change (input format, line storage, sort order). He argued the second absorbs the listed changes without touching other modules ([paper](https://www.win.tue.nl/~wstomv/edu/2ip30/references/criteria_for_modularization.pdf)). Every "name the axis first" rule in this lesson descends from it.
+- **Sandi Metz, 2016: the wrong abstraction.** Metz describes how a shared abstraction attracts parameters and conditionals as each new caller bends it, until it is worse than the duplication it replaced, and recommends inlining it back into callers before re-extracting ([write-up](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction)).
+- **Java 21, 2023: the closed-set choice ships as syntax.** Sealed classes (Java 17) plus pattern matching for `switch` (Java 21) give compiler-checked exhaustiveness for a closed set of types, the "operations grow, types stay fixed" side of the expression problem ([JEP 409](https://openjdk.org/jeps/409), [JEP 441](https://openjdk.org/jeps/441)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -647,6 +652,26 @@ func Analyze(sites []Site, minSites int) ([]Finding, error) {
 - Discounts as data evaluated by a small rule interpreter or specifications, so marketing changes are configuration, with validation and an audit trail.
 - Upgrades and downgrades as State or a transition table on the subscription, since the subscription changes its own stage.
 - Measuring the choice afterwards: files touched per new plan, incidents from missed cases, and removing seams that never varied.
+
+## Sources and further study
+**Primary**
+- [Parnas, On the Criteria To Be Used in Decomposing Systems into Modules (1972)](https://www.win.tue.nl/~wstomv/edu/2ip30/references/criteria_for_modularization.pdf): hide decisions likely to change.
+- [Wadler, The Expression Problem (1998 note)](https://homepages.inf.ed.ac.uk/wadler/papers/expression/expression.txt): the statement of the two-axis trade-off.
+- [Sandi Metz, The Wrong Abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction): when duplication is the cheaper choice.
+
+**Systems docs**
+- [JEP 441: Pattern Matching for switch](https://openjdk.org/jeps/441): exhaustive dispatch over sealed hierarchies, with the Visitor comparison.
+- [TypeScript handbook: narrowing and exhaustiveness](https://www.typescriptlang.org/docs/handbook/2/narrowing.html): the `never` check.
+- [Go 1.21 release notes](https://go.dev/doc/go1.21): profile-guided devirtualization of interface calls.
+- [Replace Conditional with Polymorphism (refactoring.com)](https://refactoring.com/catalog/replaceConditionalWithPolymorphism.html): the mechanical refactoring and its direction.
+
+**Books**
+- *Design Patterns* (GoF, 1994), Ch 1 (Introduction), section on designing for change, and Ch 5 (Behavioral: Strategy, State, Visitor).
+- *Refactoring*, 2nd ed., Ch 3 (Bad Smells in Code) and Ch 10 (Simplifying Conditional Logic).
+- *Refactoring to Patterns*, Joshua Kerievsky (2004): moving to and from patterns in small steps. Chapter numbers not verified in the shared catalogue.
+
+**Other curricula**
+- [Refactoring.Guru: Replace Conditional with Polymorphism](https://refactoring.guru/replace-conditional-with-polymorphism): the same refactoring, in a plain-reference form.
 
 ## Watch
 - [Nothing is Something (Sandi Metz, RailsConf 2015)](https://www.youtube.com/watch?v=OMPfEXIlTVE): conditionals versus polymorphism and composition, and how to tell which a problem needs.

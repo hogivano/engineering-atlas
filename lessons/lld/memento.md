@@ -41,7 +41,7 @@ The most common memento bug is storing a reference instead of a value. If `snaps
 ### Structural sharing
 Copying the whole world on every snapshot is correct and expensive. If the world is 256 regions of 64 KB each (16 MB) and the editor snapshots every 2 seconds for a 10-minute undo window, that is 300 snapshots and 4.8 GB. But a designer working for 2 seconds touches one or two regions. If regions are immutable values and an edit replaces a region with a new one, a snapshot only has to copy the table of 256 pointers (2 KB on a 64-bit machine). Every unchanged region is shared by every snapshot that saw it. The 300 snapshots then cost 600 KB of tables plus the regions actually edited, typically tens of megabytes instead of gigabytes.
 
-Redux's undo history works the same way: `past`, `present` and `future` arrays of states, where reducers return new objects only along the changed path. Clojure's persistent vectors are 32-way trees, so changing one element of a million copies about four nodes and shares the rest.
+Redux's undo history works the same way: `past`, `present` and `future` arrays of states, where reducers return new objects only along the changed path. The Redux docs make the contrast explicit: in classical MVC you would clone every relevant model for each past state, while immutable state is already close to an undo stack ([Redux docs](https://redux.js.org/usage/implementing-undo-history)). Those docs say nothing about bounding the history, so a real app still needs the caretaker limits described next. Clojure's persistent vectors are 32-way trees, so changing one element of a million copies about four nodes and shares the rest.
 
 ### Bounding the caretaker
 A history without a bound is a memory leak with an undo button. Real caretakers bound by count (the last 100 states), by time (the last 10 minutes), by bytes (500 MB), or by some mix, and they protect a few snapshots from eviction: named checkpoints, the last autosave, the state a playtest must return to. With structural sharing, "bytes" means *distinct* bytes: evicting the oldest snapshot frees only the regions no remaining snapshot references, so the caretaker needs per-snapshot size metadata (piece IDs and sizes), not the content. That metadata is the right amount of leakage from the memento.
@@ -61,16 +61,16 @@ Memento is the *multi-step consistency* shape: save a known-good point so a fail
 The originator promises: `restore(snapshot(x))` returns the object to a state observably equal to the state when the snapshot was taken, no matter what happened in between, and restoring the same snapshot twice gives the same result. A memento is immutable and opaque: no code outside the originator can change what it will restore. Restoring a snapshot from a different originator, or from an incompatible version, fails without changing the object. The caretaker promises a bound (count, bytes, age) and an eviction order, and documents which snapshots are pinned.
 
 ### Layer 2: The mechanism
-A pointer-table memento needs two things from the state: it is split into pieces, and pieces are never mutated in place. An edit allocates a new piece and swaps the pointer in the live table; the snapshot copies the table. Persistent data structures generalise this to trees. A hash array mapped trie (HAMT), used by Clojure, Scala and Immutable.js maps, branches 32 ways using 5 bits of the key's hash per level, with a 32-bit bitmap per node recording which children exist. Updating one key copies the nodes on one root-to-leaf path, so a snapshot of a million-entry map is one root pointer, and an edit afterwards costs about four node copies. Immer gets the same effect with JavaScript `Proxy` objects: the draft records which nested objects were written, and only those and their ancestors are copied when the producer finishes.
+A pointer-table memento needs two things from the state: it is split into pieces, and pieces are never mutated in place. An edit allocates a new piece and swaps the pointer in the live table; the snapshot copies the table. Persistent data structures generalise this to trees. A hash array mapped trie (HAMT), used by Clojure, Scala and Immutable.js maps, branches 32 ways using 5 bits of the key's hash per level, with a 32-bit bitmap per node recording which children exist. Updating one key copies the nodes on one root-to-leaf path, so a snapshot of a million-entry map is one root pointer, and an edit afterwards costs about four node copies. Immer gets the same effect with JavaScript `Proxy` objects: the draft records which nested objects were written, and only those and their ancestors are copied when the producer finishes. Unchanged parts stay shared with older versions, and the result is frozen so later code cannot mutate a piece a snapshot depends on ([Immer docs](https://immerjs.github.io/immer/)).
 
-The operating system offers a memento for a whole process. Redis's `BGSAVE` calls `fork()`: the child gets the parent's address space as copy-on-write pages, serialises a frozen view of the dataset to an RDB file, and the parent keeps serving writes. Only pages written after the fork are physically copied.
+The operating system offers a memento for a whole process. Redis's `BGSAVE` calls `fork()`: the child gets the parent's address space as copy-on-write pages, serialises a frozen view of the dataset to an RDB file, and the parent keeps serving writes ([Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)). Only pages written after the fork are physically copied.
 
 ### Layer 3: The machine
-A full copy is bounded by memory bandwidth: `memcpy` runs at roughly 10 to 20 GB/s per core, so copying 16 MB takes about 1 ms, fine once and painful every keystroke. Object-graph copies are far slower than raw bytes. CPython's `copy.deepcopy` visits every object, keeps a memo dict keyed by `id()` to preserve shared references and cycles, and costs on the order of 1 to 3 microseconds per object, so a state with 200,000 small objects takes about half a second. JavaScript's `structuredClone` is similar in spirit and also walks the graph. A pointer-table snapshot of 256 regions is a 2 KB allocation and a copy that fits in L1 cache: well under a microsecond.
+A full copy is bounded by memory bandwidth: `memcpy` runs at roughly 10 to 20 GB/s per core, so copying 16 MB takes about 1 ms, fine once and painful every keystroke. Object-graph copies are far slower than raw bytes. CPython's `copy.deepcopy` visits every object, keeps a memo dictionary of objects already copied so shared references and cycles survive ([Python docs](https://docs.python.org/3/library/copy.html)), and costs on the order of 1 to 3 microseconds per object, so a state with 200,000 small objects takes about half a second. JavaScript's `structuredClone` is similar in spirit and also walks the graph. A pointer-table snapshot of 256 regions is a 2 KB allocation and a copy that fits in L1 cache: well under a microsecond.
 
-Go has a trap here. Copying a struct copies its fields, but slices and maps are headers that point at shared backing storage. `snap := *w` shares the regions slice's backing array with the live world, so a later `w.regions[0] = r` changes the snapshot. A correct Go memento uses `slices.Clone` or `copy` for slices and `maps.Clone` for maps, and the pieces themselves must be immutable or cloned.
+Go has a trap here. Copying a struct copies its fields, but slices and maps are headers that point at shared backing storage. `snap := *w` shares the regions slice's backing array with the live world, so a later `w.regions[0] = r` changes the snapshot. A correct Go memento uses `slices.Clone` or `copy` for slices and `maps.Clone` for maps, remembering that `slices.Clone` is itself a shallow clone that copies elements by assignment ([Go slices docs](https://pkg.go.dev/slices)), and the pieces themselves must be immutable or cloned.
 
-The `fork()` memento is paid in page tables and copy-on-write faults. With 4 KB pages, each GB of resident memory needs 2 MB of page-table entries, copied at fork time. After that, each page the parent writes takes a fault and a 4 KB copy, so a write-heavy Redis can nearly double its memory during a save.
+The `fork()` memento is paid in page tables and copy-on-write faults. With 4 KB pages, each GB of resident memory needs 2 MB of page-table entries, copied at fork time; the Redis docs work the same arithmetic for a 24 GB instance (48 MB of page table) and list measured fork times from about 10 ms per GB on healthy hardware to 239 ms per GB on old EC2 Xen instances ([Redis latency docs](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)). After that, each page the parent writes takes a fault and a 4 KB copy, so a write-heavy Redis can nearly double its memory during a save. With transparent huge pages enabled the copy unit becomes 2 MB, and the Redis docs warn that a few event-loop runs can then copy almost the whole process memory and add large latency.
 
 ### Why it's built this way
 1. Saving state should not require the saver to know the layout, or the layout leaks into every caller, so the owner of the state creates and reads snapshots.
@@ -105,6 +105,11 @@ The team split the world into 512 regions of about 18 KB each, made regions immu
 
 A typical stroke touches 1 to 3 regions, so 200 snapshots retained about 450 regions beyond the base 512: under 20 MB in total against 1.8 GB before, and 4 microseconds per snapshot instead of 70 ms. The one regression was "regenerate terrain", which replaces every region and evicted most of the history; the fix was a warning and a pinned snapshot before the operation.
 
+## In the wild
+- **Redis, documented fork cost: a snapshot that stalls the server.** Redis persists an RDB snapshot by forking a child and relying on copy-on-write. Its own latency guide measured the fork itself on the main thread: 6.1 GB forked in 1,460 ms on an old EC2 Xen instance (about 239 ms per GB) against 62 ms for 6.9 GB on a physical Xeon. The advice was to move to modern HVM instances, since the memento is only cheap when `fork()` is ([Redis latency docs](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)).
+- **Redis, documented THP penalty: copy-on-write that copies everything.** With Linux transparent huge pages enabled, a busy instance touches a few thousand huge pages soon after the fork, so almost the whole process memory is copied, with big latency and memory use. The documented fix is `echo never > /sys/kernel/mm/transparent_hugepage/enabled` and a restart ([Redis latency docs](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)).
+- **Redux, undo as past/present/future.** The official recipe stores undo history as immutable states in `past` and `future` arrays around a `present` state, and skips pushing history when a reducer returns the same object, which is the pointer-sharing memento in practice ([Redux docs](https://redux.js.org/usage/implementing-undo-history)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -118,8 +123,8 @@ A typical stroke touches 1 to 3 regions, so 200 snapshots retained about 450 reg
 - Snapshots that alias live state, so undo restores the current state. Fix: copy the container in both `snapshot` and `restore`, and test edit-after-snapshot.
 - Shallow copies of nested mutable pieces: the table is copied but a region is edited in place. Fix: make pieces immutable (frozen dataclasses, `Object.freeze` in development, no setters), or deep-copy on write.
 - Unbounded history that turns a long session into an out-of-memory crash. Fix: bound by count and distinct bytes, and measure the largest realistic state.
-- Mementos that capture things that should not roll back, such as an auto-incrementing ID counter, a network connection or a selection. Fix: decide explicitly which fields belong to the snapshot and keep the rest outside it.
-- `fork()`-based snapshots doubling memory on write-heavy hosts. Fix: leave headroom, disable transparent huge pages, and schedule saves off-peak.
+- Mementos that capture things that should not roll back, such as an auto-incrementing ID counter, a network connection or a selection. Python's own docs warn that a deep copy may copy too much, including data meant to be shared between copies ([Python docs](https://docs.python.org/3/library/copy.html)). Fix: decide explicitly which fields belong to the snapshot and keep the rest outside it.
+- `fork()`-based snapshots doubling memory on write-heavy hosts, or stalling the parent while the page table is copied: Redis says `fork()` can pause serving for milliseconds, or about a second on a very large dataset and a slow CPU ([Redis persistence](https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/)). Fix: leave headroom, disable transparent huge pages, and schedule saves off-peak.
 
 ## Leadership lens
 - Ask for the memory budget first. "How big is one snapshot of the largest real document, and how many do we keep?" turns undo from a feature into an engineering decision.
@@ -1011,6 +1016,21 @@ func (c *CheckpointStore) Find(label string) (*Snapshot, bool) {
 - A caretaker bounded by count and distinct bytes, with pinned named versions and a warning or coalescing for whole-sheet operations.
 - Commands for fine-grained undo and collaboration, mementos as periodic checkpoints that bound replay and back named versions.
 - A versioned, persisted snapshot format for named versions, with tests that restore old versions after schema changes.
+
+## Sources and further study
+**Primary**
+- [Go slices package](https://pkg.go.dev/slices): `Clone` is a shallow copy, which is why a Go memento of nested slices needs care.
+- [Go blog: Go slices, usage and internals](https://go.dev/blog/slices-intro): a slice is a descriptor of an array segment, so copying the struct that holds it shares the storage.
+
+**Systems docs**
+- [Redis latency diagnosis](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/): measured fork times per GB, the page-table arithmetic, and the transparent huge pages warning.
+- [Linux kernel: transparent hugepage support](https://www.kernel.org/doc/html/latest/admin-guide/mm/transhuge.html): what THP is, the setting the Redis docs tell you to turn off.
+
+**Books**
+- *Design Patterns* (Gamma, Helm, Johnson, Vlissides, 1st ed. 1994), Ch 5 Behavioral Patterns: Memento, with its originator, memento and caretaker roles and the narrow versus wide interface idea.
+- *Head First Design Patterns* (2nd ed. 2020), Ch 6 on Command: the inverse-operation undo that this lesson compares with snapshots.
+
+**Other curricula**
 
 ## Watch
 - [Memento Design Pattern (Derek Banas)](https://www.youtube.com/watch?v=jOnxYT8Iaoo): the originator, memento and caretaker roles built step by step in Java.

@@ -127,9 +127,9 @@ sequenceDiagram
 ## Design patterns used and why
 
 - **Command** for order lines once fired. A fired line is a request the kitchen executes later, possibly on a different device, and it can be voided (cancelled) before execution. A command object with an id is queueable, loggable and replayable after a screen reboot. See [Command](command.md).
-- **State** for the line lifecycle. `void` is legal in pending and fired, illegal in cooking and done; `done` is legal only from cooking. A transition table makes these rules testable and visible to the business.
+- **State** for the line lifecycle ([Refactoring.Guru](https://refactoring.guru/design-patterns/state)). `void` is legal in pending and fired, illegal in cooking and done; `done` is legal only from cooking. A transition table makes these rules testable and visible to the business.
 - **Observer** for kitchen screens and printers. Stations publish "line fired", "line voided" and "line done"; screens, the expo printer and the server's tablet subscribe. Publish after the state change commits, so a slow ticket printer cannot hold the lock.
-- **Producer-consumer** for stations: servers produce, cooks consume, and the queue absorbs the Friday 19:30 burst. See [Producer Consumer](producer-consumer.md).
+- **Producer-consumer** for stations: servers produce, cooks consume, and the queue absorbs the Friday 19:30 burst, the idea behind [queue-based load levelling](https://learn.microsoft.com/en-us/azure/architecture/patterns/queue-based-load-leveling) and, with several cooks on one station, [competing consumers](https://learn.microsoft.com/en-us/azure/architecture/patterns/competing-consumers). See [Producer Consumer](producer-consumer.md).
 - **Strategy** for tax, seating and splitting. Tax rules differ by city and by dine-in versus takeaway; seating may be smallest-fitting-table or server-rotation; splits may be even, by seat or by item.
 - **Composite** for combos and modifiers. "Burger meal" contains a burger, fries and a drink that go to three stations; a composite menu item expands into three lines when fired while the bill shows one price. See [Composite](composite.md).
 
@@ -137,13 +137,18 @@ What not to do: a class per dish. Dishes differ in data (price, station, modifie
 
 ## Concurrency and edge cases
 
-- **Two servers, one check.** A server and a bartender both add to table 12's check. Make the check the unit of locking: `add`, `fire`, `void` and `close` take the check's lock, or use a version number on the check and reject stale writes from tablets.
+- **Two servers, one check.** A server and a bartender both add to table 12's check. Make the check the unit of locking: `add`, `fire`, `void` and `close` take the check's lock, or use a version number on the check and reject stale writes from tablets. The check is the aggregate in domain-driven design terms, and the usual rule is that a transaction should not span more than one aggregate ([Fowler](https://martinfowler.com/bliki/DDD_Aggregate.html)).
 - **Double fire.** A tablet on bad Wi-Fi retries `fire`. Firing only moves pending lines, so a retry sends nothing new; make that idempotence explicit, because duplicate tickets mean duplicate food.
 - **Void races start.** The server voids a line at the moment the cook taps start. Whichever transition takes the line lock first wins: either the line is voided and never appears as cooking, or it is cooking and the void fails, and the server must ask a manager to comp it.
 - **Two hosts, one table.** Seating is select-and-claim under one lock, the same shape as the last spot in [Design Parking Lot](design-parking-lot.md).
 - **Closing with food in flight.** Closing a check with lines still cooking either bills for food not yet served or loses it. Refuse to close while any line is pending, fired or cooking; voided lines are excluded.
-- **Rounding.** Tax is computed once on the check subtotal with half-up rounding, not per line, or a ten-line check can be off by several cents from what the receipt rules require. An even split gives the leftover cents to the first payers so the parts always sum to the total.
+- **Rounding.** This lesson computes tax once on the check subtotal with half-up rounding, not per line, so a ten-line check cannot drift by several cents. Treat that as one policy, not a law: the legal rule depends on the jurisdiction, and payment platforms differ. Square's Orders API, for example, rounds tax half to even and accepts only a rate, not a fixed amount, so a half-up client computed 0.55 on a 5.45 item at 10% where Square computed 0.54 ([Square developer forum](https://developer.squareup.com/forums/t/question-on-tax-calculation-rounding-differences-between-my-project-and-square/25057)). Put the rounding mode behind the tax strategy and test it on exact midpoints. An even split gives the leftover cents to the first payers so the parts always sum to the total.
 - **Menu changes mid-service.** Lines keep the menu item version they were ordered at.
+
+## In the wild
+- **Toast, documented offline design.** Toast's platform guide describes three outage cases. A local-network failure stops devices passing orders to each other. An ISP or cloud outage with an eligible local hub still lets orders on the restaurant network reach the kitchen screens, though online orders cannot be received. Without a hub, devices fall back to a plainer offline mode, and tickets set to print only when offline go to a backup printer. Course tickets fired from the expediter screen do not print in local-sync offline mode ([Toast docs](https://doc.toasttab.com/doc/platformguide/platformOfflineKDSDevices.html)). Service must continue on the local network, and some features cannot.
+- **Square, documented offline payments.** In offline mode the seller sets a per-transaction limit between $1 and $50,000. The offline session lasts 24 hours, and pending payments must be uploaded within 72 hours (24 is recommended). The seller is responsible for any expired, declined or disputed payment accepted while offline, and Square cannot contact those customers for them ([Square](https://squareup.com/us/en/payments/offline-payments-guide)). The risk of working offline is a business decision the design must make visible.
+- **Square Orders API, tax rounding mismatch.** A developer integrating with the Orders API found a 1-cent difference on a $5.45 item at 10% tax. Square replied that its API rounds tax half to even (banker's rounding), accepts a rate rather than an amount, and that third-party delivery platforms send tax as a percentage and may round differently, so the originating platform should be the source of truth for tax reporting ([Square developer forum](https://developer.squareup.com/forums/t/question-on-tax-calculation-rounding-differences-between-my-project-and-square/25057)). This is a forum thread, not a postmortem.
 
 ## Down the stack
 
@@ -151,7 +156,7 @@ What not to do: a class per dish. Dishes differ in data (price, station, modifie
 `add` returns a new line id and the line is pending; it fails on a closed or unknown check, an unknown item or a quantity below one. `fire(check)` moves every pending line of that check to fired and appends it to its station queue in line order, returning how many moved; calling it again with nothing pending returns zero and changes nothing. `start(station)` returns the oldest fired line at that station and marks it cooking, or nothing. `close(check, taxBp, ways)` succeeds only when every non-void line is done, returns `ways` amounts that differ by at most one cent and sum to `subtotal + round_half_up(subtotal * taxBp / 10000)`, and frees the table.
 
 ### Layer 2: The mechanism
-Each station queue is a FIFO of line ids (a deque in Python, a slice in Go). Voiding a fired line removes it from its queue, an O(n) scan that is fine because a station rarely holds more than a few dozen lines; a linked hash set makes it O(1) if you need it. Lines live in a hash map by id so screens can address them directly. Real restaurant systems run a local server in the back office and keep tablets, screens and printers on the restaurant LAN, syncing to the cloud when they can, because a dropped internet connection on a Friday night must not stop the kitchen. Receipt and kitchen printers are commonly driven with the ESC/POS command set, a byte stream of text and control codes (cut paper, select font) sent over USB, serial or a raw TCP socket, often on port 9100.
+Each station queue is a FIFO of line ids (a deque in Python, a slice in Go). Voiding a fired line removes it from its queue, an O(n) scan that is fine because a station rarely holds more than a few dozen lines; a linked hash set makes it O(1) if you need it. Lines live in a hash map by id so screens can address them directly. Real restaurant systems run a local server in the back office and keep tablets, screens and printers on the restaurant LAN, syncing to the cloud when they can, because a dropped internet connection on a Friday night must not stop the kitchen. Toast documents the same split: with an eligible local hub, orders placed on the restaurant network still reach the kitchen screens during an ISP or cloud outage, while online orders cannot be received ([Toast docs](https://doc.toasttab.com/doc/platformguide/platformOfflineKDSDevices.html)). Receipt and kitchen printers are commonly driven with the ESC/POS command set, a variant of Epson's ESC/P printer language made for point-of-sale receipt printers ([Wikipedia](https://en.wikipedia.org/wiki/ESC/POS)), a byte stream of text and control codes (cut paper, select font) sent over USB, serial or a raw TCP socket, often on port 9100.
 
 ### Layer 3: The machine
 The data is tiny: a busy restaurant fires perhaps a few hundred lines an hour, and a line is under 200 bytes. A mutex at about 20 ns and a SQLite or Postgres commit at 0.1 to 1 ms are invisible next to the physical latencies: a Wi-Fi round trip on a crowded 2.4 GHz band can take tens of milliseconds and occasionally seconds, and a thermal printer prints a ticket in a second or two. The failure that matters is not speed but loss: a tablet that shows "fired" before the local server has durably stored the lines will, on a dropped packet, leave a table waiting forty minutes for food nobody is cooking. So the tablet treats `fire` as done only after the server acknowledges a committed write, and retries with the same check and line ids otherwise.
@@ -1151,6 +1156,27 @@ func (r *Restaurant) Close(checkID string, taxBp, ways int) ([]int, error) {
 - Idempotent fire, per-check locking, and atomic table seating.
 - Integer cents, one half-up tax rounding on the subtotal, and a split rule whose parts always sum to the total.
 - Local-first operation: a back-office server on the LAN as the system of record during service, syncing to the cloud later.
+
+## Sources and further study
+**Primary**
+- [Wikipedia: ESC/POS](https://en.wikipedia.org/wiki/ESC/POS): the receipt-printer command set and its relation to Epson's ESC/P family.
+- [Fowler: Aggregate](https://martinfowler.com/bliki/DDD_Aggregate.html): why the check is the consistency boundary.
+
+**Systems docs**
+- [Toast: offline KDS devices](https://doc.toasttab.com/doc/platformguide/platformOfflineKDSDevices.html): how a production restaurant platform keeps the kitchen running through ISP and cloud outages.
+- [Square: offline payments guide](https://squareup.com/us/en/payments/offline-payments-guide): limits, upload windows and who carries the risk.
+- [Square developer forum: tax rounding differences](https://developer.squareup.com/forums/t/question-on-tax-calculation-rounding-differences-between-my-project-and-square/25057): a documented half-up versus half-even mismatch.
+- [Azure Architecture Center: Queue-Based Load Leveling](https://learn.microsoft.com/en-us/azure/architecture/patterns/queue-based-load-leveling): a queue as a buffer between bursty producers and steady consumers.
+- [Azure Architecture Center: Competing Consumers](https://learn.microsoft.com/en-us/azure/architecture/patterns/competing-consumers): several workers pulling from one queue, as cooks do at a station.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral) for Command, State, Observer and Strategy, and chapter 4 (Structural) for Composite.
+- *Head First Design Patterns*, Freeman and Robson: chapter 6 (Command), chapter 10 (State) and chapter 9 (Iterator and Composite).
+- *Domain-Driven Design*, Eric Evans: chapters 5 and 6 on aggregates, the check and its lines.
+
+**Other curricula**
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): states and transitions as objects, close to the line lifecycle here.
+- [Refactoring.Guru: Composite](https://refactoring.guru/design-patterns/composite): tree-shaped combos, as in the burger meal that expands to three lines.
 
 ## Watch
 - [Command Pattern, Design Patterns ep 7 (Christopher Okhravi)](https://www.youtube.com/watch?v=9qA5kw8dcSU): the pattern behind fired order lines that can be queued and voided.

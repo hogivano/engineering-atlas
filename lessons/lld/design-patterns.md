@@ -5,7 +5,7 @@ minutes: 16
 
 ## In one minute
 - A design pattern is a named, reusable answer to a problem that keeps recurring in a given context, written down with its forces and consequences. It is a description you adapt, not code you import.
-- The idea came from architecture: Christopher Alexander's *A Pattern Language* (1977) catalogued 253 patterns for towns and buildings. Kent Beck and Ward Cunningham applied it to Smalltalk in 1987, and the "Gang of Four" book (Gamma, Helm, Johnson, Vlissides, 1994) gave software its standard catalogue of 23.
+- The idea came from architecture: Christopher Alexander's *A Pattern Language* (1977) catalogued 253 patterns for towns and buildings ([Wikipedia](https://en.wikipedia.org/wiki/A_Pattern_Language)). Kent Beck and Ward Cunningham applied it to Smalltalk in 1987, and the "Gang of Four" book (Gamma, Helm, Johnson, Vlissides, 1994) gave software its standard catalogue of 23.
 - The GoF sort patterns by purpose: creational (how objects are made), structural (how objects are composed) and behavioural (how objects divide work and communicate).
 - Many patterns compensate for missing language features. First-class functions absorb Strategy and Command, generators absorb Iterator, generics remove a family of casting wrappers, and sum types with pattern matching replace most Visitors.
 - The lasting value is the shared vocabulary and the two principles under the catalogue: program to an interface, and prefer composition to inheritance.
@@ -20,7 +20,7 @@ A pattern is not a library. You cannot `import Observer`, because the solution h
 ### Where the idea came from
 Alexander, an architect, noticed that good buildings reuse the same solutions to the same tensions, such as a seat by a window where people want light. *A Pattern Language* named 253 of them, larger patterns setting the context for smaller ones, so that non-experts could take part in design.
 
-Beck and Cunningham's 1987 OOPSLA paper, "Using Pattern Languages for Object-Oriented Programs", borrowed the idea for Smalltalk user interfaces and reported that a handful of patterns let newcomers design usable windows. Through the early 1990s, the Hillside Group and the first Pattern Languages of Programs conference (PLoP, 1994) built a community around writing patterns. Ward Cunningham created the first wiki in 1995 to host the Portland Pattern Repository, so the wiki itself is a by-product of the patterns movement.
+Beck and Cunningham's 1987 report, "Using Pattern Languages for Object-Oriented Programs", written for an OOPSLA-87 workshop, borrowed the idea for Smalltalk user interfaces. It summarised five patterns they had used to design window-based interfaces ([paper](http://c2.com/doc/oopsla87.html)). Through the early 1990s, the Hillside Group and the first Pattern Languages of Programs conference (PLoP, 1994) built a community around writing patterns ([Wikipedia](https://en.wikipedia.org/wiki/Pattern_Languages_of_Programs)). Ward Cunningham launched the WikiWikiWeb in March 1995 to host the Portland Pattern Repository, so the wiki itself is a by-product of the patterns movement ([Wikipedia](https://en.wikipedia.org/wiki/WikiWikiWeb)).
 
 The GoF book, *Design Patterns: Elements of Reusable Object-Oriented Software*, appeared in late 1994 with examples in C++ and Smalltalk. Each of its 23 entries follows one template, from intent and applicability through structure and consequences to sample code and known uses. The known-uses section mattered: each pattern was shown in existing systems. Patterns were discovered, not invented.
 
@@ -37,26 +37,26 @@ The GoF also split patterns by scope. Class patterns (Factory Method, Template M
 The book's opening chapter is more durable than its catalogue. It argues for **programming to an interface, not an implementation**, so that callers depend on what an object does rather than what it is, and for **favouring object composition over class inheritance**, because inheritance exposes a subclass to its parent's internals and fixes the relationship at compile time. Nearly every pattern is one of these principles applied to a specific problem. If you remember only the principles, you can rederive most patterns when you need them. The SOLID lessons in this course (OCP and DIP in particular) are later restatements of the same ideas.
 
 ### Patterns in modern languages
-In 1996 Peter Norvig showed that 16 of the 23 GoF patterns are simpler or invisible in a language with first-class functions, dynamic types and macros. The trend since then has been for mainstream languages to absorb patterns as features.
+In 1996 Peter Norvig showed that 16 of the 23 GoF patterns are invisible or simpler in Lisp or Dylan. He credited four language features: first-class types (Abstract Factory, Factory Method, State, Proxy and others), first-class functions (Command, Strategy, Template Method, Visitor), macros (Interpreter, Iterator) and method combination (Mediator, Observer) ([Norvig's slides](https://norvig.com/design-patterns/design-patterns.pdf)). The trend since then has been for mainstream languages to absorb patterns as features.
 
 | Pattern | What absorbed it | Example |
 | --- | --- | --- |
 | Strategy, Command | First-class functions and closures | `sorted(rows, key=by_price)`; Java 8 lambdas (2014) |
 | Template Method | Higher-order functions | Pass the varying step as a function argument |
-| Iterator | Generators and language-level iteration | Python generators (PEP 255, 2001); C# `yield return` (2005); Go range-over-func (1.23, 2024) |
-| Visitor | Sum types and pattern matching | Rust `enum` with `match`; TypeScript discriminated unions; Java sealed classes plus `switch` patterns (Java 21) |
+| Iterator | Generators and language-level iteration | Python generators ([PEP 255](https://peps.python.org/pep-0255/), 2001); C# `yield return`; Go range-over-func ([Go 1.23](https://go.dev/doc/go1.23), 2024) |
+| Visitor | Sum types and pattern matching | Rust `enum` with `match`; TypeScript discriminated unions; Java sealed classes (Java 17) plus `switch` patterns (Java 21) ([JEP 409](https://openjdk.org/jeps/409), [JEP 441](https://openjdk.org/jeps/441)) |
 | Builder | Named and default arguments | Python keyword arguments; Kotlin named parameters |
 | Singleton | Modules | A Python module or a Go package-level value is loaded once |
 | Prototype | Prototype-based objects | JavaScript `Object.create(proto)` |
-| Observer | Event and reactive libraries | DOM `addEventListener`, Node `EventEmitter`, RxJS |
+| Observer | Event and reactive libraries | DOM `addEventListener`, Node `EventEmitter`, RxJS; the JDK's own `Observable` was deprecated in Java 9 |
 | Decorator (function form) | Syntax for wrapping functions | Python `@decorator` (PEP 318, 2004) |
 
 Generics remove another category: the casting wrappers around containers that pre-generics Java and Go needed. Before Go 1.18 (2022) a generic list held `interface{}` and every caller cast back.
 
-What remains after the language takes its share is the *design decision*. A lambda makes Strategy cheap to write, but someone still decides where the seam goes and what the function's contract is. Pattern matching makes Visitor unnecessary for closed type sets, but the GoF Visitor still wins when other teams must add operations without editing your types. The patterns that survive are mostly about structure between components (Adapter, Facade, Proxy, Composite, State, Mediator) rather than about working around the language.
+What remains after the language takes its share is the *design decision*. A lambda makes Strategy cheap to write, but someone still decides where the seam goes and what the function's contract is. Pattern matching makes Visitor unnecessary for closed type sets (the Java proposal itself says that without it, ad-hoc polymorphism needs the "cumbersome visitor pattern", per [JEP 441](https://openjdk.org/jeps/441)), but the GoF Visitor still wins when other teams must add operations without editing your types. The patterns that survive are mostly about structure between components (Adapter, Facade, Proxy, Composite, State, Mediator) rather than about working around the language.
 
 ### Criticism worth knowing
-Paul Graham argued in 2002 that patterns in a program are a sign that the programmer is doing by hand what a more powerful language would do automatically. That is partly right, as the table shows. The other common complaint is cargo culting: patterns applied because they exist, producing `AbstractSingletonProxyFactoryBean`-style layering with no problem underneath. Both critiques attack misuse rather than the idea. The idea, a named solution with stated consequences, is how teams share design knowledge, and it now extends well past the GoF: Fowler's enterprise application patterns, the microservices and cloud patterns, concurrency patterns, and anti-patterns that name what not to do.
+Paul Graham argued in 2002 that patterns in a program are a sign that the programmer is doing by hand what a more powerful language would do automatically ([Revenge of the Nerds](https://www.paulgraham.com/icad.html)). That is partly right, as the table shows. The other common complaint is cargo culting: patterns applied because they exist, producing `AbstractSingletonProxyFactoryBean`-style layering with no problem underneath (Spring really does ship a class named [`AbstractSingletonProxyFactoryBean`](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/aop/framework/AbstractSingletonProxyFactoryBean.html), though it exists for a real purpose). Both critiques attack misuse rather than the idea. The idea, a named solution with stated consequences, is how teams share design knowledge, and it now extends well past the GoF: Fowler's enterprise application patterns, the microservices and cloud patterns, concurrency patterns, and anti-patterns that name what not to do.
 
 ### Learning patterns with an AI assistant
 An assistant writes a textbook Observer in seconds, so the skill is no longer the class diagram. It is recognising the problem, choosing the smallest form your language allows, and spotting generated code that applies a 1994 C++ shape where a one-line feature exists. The Design Patterns lesson gives the selection method and the full catalogue table.
@@ -70,7 +70,7 @@ An assistant writes a textbook Observer in seconds, so the skill is no longer th
 A pattern's written form is its contract with the reader. Intent says which problem it solves; applicability says when to use it; consequences say what you pay. When a code reviewer says "this is a Decorator", the team can assume the wrapper has the same interface as what it wraps and always forwards; when it is a Proxy, forwarding may be skipped. The name carries those guarantees, which is why misnaming a class (calling a Proxy a Decorator) causes real bugs: readers trust the wrong contract.
 
 ### Layer 2: The mechanism
-When a language absorbs a pattern, the compiler or runtime implements the pattern's structure for you. A closure in Go or JavaScript is a function pointer plus an environment record holding captured variables, which is exactly the GoF Command object with its receiver fields, generated by the compiler. A Python generator is an object that owns a suspended frame: `next()` resumes the frame at the last `yield`, and the frame's local variables are the iterator's state, so the explicit Iterator class with a cursor field disappears. Go's range-over-func rewrites `for x := range seq { body }` into a call `seq(yield)` where `yield` is a compiler-generated closure containing the loop body that returns `false` on `break`. A Rust `match` on an enum compiles to a check of the discriminant tag followed by a jump table or branch chain, with exhaustiveness checked at compile time, replacing Visitor's double dispatch.
+When a language absorbs a pattern, the compiler or runtime implements the pattern's structure for you. A closure in Go or JavaScript is a function pointer plus an environment record holding captured variables, which is exactly the GoF Command object with its receiver fields, generated by the compiler. A Python generator is an object that owns a suspended frame: `next()` resumes the frame at the last `yield`, and the frame's local variables are the iterator's state, so the explicit Iterator class with a cursor field disappears. Go's range-over-func rewrites `for x := range seq { body }` into a call `seq(yield)` where `yield` is a compiler-generated closure containing the loop body; the iterator is expected to stop when `yield` returns `false` ([Go blog](https://go.dev/blog/range-functions)). A Rust `match` on an enum compiles to a check of the discriminant tag followed by a jump table or branch chain, with exhaustiveness checked at compile time, replacing Visitor's double dispatch.
 
 ### Layer 3: The machine
 Absorbed patterns usually get cheaper, because the compiler knows more. A Go closure that does not escape stays on the stack and costs no allocation; one that escapes allocates its environment on the heap once, typically a few dozen bytes. Range-over-func loop bodies can often be inlined so the iterator costs about the same as a hand-written loop. A Visitor costs two indirect calls per node (`accept`, then `visit`), each a vtable or itab lookup of about 1 to 2 ns when predicted; a `match` on a tag is one compare and a predictable branch, often under 1 ns, and the tag sits in the same cache line as the data. A Python generator, by contrast, allocates a generator object and frame (a few hundred bytes), and each `next()` resumes interpreted bytecode, so a list comprehension over a small list can beat a generator pipeline.
@@ -104,6 +104,11 @@ The textbook answer is Strategy: an interface `FeeRule` and 11 classes. The team
 The test caught two things. The old code validated amounts before looking at the type, and the first registry draft did the reverse, changing an error message a client parsed. And one old case fell through into the next (a missing `break`), producing a fee finance had relied on for years; the team kept it, made it explicit, and filed a ticket for finance to decide.
 
 The result: 11 lambdas of 3 to 12 lines each, one registry, no class hierarchy. Adding a fee type is one line, and a startup check fails if the `EnumMap` lacks an entry for any `FeeType`. Lookups add one hash probe and one interface call per fee, a few nanoseconds against a request that spends 30 ms in the database.
+
+## In the wild
+- **Java (JDK), 2017: `Observable` deprecated.** `java.util.Observable` and `Observer` were the JDK's built-in GoF Observer. Java 9 deprecated both because the event model is limited, the order of notifications is unspecified, and state changes do not map one-for-one to notifications. The docs point to `java.beans`, `java.util.concurrent` and the `Flow` API instead ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Observable.html)). Lesson: a pattern in the standard library still ages, and its consequences (ordering, threading) were the missing half.
+- **Go, 2024: Iterator becomes syntax.** Go 1.23 let `for range` accept iterator functions of type `func(yield func(V) bool)`, so the Iterator pattern is a language feature with a standard `iter` package behind it ([Go 1.23 notes](https://go.dev/doc/go1.23), [Go blog](https://go.dev/blog/range-functions)).
+- **Norvig, 1996: a count of absorbed patterns.** In a study presented on 5 May 1996, Norvig found 16 of the GoF's 23 patterns invisible or simpler in Lisp or Dylan ([Norvig](https://norvig.com/design-patterns/)). It remains the best-cited evidence that patterns track language gaps.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -670,6 +675,27 @@ func DefaultRegistry() *FeeRegistry {
 - Keeping the Visitor (or offering both) when other teams add types, since exhaustive `switch` breaks their code.
 - Characterisation tests over a wide input grid, including error messages and ordering, before any change.
 - Replacing Singletons with instances created at startup and injected, which is a dependency-injection change rather than a language one.
+
+## Sources and further study
+**Primary**
+- [Using Pattern Languages for Object-Oriented Programs (Beck and Cunningham, 1987)](http://c2.com/doc/oopsla87.html): the origin of patterns in software.
+- [Design Patterns in Dynamic Languages (Norvig)](https://norvig.com/design-patterns/design-patterns.pdf): the slides with the 16-of-23 breakdown by language feature.
+- [Range Over Function Types (Go blog)](https://go.dev/blog/range-functions): the push-iterator design and the `yield` contract.
+- [JEP 441: Pattern Matching for switch](https://openjdk.org/jeps/441) and [JEP 409: Sealed Classes](https://openjdk.org/jeps/409): the Java features that replace Visitor over closed hierarchies.
+
+**Systems docs**
+- [java.util.Observable (Java 21 API)](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Observable.html): why the JDK retired its own Observer.
+- [Go 1.23 release notes](https://go.dev/doc/go1.23): range-over-func and the `iter` package.
+- [PEP 255: Simple Generators](https://peps.python.org/pep-0255/): the generator mechanism behind Python's Iterator.
+
+**Books**
+- *Design Patterns* (GoF, 1994), Ch 1 (Introduction: the two principles, the template) and Ch 3 to 5 (the catalogue).
+- *Head First Design Patterns*, 2nd ed., Ch 1 (Welcome to Design Patterns), for a gentler first pass at the same principles.
+- *Refactoring*, 2nd ed., Ch 10 (Simplifying Conditional Logic): the refactorings that introduce or remove these structures.
+
+**Other curricula**
+- [Refactoring.Guru design patterns](https://refactoring.guru/design-patterns): frames each pattern as problem, solution and structure, a useful plain reference.
+- [Game Programming Patterns](https://gameprogrammingpatterns.com/contents.html): revisits patterns with an eye on cost and on where they are overkill.
 
 ## Watch
 - [Stop Writing Classes (Jack Diederich, PyCon 2012)](https://www.youtube.com/watch?v=o9pEzgHorH0): a funny, practical case for replacing class-based patterns with functions and built-ins.

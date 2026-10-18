@@ -6,7 +6,7 @@ minutes: 17
 ## In one minute
 - Fifteen patterns cover most object-oriented design you will write or be asked about. Each has its own lesson in this course; this page is the map and the selection method.
 - Pick a pattern from the *shape of the problem*, not from its name. "Behaviour varies by a value I choose at runtime" is Strategy; "behaviour varies by where the object is in its lifecycle" is State; "callers need the wrong interface" is Adapter.
-- The fifteen reduce to four mechanisms: an interface with several implementations, a wrapper, a table from key to behaviour, and a list of callbacks. The mechanism tells you the runtime cost.
+- Norvig's study found that most of these patterns shrink when the language has first-class functions or types ([Norvig](https://norvig.com/design-patterns/design-patterns.pdf)); the fifteen reduce to four mechanisms: an interface with several implementations, a wrapper, a table from key to behaviour, and a list of callbacks. The mechanism tells you the runtime cost.
 - A pattern needs two real variants or a scheduled change. Otherwise the plain function is the better design.
 - The fastest test in review: say the problem in one sentence without the pattern's name. If you cannot, the pattern is decoration.
 
@@ -39,7 +39,7 @@ The remaining patterns also have lessons here: Abstract Factory (matching famili
 The mechanics repeat across the fifteen.
 
 1. **Interface plus implementations.** Strategy, State, Factory Method, Template Method, Iterator and Command put varying behaviour behind one interface. What differs is who picks the implementation: the caller (Strategy), the object as its stage changes (State), a lookup on input (Factory Method), a subclass (Template Method).
-2. **Wrapper with the same interface.** Decorator always forwards and adds behaviour, Proxy decides whether to forward, Adapter changes the interface shape, Composite wraps many children.
+2. **Wrapper with the same interface.** Decorator always forwards and adds behaviour (Java's `FilterInputStream` wraps another stream and passes requests through, per its [Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/FilterInputStream.html)), Proxy decides whether to forward, Adapter changes the interface shape, Composite wraps many children.
 3. **Table from key to behaviour.** Factory registries, Strategy maps, State transition tables and Command dispatchers are dictionaries: a switch statement turned into data.
 4. **List of callbacks.** Observer calls every function in its list; a Chain calls them in order until one handles the request.
 
@@ -56,7 +56,7 @@ Ask four questions in order, and stop at the first yes.
 Then count variants. A Strategy with one strategy or a Factory that builds one type is indirection with nothing on the other side; write the direct call instead.
 
 ### When not to use any pattern
-- **One implementation and no change in sight.** YAGNI applies. Adding the interface later is a mechanical refactor that takes minutes with a type checker and tests.
+- **One implementation and no change in sight.** YAGNI applies. Martin Fowler names four costs of building a feature early: the cost of building it, of the delayed value of what you did not build, of carrying its complexity through every later change, and of repairing it if you guessed wrong ([Yagni](https://martinfowler.com/bliki/Yagni.html)). Adding the interface later is a mechanical refactor that takes minutes with a type checker and tests.
 - **The language already does it.** A function value, a generator or `functools.lru_cache` is the pattern; Intro to Design Patterns explains why.
 - **The problem is data, not behaviour.** If variants differ only in numbers (rates, thresholds, timeouts), a table of values beats a class per variant.
 - **Nobody can name the change it protects against.** A pattern is a bet on what will vary; without a named change the bet is random.
@@ -73,10 +73,10 @@ Choosing a pattern from problem flags is a classification problem, the same one 
 Strategy and State promise substitutability: any implementation can replace another without the caller changing (the Liskov rule). Decorator and Proxy promise the same interface as the wrapped object, so callers cannot tell how many layers there are. Observer promises every live subscriber is called once per event, and an unsubscribed one is not. Command promises `undo(execute(s)) == s`. Builder promises `build()` never returns an invalid object. Iterator promises every element once, in a defined order, and a defined behaviour when the collection changes underneath. Singleton promises one instance per process, the promise most often broken by tests and forks.
 
 ### Layer 2: The mechanism
-An interface call in C++ and Java goes through a vtable: the object header points at a per-class table of function pointers, and the call loads one and jumps. Go stores an interface as two words, a pointer to an itab (type plus method pointers) and a pointer to the data, so a Strategy held in an interface field costs 16 bytes and one indirect call. JavaScript has no vtables: `strategy.apply(x)` walks the prototype chain, and V8 caches the result per call site in an inline cache keyed by the object's hidden class. A table of behaviours is a hash map: Python `dict`, Go `map` (buckets of 8 entries, or Swiss tables since Go 1.24), JS `Map`. A list of callbacks is an array of closures, each a function pointer plus captured variables.
+An interface call in C++ and Java goes through a vtable: the object header points at a per-class table of function pointers, and the call loads one and jumps. Go stores an interface as two words, a pointer to an itab (type plus method pointers) and a pointer to the data ([Russ Cox](https://research.swtch.com/interfaces)), so a Strategy held in an interface field costs 16 bytes and one indirect call. JavaScript has no vtables: `strategy.apply(x)` walks the prototype chain, and V8 caches the result per call site in an inline cache keyed by the object's hidden class, called a shape ([Bynens](https://mathiasbynens.be/notes/shapes-ics)). A table of behaviours is a hash map: Python `dict`, Go `map` (buckets of 8 entries, or a Swiss-table design since [Go 1.24](https://go.dev/doc/go1.24)), JS `Map`. A list of callbacks is an array of closures, each a function pointer plus captured variables.
 
 ### Layer 3: The machine
-A well-predicted indirect call costs about 1 to 2 ns; a mispredicted one about 15 to 20 cycles (5 ns at 3 to 4 GHz), which matters only when one hot call site sees many implementations. The larger cost is lost inlining: the compiler cannot inline through an interface it cannot see through, so a tiny helper that could have been vectorised stays a call. Wrappers cost allocation and pointer chasing: a five-layer Decorator stack in Go is five heap objects, and each call follows five pointers that may each miss L1 cache (about 1 ns hit, 4 ns L2, 80 to 100 ns main memory). Command objects allocate one record per action; an undo history of 100,000 edits at 64 bytes each is 6.4 MB. Observer under concurrency needs a lock or a copy-on-write subscriber list; Singleton needs `sync.Once` in Go or a module-level instance in Python, whose import lock already serialises initialisation.
+A well-predicted indirect call costs about 1 to 2 ns; a mispredicted one about 15 to 20 cycles (5 ns at 3 to 4 GHz), which matters only when one hot call site sees many implementations. The larger cost is lost inlining: the compiler cannot inline through an interface it cannot see through, although since Go 1.21 profile-guided builds can devirtualize some interface calls to the most common callee ([Go 1.21 notes](https://go.dev/doc/go1.21)), so a tiny helper that could have been vectorised stays a call. Wrappers cost allocation and pointer chasing: a five-layer Decorator stack in Go is five heap objects, and each call follows five pointers that may each miss L1 cache (about 1 ns hit, 4 ns L2, 80 to 100 ns main memory). Command objects allocate one record per action; an undo history of 100,000 edits at 64 bytes each is 6.4 MB. Observer under concurrency needs a lock or a copy-on-write subscriber list, and the contract must say what order listeners run in: the JDK's retired `Observable` left the order unspecified ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Observable.html)); Singleton needs `sync.Once` in Go or a module-level instance in Python, where the import system caches each module in `sys.modules` so it runs once per process ([Python docs](https://docs.python.org/3/reference/import.html)).
 
 ### Why it's built this way
 1. Requirements change in predictable places (a new payment method, a new channel, a new state), so designers isolate those places behind a seam.
@@ -118,6 +118,11 @@ A team is adding invoice reminders to a billing service: send reminders 3, 7 and
 Rejected: a `ReminderStrategy` hierarchy (one way to remind), a Singleton scheduler (create one in `main` and inject it), and a Command per reminder (the job table already records what to send).
 
 Cost check: each send passes Retry, Audit and the adapter, three interface calls costing nanoseconds against a 150 ms provider round trip, at under one send per second on average. Performance does not constrain this design; readability does, so there are four seams, each tied to a named requirement.
+
+## In the wild
+- **Go standard library: handler wrappers as Decorator and Chain.** `net/http` defines `Handler` as one method, and helpers such as `StripPrefix(prefix, h)` and `TimeoutHandler(h, dt, msg)` take a handler and return a handler. Middleware stacks are plain function composition, and the order bug in the Pitfalls section applies to them directly ([net/http](https://pkg.go.dev/net/http)).
+- **Java I/O: Decorator in the JDK.** `FilterInputStream` wraps another `InputStream` and overrides selected methods while passing the rest through, which is how buffering, checksums and decompression stack on one source ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/FilterInputStream.html)).
+- **Java 9, 2017: Observer retired for being underspecified.** The JDK deprecated `Observable` because notification order was unspecified and the model was too limited; the Javadoc points to `java.beans`, `java.util.concurrent` and `Flow` ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Observable.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -556,6 +561,26 @@ func Recommend(flags []string, variants int) ([]string, error) {
 - Keeping the audit Decorator because auditing is cross-cutting and must not leak into permission logic, and fixing the wrapper order in one constructor with a test.
 - Recognising that two roles may be data (a role-to-permissions table) rather than a Strategy hierarchy.
 - Treating the roadmap as evidence: a scheduled third role or second channel justifies a seam now, a hypothetical one does not.
+
+## Sources and further study
+**Primary**
+- [Design Patterns in Dynamic Languages (Norvig)](https://norvig.com/design-patterns/design-patterns.pdf): which patterns language features absorb, and which feature absorbs which.
+- [Yagni (Martin Fowler)](https://martinfowler.com/bliki/Yagni.html): the four costs of speculative flexibility.
+
+**Systems docs**
+- [Go net/http](https://pkg.go.dev/net/http): `Handler` wrappers as the idiomatic Decorator and Chain.
+- [java.io.FilterInputStream](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/FilterInputStream.html): Decorator in a standard library.
+- [java.util.Observable](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Observable.html): a deprecated Observer and the reasons.
+- [Go Data Structures: Interfaces (Russ Cox)](https://research.swtch.com/interfaces): the two-word interface value and itable behind dynamic dispatch.
+- [JavaScript engine fundamentals: Shapes and Inline Caches (Bynens)](https://mathiasbynens.be/notes/shapes-ics): how V8 makes method calls on objects cheap.
+
+**Books**
+- *Design Patterns* (GoF, 1994), Ch 3 (Creational), Ch 4 (Structural) and Ch 5 (Behavioral): the original intent and applicability of each of the fifteen.
+- *Head First Design Patterns*, 2nd ed., Ch 1 to 8 (Observer, Decorator, Factory, Singleton, Command, Adapter and Facade, Template Method).
+- *Refactoring*, 2nd ed., Ch 3 (Bad Smells in Code) and Ch 10 (Simplifying Conditional Logic).
+
+**Other curricula**
+- [python-patterns.guide (Brandon Rhodes)](https://python-patterns.guide/): treats each pattern by asking what Python already provides.
 
 ## Watch
 - [10 Design Patterns Explained in 10 Minutes (Fireship)](https://www.youtube.com/watch?v=tv-_1er1mWI): a quick tour of the most common patterns with the "do you need it?" caveat for each.

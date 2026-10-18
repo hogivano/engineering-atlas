@@ -61,7 +61,7 @@ A document lives longer than a process. Store the state name in a column, and on
 Asked to add a state, agents tend to add one more `elif status == ...` to each method they happen to open and miss the others. Asked to "use the State pattern", they sometimes put data in the states, or create a new state object on every transition. In review, check that every operation is defined for every state (the base class should refuse by default), that data stays on the context, that the state name written to storage round-trips to the same object, and that tests cover the illegal transitions as well as the happy path. A state diagram in the pull request makes missing edges obvious.
 
 ### The same shape elsewhere
-State is the *multi-step consistency* shape in miniature: a long-lived entity moves through steps, and each step allows a different set of operations. Orders (placed, paid, shipped, delivered, refunded), payment intents, Kubernetes pods (Pending, Running, Succeeded, Failed), TCP connections (LISTEN, SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1 and so on), and pull requests all have the same structure and the same bugs: transitions that skip a guard, two actors racing on one record, and states added without updating every handler.
+State is the *multi-step consistency* shape in miniature: a long-lived entity moves through steps, and each step allows a different set of operations. Orders (placed, paid, shipped, delivered, refunded), payment intents, Kubernetes pods (Pending, Running, Succeeded, Failed, per the [pod lifecycle docs](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/)), TCP connections (LISTEN, SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1 and so on), and pull requests all have the same structure and the same bugs: transitions that skip a guard, two actors racing on one record, and states added without updating every handler.
 
 ## Down the stack
 
@@ -69,9 +69,9 @@ State is the *multi-step consistency* shape in miniature: a long-lived entity mo
 A state machine promises: every operation is either valid in the current state, in which case it performs its effect and moves to exactly one next state, or invalid, in which case it fails with an error that names the operation and the state and changes nothing. Guards (who may approve, whether the text is empty) are checked before any mutation. The history of states is append-only. Across processes, the contract adds: a transition based on a stale read must fail, not overwrite a newer state. Tests should cover every (state, operation) pair, which for 5 states and 6 operations is 30 cases, most of them refusals.
 
 ### Layer 2: The mechanism
-The Linux kernel uses the enum form for TCP. `sk->sk_state` holds values such as `TCP_ESTABLISHED`, `TCP_SYN_RECV` and `TCP_FIN_WAIT1`, and `tcp_rcv_state_process` switches on it to decide what an incoming segment means. The states and transitions follow the diagram in RFC 9293. The enum form suits the kernel: the set of states is fixed by a standard, and the handling for each segment type is easier to read side by side.
+The Linux kernel uses the enum form for TCP. `sk->sk_state` holds values such as `TCP_ESTABLISHED`, `TCP_SYN_RECV` and `TCP_FIN_WAIT1`, and `tcp_rcv_state_process` switches on it to decide what an incoming segment means ([tcp_input.c](https://github.com/torvalds/linux/blob/master/net/ipv4/tcp_input.c)). The states and transitions follow the diagram in [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html), the 2022 specification that folded decades of RFC 793 updates into one document. The enum form suits the kernel: the set of states is fixed by a standard, and the handling for each segment type is easier to read side by side.
 
-Go's `text/template` lexer, described in Rob Pike's "Lexical Scanning in Go" talk, uses state functions: `type stateFn func(*lexer) stateFn`. Each state is a function that does its work and returns the next state, and the run loop is `for state := lexStart; state != nil; { state = state(l) }`. It is the State pattern with functions instead of classes, and it has no switch at all.
+Go's `text/template` lexer, described in Rob Pike's "Lexical Scanning in Go" talk, uses state functions: `type stateFn func(*lexer) stateFn`. Each state is a function that does its work and returns the next state, and the run loop is `for state != nil { state = state(l) }`. It is the State pattern with functions instead of classes, and it has no switch at all. One detail has changed since the talk: the 2011 version ran the lexer in its own goroutine and sent tokens down a channel, while today's source runs the loop on demand inside `nextItem`, called by the parser ([lex.go](https://github.com/golang/go/blob/master/src/text/template/parse/lex.go)). The pattern survived the removal of the goroutine.
 
 Statechart libraries such as XState add what plain state machines lack: hierarchical states (a "review" superstate containing "awaiting first approval" and "awaiting second"), guards on transitions, entry and exit actions, and parallel regions. Workflow engines like AWS Step Functions and Temporal persist the current state and its history durably, so a machine can survive restarts and run for months.
 
@@ -80,7 +80,7 @@ An enum state is one byte or one machine word. A `switch` on a dense enum compil
 
 Allocation is the other cost. If each transition creates a new state object, a busy service allocates on every event and the garbage collector pays for it. Stateless states shared as singletons remove that cost entirely. In V8, a call site like `this.state.approve(...)` sees a different hidden class per state. With five states it becomes megamorphic (more than four shapes), and V8 falls back to a slower generic property lookup. Using one class with a function table, or keeping hot paths to a few states, keeps the call site fast.
 
-Concurrency belongs at the boundary. Within one process, guard the context with a mutex or confine it to one goroutine or event loop, so a transition's guard check and its write cannot interleave with another. Across processes, the database row is the lock: the conditional `UPDATE` above is a compare-and-set, and on Postgres it takes a row lock only for the duration of the statement.
+Concurrency belongs at the boundary. Within one process, guard the context with a mutex or confine it to one goroutine or event loop, so a transition's guard check and its write cannot interleave with another. Across processes, the database row is the lock: the conditional `UPDATE` above is a compare-and-set. On Postgres the updater takes a row lock that lasts until its transaction ends ([Postgres docs](https://www.postgresql.org/docs/current/explicit-locking.html)). Under the default Read Committed level, a second updater waits for the first, then re-evaluates the `WHERE` clause against the new row version, so `state = 'review'` no longer matches and zero rows change ([Postgres docs](https://www.postgresql.org/docs/current/transaction-iso.html)).
 
 ### Why it's built this way
 1. Long-lived entities move through modes, and each mode allows different operations, so the rules form a graph.
@@ -108,6 +108,11 @@ stateDiagram-v2
 A newsroom publishes about 600 articles a day; each passes through 9 statuses on average, so the system handles roughly 5,400 transitions a day plus about 40,000 edits. The original code had a `status` column and 37 places that read it, across the web app, a mobile API and two background jobs. An audit found 4 of those places allowed edits in a state where edits should have been blocked. In one incident a correction was applied to an article after legal review, and the legally reviewed version was never the one readers saw.
 
 The team moved the rules into one module with a state class per status and a base class that refuses everything. Every entry point now loads the article, calls the context method, and saves with a conditional update on `(state, version)`. The test suite enumerates all 12 statuses against all 9 operations, 108 cases, generated from a table. In the first month, conditional updates rejected about 30 transitions a day, almost all of them double clicks and two editors approving at once; before, those had silently overwritten each other. Adding the "scheduled" status later touched one new class, two transitions and the table. The per-operation overhead of the state lookup is under a microsecond against a 4 ms database write, so the refactor cost nothing measurable at runtime.
+
+## In the wild
+- **AWS, 2025-10: a transition decided on stale data.** In DynamoDB's DNS automation, a delayed Enactor applied an old plan over a newer one because its freshness check had gone stale while it waited. Another Enactor's cleanup then deleted the old plan, leaving the regional endpoint with no IP addresses and DynamoDB errors for about 2h52m. A guarded transition, "apply only if the current version is still the one I read", is exactly the conditional update this lesson prescribes ([AWS](https://aws.amazon.com/message/101925/)).
+- **The TCP state machine, RFC 9293 (2022).** Every TCP stack implements the connection states (LISTEN, SYN-RECEIVED, ESTABLISHED, FIN-WAIT-1 and so on) and the transitions between them as a published diagram. Linux holds the state in `sk->sk_state` and branches on it in `tcp_rcv_state_process`, an enum-based version of the pattern ([RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html)).
+- **Go text/template lexer.** Each lexing state is a function returning the next state, so the machine has no state classes and no switch, and states are cheap enough to run per token ([lex.go](https://github.com/golang/go/blob/master/src/text/template/parse/lex.go)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -941,6 +946,26 @@ func (d *Document) Archive(user string) error    { return d.state.archive(d, use
 - Hierarchical or "return to previous" handling for "on hold", storing the state to resume, rather than duplicating transitions.
 - Side effects after commit through an outbox, with idempotency keys on payment calls, so a rolled-back transition never charges or notifies.
 - An append-only history of transitions for support and analytics, and tests that enumerate every state and operation pair.
+
+## Sources and further study
+**Primary**
+- [RFC 9293: Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293.html): the TCP state diagram as a normative specification.
+- [Lexical Scanning in Go (Rob Pike)](https://go.dev/talks/2011/lex.slide): state functions as a design technique.
+- [PostgreSQL: Transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html): how a concurrent UPDATE re-checks its WHERE clause in Read Committed.
+
+**Systems docs**
+- [Kubernetes: Pod lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/): pod phases and container states as a documented state machine.
+- [PostgreSQL: Explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html): row-lock lifetime, which is why conditional updates serialize racing transitions.
+- [AWS: DynamoDB service disruption, October 2025](https://aws.amazon.com/message/101925/): a stale-read transition in a production control plane.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral Patterns), State.
+- *Head First Design Patterns*, Freeman and Robson: chapter 10, "The State of Things".
+- *Refactoring*, Martin Fowler, 2nd edition: chapter 10 (Simplifying Conditional Logic), the usual route from a status field to State.
+
+**Other curricula**
+- [Game Programming Patterns: State](https://gameprogrammingpatterns.com/state.html): walks from flags to finite, hierarchical and pushdown state machines, the same progression this lesson follows.
+- [Refactoring.Guru: State](https://refactoring.guru/design-patterns/state): the textbook structure, with the Strategy comparison.
 
 ## Watch
 - [State Pattern, Design Patterns ep 17 (Christopher Okhravi)](https://www.youtube.com/watch?v=N12L5D78MAA): builds the pattern from a switch-based design and compares it with Strategy.

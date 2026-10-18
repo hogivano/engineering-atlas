@@ -55,10 +55,10 @@ class PricingEngine:
 A new campaign is a new class with its own tests, plus one line where the rules are assembled. The engine, its invariants and its tests do not change. That is the whole idea: the engine is closed, the rule set is open.
 
 ### Choosing the axis
-Bertrand Meyer coined the principle in 1988 in terms of inheritance: extend a class by subclassing instead of editing it. The modern reading, popularised by Robert Martin, uses interfaces and composition. Either way, you can only be closed against changes you predicted. The pricing engine above is closed against new promotion types. It is wide open to "promotions now need the customer's loyalty tier", which changes the rule interface and every rule. This is the expression problem: with polymorphism, adding a variant is one new class but adding an operation touches every class; with a `switch` over a closed set of variants, adding an operation is one new function but adding a variant touches every `switch`. Look at your history and pick the axis that churns.
+Bertrand Meyer coined the principle in 1988 in terms of inheritance ([Wikipedia](https://en.wikipedia.org/wiki/Open%E2%80%93closed_principle)): extend a class by subclassing instead of editing it. The modern reading, popularised by Robert Martin, uses interfaces and composition. Either way, you can only be closed against changes you predicted. The pricing engine above is closed against new promotion types. It is wide open to "promotions now need the customer's loyalty tier", which changes the rule interface and every rule. This is the [expression problem](https://homepages.inf.ed.ac.uk/wadler/papers/expression/expression.txt): with polymorphism, adding a variant is one new class but adding an operation touches every class; with a `switch` over a closed set of variants, adding an operation is one new function but adding a variant touches every `switch`. Look at your history and pick the axis that churns.
 
 ### When following it too zealously hurts
-- **Speculative seams.** A `NotificationChannelFactory` with one channel and a plugin loader is complexity paid in advance for flexibility that may never be used. YAGNI applies.
+- **Speculative seams.** A `NotificationChannelFactory` with one channel and a plugin loader is complexity paid in advance for flexibility that may never be used. YAGNI applies ([Fowler](https://martinfowler.com/bliki/Yagni.html)).
 - **Configuration as a programming language.** Teams sometimes "close" the engine so completely that rules live in YAML with conditions, loops and references. Now the logic has no type checker, no debugger and no unit tests.
 - **Hidden ordering coupling.** Rules that look independent often are not. Ten percent off and then five dollars off is a different price from the reverse. The seam does not remove that coupling; the engine has to own and document the order.
 - **Closed sets dressed up as open.** Order states (pending, paid, shipped, refunded) are a fixed set with transitions between them. An exhaustive `switch` with a compiler check is clearer than a state interface with one class per state.
@@ -67,7 +67,7 @@ Bertrand Meyer coined the principle in 1988 in terms of inheritance: extend a cl
 Given a long `if/elif` chain and a request for one more case, an agent will add one more branch, because that is the smallest local change. It will often add a boolean flag parameter to an existing function for the same reason. Neither is wrong once; repeated twenty times it produces the "before" above. When a seam exists, point the agent at it ("add a `PricingRule` and register it; do not edit the engine") and review for the shape of the diff: new files plus one registration line is a good sign, edits inside the engine loop deserve a closer look. Tests for the engine that use a rule defined only in the test file are the strongest evidence the seam is real.
 
 ### The same shape elsewhere
-The pricing engine is an ordered chain of independent steps over shared state, and order matters. Infrastructure is full of the same design: Envoy HTTP filter chains, Linux netfilter hooks, Express or Go `net/http` middleware, Kubernetes admission webhooks. Each lets you add behaviour by registering a new step without recompiling the core, and each has had bugs caused by steps running in an unexpected order.
+The pricing engine is an ordered chain of independent steps over shared state, and order matters. Infrastructure is full of the same design: [Envoy HTTP filter chains](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_filters), Linux netfilter hooks, [Express](https://expressjs.com/en/guide/using-middleware.html) or Go `net/http` middleware, [Kubernetes admission webhooks](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/). Each lets you add behaviour by registering a new step without recompiling the core, and each has had bugs caused by steps running in an unexpected order.
 
 ## Down the stack
 
@@ -75,10 +75,10 @@ The pricing engine is an ordered chain of independent steps over shared state, a
 The engine promises: rules run in registration order; each rule sees the running total after the previous rules; a rule's discount is clamped to between zero and the running total, so the total never goes negative; the result lists exactly which rules applied and how much each took. Each rule promises to be a pure function of its inputs, with no I/O and no shared mutable state. Those two contracts are what make an unknown future rule safe to plug in.
 
 ### Layer 2: The mechanism
-The mechanism is the strategy pattern plus a registry. In Go the rule is an interface; a registry is a slice or a `map[string]func() Rule` filled at startup, sometimes from `init()` functions in separate packages (the way `database/sql` drivers register themselves). In TypeScript the interface is checked at compile time and erased; at runtime each rule is an object whose `discount` method is found on its prototype. In Python the engine relies on duck typing, optionally checked with `typing.Protocol`. Statically typed languages with sum types offer the alternative axis: a Rust `enum` or a TypeScript discriminated union with an exhaustive `switch` makes the compiler list every place that must change when you add a variant.
+The mechanism is the [strategy pattern](https://refactoring.guru/design-patterns/strategy) plus a registry. In Go the rule is an interface; a registry is a slice or a `map[string]func() Rule` filled at startup, sometimes from `init()` functions in separate packages (the way `database/sql` drivers register themselves through [`sql.Register`](https://pkg.go.dev/database/sql)). In TypeScript the interface is checked at compile time and erased; at runtime each rule is an object whose `discount` method is found on its prototype. In Python the engine relies on duck typing, optionally checked with `typing.Protocol`. Statically typed languages with sum types offer the alternative axis: a Rust `enum` or a TypeScript discriminated union with an exhaustive `switch` makes the compiler list every place that must change when you add a variant.
 
 ### Layer 3: The machine
-Each rule call is a dynamic dispatch. In C++ or Java the object's header points to a vtable, and the call loads the function pointer from a fixed slot and jumps: one or two dependent loads plus an indirect branch, about 1 to 3 ns when the branch predictor guesses right. In Go an interface value is two words, an itab pointer and a data pointer; the itab holds the method pointers for that concrete type, computed once and cached, so a call is the same load-and-jump. Storing a non-pointer value larger than a word in an interface can force a heap allocation, which is why rule types are usually pointers or zero-size structs. In V8, `rule.discount(...)` is a property lookup along the prototype chain that an inline cache remembers per call site: one shape (monomorphic) is fast, two to four (polymorphic) is a short check list, and beyond that (megamorphic) it falls back to a slower global cache. A loop over twenty different rule classes is megamorphic at that call site. CPython looks the method up through the type's MRO with a per-type method cache, roughly 50 ns per call.
+Each rule call is a dynamic dispatch. In C++ or Java the object's header points to a vtable, and the call loads the function pointer from a fixed slot and jumps: one or two dependent loads plus an indirect branch, about 1 to 3 ns when the branch predictor guesses right. In Go an interface value is two words, an itab pointer and a data pointer ([Russ Cox](https://research.swtch.com/interfaces)); the itab holds the method pointers for that concrete type, computed once and cached, so a call is the same load-and-jump. Storing a non-pointer value larger than a word in an interface can force a heap allocation, which is why rule types are usually pointers or zero-size structs. In V8, `rule.discount(...)` is a property lookup along the prototype chain that an inline cache remembers per call site: one shape (monomorphic) is fast, two to four (polymorphic) is a short check list, and beyond that (megamorphic) it falls back to a slower global cache. A loop over twenty different rule classes is megamorphic at that call site. CPython looks the method up through the type's MRO with a per-type method cache, roughly 50 ns per call.
 
 At realistic scale this is noise. Twenty rules times 2,000 checkouts per second is 40,000 calls per second, a few milliseconds of CPU per second even in Python. The cost that matters is concurrency: rules shared by all request goroutines or threads must be stateless or immutable. Build the registry once at startup and only read it afterwards, and no lock is needed. If rules can be hot-reloaded, build a new slice and swap it in with an atomic pointer store, so readers never see a half-built list.
 
@@ -107,6 +107,11 @@ After the refactor, the engine is 40 lines and has not changed in eight months. 
 
 Ordering is the subtle part. With a 100.00 cart and two rules, "10% off" and "20.00 off orders of 95.00 or more": percent first gives 90.00, which is below the threshold, so the total is 90.00. Fixed first gives 80.00, then 10% off that is 72.00. The engine makes order explicit in the registry and returns the list of applied rules, so support staff can explain any quote.
 
+## In the wild
+- **Go standard library: `database/sql` drivers.** The package never imports a database. Each driver calls `sql.Register` under a name, and registering the same name twice or a nil driver panics ([Go docs](https://pkg.go.dev/database/sql)). A new database is a new package, and the core is untouched.
+- **Envoy: HTTP filters.** The connection manager invokes decoder filters as it decodes headers, body and trailers, and encoder filters as it encodes the response, so new behaviour is a filter added to a chain ([Envoy docs](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_filters)).
+- **Kubernetes: admission webhooks.** Admission plugins can run as webhooks configured at runtime; mutating webhooks run first and may modify the object, then validating ones check it ([Kubernetes docs](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)). The API server stays closed while policy stays open, and the ordering rule is part of the contract.
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -117,7 +122,7 @@ Ordering is the subtle part. With a 100.00 cart and two rules, "10% off" and "20
 
 ## Pitfalls in production
 - Rules that do I/O (look up the customer, call a fraud API) inside the pricing loop, adding latency and partial failure to every quote. Fix: load the context once and pass it in; keep rules pure.
-- Order defined implicitly by import order or map iteration, which in Go is randomised. Fix: an explicit ordered list or priority field, tested.
+- Order defined implicitly by import order or map iteration, which Go leaves unspecified and randomises in practice ([Go spec](https://go.dev/ref/spec)). Fix: an explicit ordered list or priority field, tested.
 - Stacking promotions that together exceed the price. Fix: the engine clamps each discount, and business caps (one promotion per category) live in the engine, not in each rule.
 - Changing the rule interface "just slightly" and editing thirty rules in one pull request. Fix: add a new optional capability or a context object that can grow without breaking existing rules.
 - Seams with one implementation, kept "for the future". Fix: inline them; reintroduce the seam when the second variant arrives.
@@ -615,6 +620,26 @@ func (e PricingEngine) Quote(items []Item) Quote {
 - Recognising the axis: channels are the churning variant; cross-cutting policies are operations that would otherwise touch every channel.
 - Contract tests every channel adapter must pass, so the closed dispatcher can trust new channels.
 - Limited data-driven routing (priority lists, feature flags) with validation, rather than a general-purpose rule language.
+
+## Sources and further study
+**Primary**
+- [Wadler, The Expression Problem (1998)](https://homepages.inf.ed.ac.uk/wadler/papers/expression/expression.txt): the original note on why adding cases and adding operations pull in opposite directions.
+- Meyer, *Object-Oriented Software Construction* (1st ed., 1988): where the open-closed principle was first stated, in terms of inheritance.
+
+**Systems docs**
+- [Go: database/sql](https://pkg.go.dev/database/sql): registration-based extension in a standard library.
+- [Envoy: HTTP filters](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_filters): ordered decoder and encoder filter chains.
+- [Kubernetes: dynamic admission control](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/): policy added without changing the API server.
+- [Go spec: for statements with range](https://go.dev/ref/spec): why registry order must not depend on map iteration.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin, chapter 8 "OCP: The Open-Closed Principle": the principle applied to architecture and dependency direction.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides, chapter 5 (Behavioral patterns, including Strategy): the pattern that supplies the seam.
+- *Head First Design Patterns* (2nd ed.), Freeman and Robson, chapter 3 "Decorating Objects: The Decorator Pattern": a worked introduction to extending behaviour without editing it.
+
+**Other curricula**
+- [Refactoring.Guru: Switch Statements](https://refactoring.guru/smells/switch-statements): treats a growing conditional as a smell and points to polymorphism, with the same caveat about closed sets.
+- [Azure Architecture Center: Pipes and Filters](https://learn.microsoft.com/en-us/azure/architecture/patterns/pipes-and-filters): the chain-of-steps shape at service scale.
 
 ## Watch
 - [Nothing is Something (Sandi Metz, RailsConf 2015)](https://www.youtube.com/watch?v=OMPfEXIlTVE): replacing conditionals with injected collaborators so new behaviour is added, not edited in.

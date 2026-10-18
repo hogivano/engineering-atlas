@@ -34,7 +34,7 @@ class ReminderJob:
 The rule that matters to the business is one line: remind when an invoice is due within three days. Everything else is detail, yet the rule cannot be tested without a Postgres database, a SendGrid key and control of the current time. Switching from SendGrid to SES means editing the class that holds the business rule.
 
 ### The "after": policy owns its interfaces
-Invert the dependencies. The reminder module declares what it needs, in its own terms:
+Martin's original statement has two halves: high-level modules should not depend on low-level modules, and abstractions should not depend on details, with both sides depending on abstractions ([Martin, "The Dependency Inversion Principle", C++ Report](https://web.archive.org/web/2010/http://www.objectmentor.com/resources/articles/dip.pdf)). Invert the dependencies. The reminder module declares what it needs, in its own terms:
 
 ```python
 class Clock(Protocol):
@@ -54,10 +54,12 @@ class ReminderService:
 
 A separate `adapters` package contains `PostgresInvoiceRepo`, `SesNotifier` and `SystemClock`, each importing the reminder module to implement its interfaces. A `main.py` (the composition root) constructs them and passes them in. The reminder module imports nothing from Postgres or AWS. The import graph now points inward, toward the policy.
 
+The clock deserves its own interface because time is the dependency most often hidden. The JDK ships the idea in `java.time.Clock`, whose stated purpose is to let alternate clocks be plugged in, which can simplify testing ([Java docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/time/Clock.html)), and Kubernetes' Go utilities publish a `clock.Clock` interface with real and fake implementations ([k8s.io/utils/clock](https://pkg.go.dev/k8s.io/utils/clock)).
+
 Tests now construct the service with a fixed clock, an in-memory repo and a recording notifier, and run in microseconds. Swapping vendors means writing a new adapter, not editing the rule. And the interfaces describe the domain (`unpaid`, `mark_reminded`) rather than the database (`execute`, `cursor`): the abstraction belongs to the policy, so it speaks the policy's language.
 
 ### Inversion is not the same as injection
-Dependency injection (passing collaborators in) is a technique. Dependency inversion is a statement about which module owns the abstraction. You can inject a `psycopg.Connection` into a service: that is injection without inversion, because the policy still depends on the driver's API. You can also invert without a framework: a constructor with three parameters and a 20-line `main` is enough for most services. DI containers (Spring, Guice, .NET's built-in container, Go's Wire or Fx, Python's `dependency-injector`) automate the wiring when the object graph gets large, at the cost of making it less visible.
+Dependency injection (passing collaborators in) is a technique. Dependency inversion is a statement about which module owns the abstraction. You can inject a `psycopg.Connection` into a service: that is injection without inversion, because the policy still depends on the driver's API. Fowler's article that named the pattern compares constructor, setter and interface injection, and contrasts injection with a service locator ([Fowler](https://martinfowler.com/articles/injection.html)). Microsoft's guidance for .NET says the same in practice: avoid direct instantiation of dependent classes inside services, because it couples the code to a particular implementation ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines)). You can also invert without a framework: a constructor with three parameters and a 20-line `main` is enough for most services. DI containers and generators (Spring, Guice, .NET's built-in container, Go's Fx, Python's `dependency-injector`) automate the wiring when the object graph gets large, at the cost of making it less visible.
 
 ### When inversion is overkill
 Not every dependency deserves an interface. The standard library's string functions, a pure math helper, an internal data class: these are stable, deterministic and fast, and wrapping them adds nothing. The useful test is volatility and side effects. Invert a dependency when it does I/O, reads time or randomness, has a vendor you might replace, or is slow enough to keep out of unit tests. Leave it concrete otherwise.
@@ -73,14 +75,14 @@ This is the trust-but-verify shape. You can only verify what you can control, an
 The policy module promises behaviour in terms of its own interfaces: given a clock reading, a repository's contents and a notifier's responses, it produces a defined sequence of calls. Testable form: with injected fakes, the same inputs always give the same calls and the same result, and the module's import list contains no infrastructure package.
 
 ### Layer 2: The mechanism
-Constructor injection stores references in fields; each call goes through an interface. Wiring happens once, at startup, in a composition root. Containers automate that step in different ways. Spring scans the classpath, reads annotations by reflection and builds a bean graph, often creating proxies for scoped or transactional beans. Go's Wire generates plain constructor calls at compile time, so there is no runtime container. Uber's Fx resolves the graph by reflection at startup. In Python and TypeScript, most teams pass dependencies explicitly; monkeypatching is a weaker substitute, because it patches a module global rather than the one object under test.
+Constructor injection stores references in fields; each call goes through an interface. Wiring happens once, at startup, in a composition root. Containers automate that step in different ways. Spring scans the classpath, reads annotations by reflection and builds a bean graph, often creating proxies for scoped or transactional beans. Go's Wire generated plain constructor calls at compile time, so there was no runtime container; note that Google archived the Wire repository in August 2025 and it no longer accepts new features ([google/wire](https://github.com/google/wire)), so new Go services usually hand-write the wiring or use Fx. Dagger does the same compile-time generation for Java and Android ([Dagger guide](https://dagger.dev/dev-guide/)). Uber's Fx resolves the graph by reflection at startup. In Python and TypeScript, most teams pass dependencies explicitly; monkeypatching is a weaker substitute, because it patches a module global rather than the one object under test.
 
-Package boundaries enforce the inversion. Go forbids import cycles, so if `adapters` imports `reminder`, `reminder` cannot import `adapters`; the compiler checks the direction. Tools such as import-linter for Python and ArchUnit for Java let you write that rule for languages that do not enforce it.
+Package boundaries enforce the inversion. Go forbids import cycles, so if `adapters` imports `reminder`, `reminder` cannot import `adapters`; the compiler checks the direction. Tools such as [import-linter](https://import-linter.readthedocs.io/en/stable/) for Python and [ArchUnit](https://www.archunit.org/) for Java let you write that rule for languages that do not enforce it.
 
 ### Layer 3: The machine
 Each call through an injected interface is an indirect call: about 1 to 3 ns with a warm branch predictor, plus a lost inlining opportunity. Compared to what these dependencies do (a Postgres query at 0.5 to 5 ms, an HTTP call to an email vendor at 50 to 300 ms) that is under one part in 100,000. Injection is effectively free on I/O paths. It is not free in a tight CPU loop, where an injected `Hasher` called 100 million times can cost a few hundred milliseconds that a direct call would not; keep inversion at I/O boundaries, not inside hot kernels.
 
-The visible runtime costs come from containers. Reflection-based wiring at startup can take hundreds of milliseconds to several seconds in large Spring applications, which matters for serverless cold starts; ahead-of-time processing (Spring AOT, GraalVM native images) or compile-time wiring (Wire, Dagger) moves that work to build time. Proxies add a frame and sometimes an allocation per call. Injected singletons are shared across threads or goroutines, so a fake that is safe in a single-threaded test may race in production; real adapters need their own locking or connection pools.
+The visible runtime costs come from containers. Reflection-based wiring at startup can take hundreds of milliseconds to several seconds in large Spring applications, which matters for serverless cold starts; ahead-of-time processing (Spring AOT, GraalVM native images) or compile-time wiring (Dagger, or generated Go code) moves that work to build time. Proxies add a frame and sometimes an allocation per call. Injected singletons are shared across threads or goroutines, so a fake that is safe in a single-threaded test may race in production; real adapters need their own locking or connection pools.
 
 ### Why it's built this way
 1. Business rules change at one rate, infrastructure at another; coupling them makes each change pay for both.
@@ -108,13 +110,18 @@ After inversion, the team wrote 14 unit tests with a fixed clock, an in-memory r
 
 One integration test still runs the Postgres adapter against a real database to check the SQL. That is the right split: policy tested with fakes, adapter tested against the real thing.
 
+## In the wild
+- **Microsoft Azure, 2012: the leap-day certificate.** The guest agent computed a certificate's expiry as the current date with the year plus one, which on 29 February gave 29 February 2013, a date that does not exist. Certificate creation failed, hosts read the failures as faults, and service management was disrupted for many hours. Among Microsoft's stated fixes were better tests to detect time-related bugs and code analysis for the same class of error. Code that reads the clock directly cannot be driven to 29 February in a unit test; code that takes a clock can ([Azure blog](https://azure.microsoft.com/en-us/blog/summary-of-windows-azure-service-disruption-on-feb-29th-2012/)).
+- **Cloudflare, 2017: the leap second and a negative number.** At midnight UTC on 1 January the wall clock stepped back, so a time difference in Cloudflare's DNS software came out negative, and a negative value reached a random-number call that panics on negative input. Affected resolutions failed until a patch discarded negative intervals ([Cloudflare](https://blog.cloudflare.com/how-and-why-the-leap-second-affected-cloudflare-dns/)). The lesson for design is the same: a clock behind an interface can be made to step backwards in a test.
+- **Kubernetes, ongoing: a shared clock interface.** The `k8s.io/utils/clock` package exists so controllers and caches take a `Clock` with real and fake implementations instead of calling `time.Now` and `time.After` directly, which lets tests move time forward without sleeping ([package docs](https://pkg.go.dev/k8s.io/utils/clock)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
 | Direct instantiation inside policy | Simple, easy to navigate | Untestable side effects, vendor lock-in in the rule | Scripts and prototypes |
 | Constructor injection, hand-written root | Explicit, no magic, fast startup | Wiring boilerplate in large graphs | Most services |
 | Reflection DI container | Wires large graphs, scopes, lifecycles | Startup cost, hidden wiring, runtime errors | Large Java or .NET apps with established conventions |
-| Compile-time DI (Wire, Dagger) | Checked wiring, no runtime cost | Code generation step | Large Go or Android graphs |
+| Compile-time DI (Dagger; Go's Wire, now archived) | Checked wiring, no runtime cost | Code generation step; tool maintenance risk | Large Android or Java graphs |
 | Monkeypatching globals in tests | No production changes | Brittle, leaks between tests, hides design problems | Legacy code before a refactor |
 
 ## Pitfalls in production
@@ -672,6 +679,25 @@ func (s *ReminderService) Run() []string {
 - Policy-owned interfaces in domain terms, with adapters in a separate package and an import rule enforced by tooling.
 - Contract tests run against both the fake and the real adapter to keep them honest.
 - A reasoned stance on containers: wiring pain and team familiarity versus startup cost and opacity.
+
+## Sources and further study
+**Primary**
+- [Robert C. Martin, "The Dependency Inversion Principle" (C++ Report, 1996)](https://web.archive.org/web/2010/http://www.objectmentor.com/resources/articles/dip.pdf): the original two-part statement and the copy-program example.
+- [Java `java.time.Clock` documentation](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/time/Clock.html): a standard-library clock abstraction built so that tests can plug in another one.
+
+**Systems docs**
+- [Microsoft Learn: dependency injection guidelines for .NET](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines): avoid static state and direct instantiation inside services.
+- [k8s.io/utils/clock](https://pkg.go.dev/k8s.io/utils/clock): real and fake clocks behind one interface in a large Go codebase.
+- [google/wire](https://github.com/google/wire): compile-time DI for Go, now archived, useful as a case of tooling risk.
+- [Dagger user guide](https://dagger.dev/dev-guide/): generated, compile-time dependency injection for Java and Android.
+- [import-linter](https://import-linter.readthedocs.io/en/stable/) and [ArchUnit](https://www.archunit.org/): enforcing the direction of imports with tests or lint contracts.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin: chapter 11 "DIP: The Dependency Inversion Principle", and chapter 26 "The Main Component", which is the composition root.
+- *Head First Design Patterns*, Freeman and Robson: chapter 4, where the Factory pattern is used to motivate depending on abstractions.
+
+**Other curricula**
+- [Microsoft Learn: .NET dependency injection](https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection): how a platform vendor frames injection and its built-in container.
 
 ## Watch
 - [Dependency Injection, The Best Pattern (CodeAesthetic)](https://www.youtube.com/watch?v=J1f5b4vcxCQ): a short, concrete refactor from hard-wired dependencies to injected ones.

@@ -13,7 +13,7 @@ minutes: 15
 ## How it works
 
 ### The rule, precisely
-The rule comes from the Demeter project at Northeastern University in 1987. Inside a method `m` of object `o`, you may call methods on:
+The rule was first proposed at Northeastern University in the fall of 1987 by Ian Holland, working on the Demeter project ([Lieberherr's LoD page](https://www.ccs.neu.edu/home/lieber/LoD.html)), and the paper that formalised it appeared at OOPSLA 1988 ([Lieberherr, Holland and Riel](https://www.ccs.neu.edu/research/demeter/papers/law-of-demeter/oopsla88-law-of-demeter.pdf)). Inside a method `m` of object `o`, you may call methods on:
 1. `o` itself.
 2. Parameters of `m`.
 3. Objects created inside `m`.
@@ -35,9 +35,9 @@ def label(order):
 `label` now knows that orders have customers, customers have one address and an account, accounts have tiers, and that shipping goes to the customer's address. That last one is wrong as soon as a customer can ship to a different address per order, and the fix has to touch every chain like this in the codebase. In the worked example below, the team found 37 of them.
 
 ### Three fixes
-**Tell, don't ask.** Move the decision to the object that has the data: `order.make_label()`. The order knows where it ships and how urgent it is.
+**Tell, don't ask.** Move the decision to the object that has the data: `order.make_label()`. Fowler's [Tell Don't Ask](https://martinfowler.com/bliki/TellDontAsk.html) frames this as bundling data with the functions that operate on it. The order knows where it ships and how urgent it is.
 
-**Delegate one level.** If callers truly need the value, add `order.shipping_city()`. The order can answer from its own shipping address, its customer's default, or a cached field, and callers do not care.
+**Delegate one level.** If callers truly need the value, add `order.shipping_city()`. This is the refactoring Fowler's catalogue calls [Hide Delegate](https://refactoring.com/catalog/hideDelegate.html), and the message-chains smell it cures is described in the same terms: the client depends on navigation along the class structure ([Refactoring.Guru](https://refactoring.guru/smells/message-chains)). The order can answer from its own shipping address, its customer's default, or a cached field, and callers do not care.
 
 **Pass the narrow thing.** If `label` only needs a city and a priority, make those the parameters: `label(city, priority)`. The caller that already has the order extracts them once, and `label` becomes trivial to test.
 
@@ -46,7 +46,7 @@ def label(order):
 - **Values and data structures.** `name.strip().lower()` operates on strings. A parsed JSON config or a DTO has no behaviour to hide; walking it is reading data, not reaching into an object's internals.
 - **Collections and pipelines.** `items.filter(...).map(...)` is the same.
 
-Over-applying the law produces a different smell: classes full of one-line forwarders like `getCustomerAddressCityName()`. If an object grows ten of these, the callers probably want a behaviour on that object, not more getters.
+Over-applying the law produces a different smell: classes full of one-line forwarders like `getCustomerAddressCityName()`. Fowler's catalogue has the inverse refactoring, [Remove Middle Man](https://refactoring.com/catalog/removeMiddleMan.html), for exactly this case, and the Refactoring.Guru page on message chains lists overly aggressive delegate hiding as a reason to stop. If an object grows ten of these, the callers probably want a behaviour on that object, not more getters.
 
 ### Mocks expose violations
 A test for the train-wreck `label` needs a mock order that returns a mock customer that returns a mock address that returns a city. Three levels of stubs to test one line of logic is a reliable sign that the code knows too much. With `label(city, priority)`, the test needs no mocks at all.
@@ -60,14 +60,14 @@ LoD is the *coupling* problem that networks solved with layering. An IP host doe
 ## Down the stack
 
 ### Layer 1: The contract
-A method that follows LoD depends only on the interfaces of its immediate collaborators. The testable promise: if a class changes its internal structure (its fields and the types of objects it holds) without changing its own public methods, no method outside it that obeys LoD needs to change. The original paper distinguishes a strict form, which counts only fields declared in the class itself, and a weaker form, which also allows inherited fields.
+A method that follows LoD depends only on the interfaces of its immediate collaborators. The testable promise: if a class changes its internal structure (its fields and the types of objects it holds) without changing its own public methods, no method outside it that obeys LoD needs to change. The original paper distinguishes a strong form, which allows only instance variables declared in the class itself, and a weak form, which also allows inherited ones.
 
 ### Layer 2: The mechanism
 Languages offer tools to obey the law without writing every forwarder by hand. Rails' `delegate :city, to: :address` generates forwarding methods. Kotlin's `by` keyword delegates a whole interface to a field. Go struct embedding promotes the inner type's methods onto the outer type, which shortens chains but also publishes the inner API, so embedding a type is a public commitment to its whole method set.
 
-Static analysis can flag violations. PMD for Java has a `LawOfDemeter` rule that tracks whether each receiver is a field, parameter, local created in the method, or a returned value. It is noisy on fluent APIs, which is why it is rarely enabled by default.
+Static analysis can flag violations. PMD for Java has a `LawOfDemeter` rule that gives each expression a "degree": `this` is 0, a parameter or a newly created object is 1, and each getter or field access adds one. Expressions beyond a configurable `trustRadius` are reported, and the default radius of 1 corresponds to the original law. The rule has exceptions for builders and collections, yet its own documentation warns that it is prone to many false positives ([PMD docs](https://docs.pmd-code.org/latest/pmd_rules_java_design.html)), which is why teams raise the radius or leave it off.
 
-ORMs turn chains into queries. With lazy loading in Django or ActiveRecord, `order.customer.address.city` issues a `SELECT` for the customer and another for the address, the first time each is touched. Inside a loop, that is the N+1 query problem. `select_related` in Django and `includes` in ActiveRecord fix it with a join, but only if the code that knows what will be read is the code that loads it, which is exactly what a method like `Order.shipping_city()` centralises.
+ORMs turn chains into queries. With lazy loading in Django or ActiveRecord, `order.customer.address.city` issues a `SELECT` for the customer and another for the address, the first time each is touched. Inside a loop, that is the N+1 query problem, which the Rails guides define as fetching N records in one query and then triggering one extra query for each ([Rails guides](https://guides.rubyonrails.org/active_record_querying.html)). `select_related` in Django follows foreign keys in one more complex query ([Django docs](https://docs.djangoproject.com/en/5.2/ref/models/querysets/)) and `includes` in ActiveRecord does the same kind of eager loading, but only if the code that knows what will be read is the code that loads it, which is exactly what a method like `Order.shipping_city()` centralises.
 
 Null propagation multiplies too. Each hop is a place where the value can be missing. Optional chaining (`order?.customer?.address?.city` in TypeScript or Kotlin) stops the crash, but it hides which link was missing and silently turns "no address" into `undefined`.
 
@@ -102,6 +102,11 @@ An order history page shows 50 orders, each with its shipping city. The template
 The team adds `Order.shipping_city()` and a repository method `recent_with_shipping(user_id, limit)` that joins orders to addresses in one query. The page drops to 1 query at about 3 ms. The template now calls one method on its own parameter.
 
 Six months later, orders gain a per-order shipping address, separate from the customer's default. The change touches `Order.shipping_city()` and the repository query. Before the refactor, a search found 37 chains through `customer.address` in templates, emails, the label service and two reports. Each would have kept printing the customer's default address, silently wrong, after the schema change.
+
+## In the wild
+- **GitLab: a test that counts queries.** GitLab's developer docs say merge requests should not increase query counts and describe `QueryRecorder`, which takes a control count, adds records and reruns the page to see whether queries grew per record. They explain why: without the test, a new feature that touches one more model can silently reintroduce the N+1 problem ([GitLab docs](https://docs.gitlab.com/development/database/query_recorder/)). Chains through associations are the usual source, and the test catches them whatever the code looks like.
+- **Rails: N+1 is a documented default hazard.** The framework's own guide opens its eager-loading chapter with a ten-book example where `book.author.last_name` inside a loop fires 11 queries, and it recommends `includes` ([Rails guides](https://guides.rubyonrails.org/active_record_querying.html)). The two-dot chain in that example is the whole problem in miniature.
+- **PMD: a lint rule that had to be softened.** The `LawOfDemeter` rule ships with exceptions for builders and collections and a `trustRadius` setting, and its documentation warns of false positives, because counting every chained call as a violation flags fluent APIs and data walks that are fine ([PMD docs](https://docs.pmd-code.org/latest/pmd_rules_java_design.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -477,6 +482,25 @@ func CheckMethod(m Method) []string {
 - Linking chains through lazy relations to N+1 queries, and fixing them with one owner method that loads with a join or a read model.
 - Rejecting blanket forwarders in favour of behaviours and narrow parameters, with fluent APIs and plain data excluded.
 - Asking the payments service to return the fields checkout needs, instead of walking its nested response, so its schema can evolve.
+
+## Sources and further study
+**Primary**
+- [Holland and Lieberherr, "Assuring good style for object-oriented programs" (IEEE Software, 1989)](https://www.ccs.neu.edu/home/lieber/LoD.html): listed on the Demeter project's page alongside the OOPSLA paper, as the second formal statement of the law.
+- [Fowler: Hide Delegate](https://refactoring.com/catalog/hideDelegate.html): the refactoring that removes a message chain by adding a method on the first object.
+
+**Systems docs**
+- [PMD `LawOfDemeter` rule](https://docs.pmd-code.org/latest/pmd_rules_java_design.html): a "degree" and `trustRadius` model of the law, with its false-positive warning.
+- [Rails guides: eager loading and N+1](https://guides.rubyonrails.org/active_record_querying.html): the query-count cost of chains over lazy associations.
+- [Django `select_related`](https://docs.djangoproject.com/en/5.2/ref/models/querysets/): following foreign keys in one query.
+- [GitLab: QueryRecorder](https://docs.gitlab.com/development/database/query_recorder/): guarding against N+1 regressions with a test.
+
+**Books**
+- *Refactoring*, Martin Fowler (2nd ed.): chapter 3 "Bad Smells in Code" (message chains) and chapter 7 "Encapsulation" (Hide Delegate, Remove Middle Man).
+- *Clean Architecture*, Robert C. Martin: chapter 17 "Boundaries: Drawing Lines", on keeping one side of a boundary from knowing the other's structure.
+
+**Other curricula**
+- [Refactoring.Guru: Message Chains](https://refactoring.guru/smells/message-chains): treats the law as a code smell, with Hide Delegate and Extract Method plus Move Method as treatments.
+- [Refactoring.Guru: Hide Delegate](https://refactoring.guru/hide-delegate): the same move as a step-by-step technique.
 
 ## Watch
 - [Clean Code: The Law of Demeter (Harmony in Code)](https://www.youtube.com/watch?v=ad9aHgO907g): explains the rule with code, including its downsides and a practical middle ground.

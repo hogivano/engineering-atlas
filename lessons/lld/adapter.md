@@ -13,7 +13,7 @@ minutes: 15
 ## How it works
 
 ### The problem
-A checkout service records metrics. It was written against a StatsD client, so 180 call sites look like `statsd.timing("checkout.payment", ms, tags=["region:eu"])`. The platform team is moving to Prometheus, which has different rules: metric names may not contain dots, counters must never decrease, durations are measured in seconds, and labels are key-value pairs, not `"k:v"` strings. Rewriting 180 call sites is risky and would have to be repeated at the next migration.
+A checkout service records metrics. It was written against a StatsD client, so 180 call sites look like `statsd.timing("checkout.payment", ms, tags=["region:eu"])`. The platform team is moving to Prometheus, which has different rules: names should stick to letters, digits, underscores and colons (dots became legal in Prometheus 3.0, but such names need quoting in queries, so most teams still avoid them, per the [data model](https://prometheus.io/docs/concepts/data_model/)), counters must never decrease ([metric types](https://prometheus.io/docs/concepts/metric_types/)), durations use the base unit, which is seconds ([naming guide](https://prometheus.io/docs/practices/naming/)), and labels are key-value pairs, not `"k:v"` strings. Rewriting 180 call sites is risky and would have to be repeated at the next migration.
 
 The fix is to stop letting call sites speak a vendor's language. Define the interface the service actually wants, in its own terms:
 
@@ -29,7 +29,7 @@ Then write one adapter per backend. The StatsD adapter turns seconds into millis
 The Gang of Four describe two forms. An *object adapter* holds a reference to the adaptee and implements the target interface by calling it. A *class adapter* inherits from the adaptee and implements the target interface at the same time. Prefer the object adapter almost always: it works with final classes and with interfaces, it can wrap any implementation of the adaptee (including a fake in tests), and it does not expose the adaptee's whole public surface through inheritance. Go has no inheritance, so every Go adapter is an object adapter, sometimes a struct that embeds the adaptee (which, note, re-exports all its methods).
 
 ### Function adapters
-Many adapters are tiny. Go's `http.HandlerFunc` is a function type with a `ServeHTTP` method that calls the function itself, which adapts any `func(w, r)` to the `http.Handler` interface. Python's `io.TextIOWrapper` adapts a binary stream to the text-stream interface by decoding bytes. `strings.NewReader` adapts a string to `io.Reader`. These are adapters too, and they show the ideal: small, obvious, and translating exactly one mismatch.
+Many adapters are tiny. Go's `http.HandlerFunc` is a function type with a `ServeHTTP` method that calls the function itself, which adapts any `func(w, r)` to the `http.Handler` interface; the [Go docs](https://pkg.go.dev/net/http#HandlerFunc) literally call it an adapter. Python's `io.TextIOWrapper` adapts a binary stream to the text-stream interface by decoding bytes ([Python docs](https://docs.python.org/3/library/io.html#io.TextIOWrapper)). `strings.NewReader` adapts a string to `io.Reader`. These are adapters too, and they show the ideal: small, obvious, and translating exactly one mismatch.
 
 ### What an adapter must translate
 - **Names and shapes.** `send_email(template_id, dynamic_template_data)` becomes `notify(user, message)`.
@@ -38,7 +38,7 @@ Many adapters are tiny. Go's `http.HandlerFunc` is a function type with a `Serve
 - **Missing capabilities.** If the target promises `list(prefix)` and the adaptee cannot filter, the adapter filters client side, or the interface admits the capability is optional. Never pretend.
 
 ### Where adapters live
-In ports-and-adapters architecture, the domain package defines the interfaces (ports) and imports nothing from vendors; an `adapters` package imports both. That direction is the dependency inversion described in the DIP lesson, and the contract test suite from the LSP lesson is how you prove every adapter honours the port. At a larger scale, Domain-Driven Design calls a whole layer of adapters around a legacy or third-party system an *anti-corruption layer*: a boundary where the other system's model is translated so it does not leak into yours.
+In ports-and-adapters architecture ([Cockburn](https://alistair.cockburn.us/hexagonal-architecture/)), the domain package defines the interfaces (ports) and imports nothing from vendors; an `adapters` package imports both. That direction is the dependency inversion described in the DIP lesson, and the contract test suite from the LSP lesson is how you prove every adapter honours the port. At a larger scale, Domain-Driven Design calls a whole layer of adapters around a legacy or third-party system an *anti-corruption layer* ([Azure Architecture Center](https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer)): a boundary where the other system's model is translated so it does not leak into yours.
 
 ### Adapter, decorator, facade
 The three are all wrappers and differ by intent. An adapter changes the interface and keeps the behaviour. A decorator keeps the interface and adds behaviour. A facade offers a new, simpler interface over several components. If a wrapper changes both interface and behaviour, it is probably doing two jobs; split it.
@@ -47,7 +47,7 @@ The three are all wrappers and differ by intent. An adapter changes the interfac
 Asked to "add a Prometheus backend", an agent will often write `PrometheusMetrics` whose methods mirror the vendor client, then change call sites to match. Or it will write an adapter that forwards `timing(ms)` straight into a histogram measured in seconds, which silently multiplies every latency by 1000. Check three things in review: the interface is named in domain terms and owned by the caller; units and errors are converted inside the adapter and asserted in its tests; no vendor type appears in a signature outside the adapter package.
 
 ### The same shape elsewhere
-Adapters are *trust but verify* at a type boundary: the adaptee's guarantees differ from the target's, and the adapter is where you check and translate. The same shape appears in network protocol gateways (gRPC-JSON transcoding translates HTTP/JSON requests into gRPC calls), in device drivers (a kernel's block-device layer presents one interface over NVMe, SATA and virtio disks) and in payment orchestration (one `charge` interface over processors with different decline codes).
+Adapters are *trust but verify* at a type boundary: the adaptee's guarantees differ from the target's, and the adapter is where you check and translate. The same shape appears in network protocol gateways (gRPC-JSON transcoding translates HTTP/JSON requests into gRPC calls), in device drivers (a kernel's block-device layer presents one interface over NVMe, SATA and virtio disks) and in payment orchestration (one `charge` interface over processors with different decline codes). The translation can also run out of process: Prometheus's `statsd_exporter` accepts StatsD packets and republishes them as Prometheus metrics through configured mapping rules, and its authors recommend it as a stepping stone before native instrumentation ([README](https://github.com/prometheus/statsd_exporter)).
 
 ## Down the stack
 
@@ -55,7 +55,7 @@ Adapters are *trust but verify* at a type boundary: the adaptee's guarantees dif
 An adapter promises that it satisfies the target interface's full contract, not just its method signatures: the same units, error types, idempotency, ordering and thread-safety guarantees that any other implementation gives. It also promises that adaptee details do not escape: callers never see vendor exceptions, vendor types or vendor units. When the adaptee cannot meet part of the contract, the adapter must fail loudly with a domain error rather than approximate silently. Lossy translations (rounding milliseconds, truncating labels) must be documented and tested.
 
 ### Layer 2: The mechanism
-In Go, `type HandlerFunc func(ResponseWriter, *Request)` plus `func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) { f(w, r) }` is the whole adapter; the conversion `http.HandlerFunc(fn)` costs nothing at runtime. `database/sql` adapts many drivers to one API and handles optional capabilities by type assertion: if a connection implements `driver.QueryerContext` it calls it directly, and if it does not, the package falls back to preparing a statement, executing it and closing it. `slog.NewLogLogger` goes the other way, wrapping a structured `slog.Handler` so old code that wants a `*log.Logger` can still log. Python's `io.TextIOWrapper` holds a buffered binary stream and an incremental decoder from `codecs`, so `read()` pulls bytes, decodes them and keeps partial multi-byte sequences between calls.
+In Go, `type HandlerFunc func(ResponseWriter, *Request)` plus `func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) { f(w, r) }` is the whole adapter; the conversion `http.HandlerFunc(fn)` costs nothing at runtime. `database/sql` adapts many drivers to one API and handles optional capabilities by type assertion: if a connection implements `driver.QueryerContext` it calls it directly, and if it does not, the package falls back to preparing a statement, executing it and closing it, and a driver method can return `driver.ErrSkip` at runtime to say the fast path is unavailable ([driver docs](https://pkg.go.dev/database/sql/driver)). `slog.NewLogLogger` goes the other way, wrapping a structured `slog.Handler` so old code that wants a `*log.Logger` can still log ([slog docs](https://pkg.go.dev/log/slog#NewLogLogger)). Python's `io.TextIOWrapper` holds a buffered binary stream and an incremental decoder from `codecs`, so `read()` pulls bytes, decodes them and keeps partial multi-byte sequences between calls.
 
 ### Layer 3: The machine
 A Go interface value is two words: a pointer to an *itab* (the type descriptor plus a table of method pointers) and a pointer to the data. The runtime builds an itab the first time a concrete type is converted to an interface and caches it in a global hash table, so later conversions are a lookup. Calling through an adapter therefore means one load of the method pointer and one indirect call, about 1 to 2 ns when the branch predictor has seen it, and the call cannot be inlined unless profile-guided optimisation devirtualises it. Storing a non-pointer value larger than a word in an interface allocates on the heap; a pointer receiver adapter does not.
@@ -88,6 +88,11 @@ A company with 40 services emits about 600 distinct metrics, 3 million metric ca
 The team stopped and introduced a shared `Metrics` interface with two adapters, StatsD and Prometheus, plus a `DualWrite` implementation that called both during the cutover. Each service changed once, mechanically, to call the interface; a lint rule then banned importing the vendor clients outside the adapters package. The adapter tests assert units explicitly: `timing("x", 0.25)` must produce `x:250|ms` and `x_seconds_sum += 0.25`.
 
 The first load test showed the Prometheus adapter adding 900 ns per call, much more than the expected few nanoseconds. The cause was sanitising the metric name and rebuilding the label map on every call. Caching sanitised names in a map (600 entries) brought it to 120 ns. With the cutover done, removing StatsD was deleting one adapter and one line of wiring.
+
+## In the wild
+- **NASA, 1999: Mars Climate Orbiter lost to a units mismatch.** A ground software file produced thruster impulse data in pound-force seconds where the interface documentation specified newton-seconds, so the values fed to navigation were low by a factor of 4.45. Small errors accumulated over the nine-month trip and the spacecraft was lost on arrival on 23 September 1999. The conversion was nobody's job, which is the gap an explicit, tested adapter closes ([NASA board report](https://llis.nasa.gov/llis_lib/pdf/1009464main1_0641-mr.pdf), [NASA mission page](https://science.nasa.gov/mission/mars-climate-orbiter/)).
+- **Prometheus project: `statsd_exporter` as an adapter you can deploy.** Teams with StatsD-instrumented applications can run this process beside them, and it translates incoming StatsD metrics into Prometheus metrics using mapping rules, so call sites do not change during a migration. It can also relay the original packets to an existing StatsD server, which allows a gradual cutover like the `DualWrite` in the worked example. Its README advises moving to native instrumentation in the long term ([README](https://github.com/prometheus/statsd_exporter)).
+- **Go standard library: `database/sql` drivers.** One `sql.DB` API sits over many vendor drivers through the `database/sql/driver` interfaces. Capabilities a driver may lack are optional interfaces, and when one is missing the package falls back to a slower generic path, so the adapter boundary admits what each backend cannot do ([driver docs](https://pkg.go.dev/database/sql/driver)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -754,6 +759,26 @@ func (a *PromAdapter) Timing(name string, seconds float64, tags map[string]strin
 - Recognising that an asynchronous refund cannot be hidden behind a synchronous contract; the port changes to return `pending` plus a status lookup or event, and callers are updated.
 - A shared contract suite run against both adapters with recorded responses and fault injection, plus a nightly run against real sandboxes.
 - Routing as a separate component that chooses an adapter, so adapters stay single-purpose and routing rules can change without touching translation code.
+
+## Sources and further study
+**Primary**
+- [Prometheus data model](https://prometheus.io/docs/concepts/data_model/): metric and label name rules, including UTF-8 names from v3.0.
+- [Prometheus metric types](https://prometheus.io/docs/concepts/metric_types/): why a counter may only increase or reset, which an adapter must respect.
+- [Mars Climate Orbiter Phase I report (NASA)](https://llis.nasa.gov/llis_lib/pdf/1009464main1_0641-mr.pdf): the board's account of the unit mismatch at a software interface.
+
+**Systems docs**
+- [statsd_exporter README](https://github.com/prometheus/statsd_exporter): a real StatsD-to-Prometheus adapter with mapping rules and a relay mode.
+- [log/slog (Go docs)](https://pkg.go.dev/log/slog#NewLogLogger): `NewLogLogger`, an adapter from a structured handler to the legacy logger type.
+- [io package (Python docs)](https://docs.python.org/3/library/io.html#io.TextIOWrapper): `TextIOWrapper` over a binary stream.
+
+**Books**
+- *Design Patterns* (Gamma, Helm, Johnson, Vlissides, 1st ed.), Ch 4: Structural Patterns, the Adapter entry with object and class forms.
+- *Head First Design Patterns* (Freeman and Robson, 2nd ed.), Ch 7: Being Adaptive, the Adapter and Facade Patterns.
+- *Designing Distributed Systems* (Burns, 2nd ed.), Ch 5: Adapters, the same idea as a container beside an application.
+- *Clean Architecture* (Martin, 1st ed.), Ch 22: The Clean Architecture, where interface adapters convert data between layers.
+
+**Other curricula**
+- [Adapter (refactoring.guru)](https://refactoring.guru/design-patterns/adapter): frames the pattern with a structure diagram and a pros-and-cons list, with the object form first.
 
 ## Watch
 - [Adapter Pattern (Christopher Okhravi)](https://www.youtube.com/watch?v=2PKQtcJjYvc): the Gang of Four structure, object versus class adapter, drawn step by step.

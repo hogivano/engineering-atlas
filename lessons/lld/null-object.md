@@ -27,7 +27,7 @@ def place(self, order):
     return total
 ```
 
-Every new method repeats the guards, and the one that forgets crashes with `AttributeError: 'NoneType' object has no attribute 'send'` at the worst moment. Tony Hoare called null references his billion-dollar mistake for this reason: the type says "a notifier" but the value may be nothing, and the compiler cannot tell which call sites remembered.
+Every new method repeats the guards, and the one that forgets crashes with `AttributeError: 'NoneType' object has no attribute 'send'` at the worst moment. Tony Hoare called null references his billion-dollar mistake for this reason ([Hoare, InfoQ](https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/)): the type says "a notifier" but the value may be nothing, and the compiler cannot tell which call sites remembered.
 
 ### Replace absence with an object
 Write an implementation for the "nothing" case and inject it once:
@@ -51,10 +51,10 @@ A null object must return values that leave the computation unchanged, and the r
 The algebra helps. If you combine implementations (a composite notifier that fans out to email and SMS, a chain of discount rules), the null object is the identity element of that combination: a composite of zero notifiers behaves like the silent notifier, and the sum of zero discounts is zero. That is a quick test of whether your null object is correct.
 
 ### Where you already use it
-Go's `io.Discard` is a writer that accepts everything. `slog.DiscardHandler` (Go 1.24) is a handler whose `Enabled` returns false so loggers skip formatting entirely. Python libraries are told to attach `logging.NullHandler()` to their top logger so they never print on behalf of an application that has not configured logging. `contextlib.nullcontext()` is a context manager that does nothing, so `with lock or nullcontext():` needs no branch. OpenTelemetry's API returns a no-op tracer when no SDK is installed, which is why libraries can instrument themselves without forcing tracing on their users. Java's `Collections.emptyList()` is a shared immutable null list.
+Go's `io.Discard` is a writer on which every write succeeds without doing anything ([io docs](https://pkg.go.dev/io)). `slog.DiscardHandler`, added in Go 1.24, is never enabled, so loggers skip formatting entirely ([Go 1.24 notes](https://go.dev/doc/go1.24)). Python libraries are told to attach `logging.NullHandler()` to their top logger so they never print on behalf of an application that has not configured logging ([Python logging HOWTO](https://docs.python.org/3/howto/logging.html#configuring-logging-for-a-library)). `contextlib.nullcontext()` is a context manager that does nothing, so `with lock or nullcontext():` needs no branch ([contextlib docs](https://docs.python.org/3/library/contextlib.html)). The OpenTelemetry specification says that without an installed SDK the Trace API is a no-op API, which is why libraries can instrument themselves without forcing tracing on their users ([OpenTelemetry spec](https://opentelemetry.io/docs/specs/otel/trace/api/)). Java's `Collections.emptyList()` returns an immutable empty list ([Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Collections.html)).
 
 ### Special Case and default values
-Martin Fowler generalises the idea as Special Case: an object for a recurring edge case, such as an `UnknownCustomer` with no billing plan or a `GuestUser` with an empty cart. The same shape appears in system design: a recommendation widget whose service times out shows a fixed "popular this week" list instead of an error. That fallback is a null object for a degraded dependency, the *partial failure* problem shape handled by substituting a safe neutral answer.
+Martin Fowler generalises the idea as [Special Case](https://martinfowler.com/eaaCatalog/specialCase.html), and his refactoring catalogue lists Introduce Special Case with the alias Introduce Null Object ([catalogue](https://refactoring.com/catalog/introduceSpecialCase.html)): an object for a recurring edge case, such as an `UnknownCustomer` with no billing plan or a `GuestUser` with an empty cart. The same shape appears in system design: a recommendation widget whose service times out shows a fixed "popular this week" list instead of an error. That fallback is a null object for a degraded dependency, the *partial failure* problem shape handled by substituting a safe neutral answer.
 
 ### When not to use it
 - **Required dependencies.** A checkout without a payment gateway must not "succeed" silently. Fail at startup.
@@ -70,9 +70,9 @@ Asked to "make metrics optional", an agent will add `if self.metrics:` before ea
 A null object promises full substitutability (Liskov): every method of the interface exists, accepts the same inputs, never raises because it is the null variant, and returns the neutral value for that operation. It is stateless, or its state is never observable, so one instance can be shared by every caller and every thread. Its identity is not part of the contract: callers must not write `if notifier is SILENT`, because that reintroduces the branch the pattern removed. What it does not promise is that absence was intended; that decision belongs to whoever wires the object in.
 
 ### Layer 2: The mechanism
-In Python, a null object is a class with empty methods and a module-level instance. In TypeScript, a `const` object literal satisfying the interface is enough, or a class with a single exported instance. In Go, the idiomatic form is an empty struct type with value receivers, exposed as a package variable of the interface type: `var Discard Writer = discard{}`. Go's own `io.Discard` goes a step further and implements `ReaderFrom`, so `io.Copy(io.Discard, r)` reads into a pooled 8 KB buffer instead of allocating per call. `slog.DiscardHandler` shows the other refinement: a null object with a cheap guard method (`Enabled` returns false) lets the caller skip building arguments at all, which matters more than the cost of the call.
+In Python, a null object is a class with empty methods and a module-level instance. In TypeScript, a `const` object literal satisfying the interface is enough, or a class with a single exported instance. In Go, the idiomatic form is an empty struct type with value receivers, exposed as a package variable of the interface type: `var Discard Writer = discard{}`. Go's own `io.Discard` goes a step further and implements `ReaderFrom`, so `io.Copy(io.Discard, r)` reads into a pooled 8 KB buffer instead of allocating per call ([io.go](https://github.com/golang/go/blob/master/src/io/io.go)). `slog.DiscardHandler` shows the other refinement: a null object with a cheap guard method (`Enabled` returns false) lets the caller skip building arguments at all, which matters more than the cost of the call.
 
-Go has a trap here. An interface value is a pair (type, data). A nil `*EmailNotifier` stored in a `Notifier` interface is not equal to nil, because the type half is set, so `if n != nil` passes and the method call dereferences nil. Returning a null object instead of a typed nil pointer removes the trap.
+Go has a trap here. An interface value is a pair (type, data). A nil `*EmailNotifier` stored in a `Notifier` interface is not equal to nil ([Go FAQ](https://go.dev/doc/faq#nil_error)), because the type half is set, so `if n != nil` passes and the method call dereferences nil. Returning a null object instead of a typed nil pointer removes the trap.
 
 ### Layer 3: The machine
 Allocation: a stateless null object costs nothing per use. In Go, zero-size values such as `struct{}` share the runtime's `zerobase` address, and storing one in an interface does not allocate. In Python and TypeScript, share one module-level instance rather than building one per request.
@@ -117,6 +117,11 @@ A marketplace's order service ran in 4 regions, one without an SMS provider, and
 The refactor added `SilentSms` and `NullMetrics`, defaulted them in the composition root, and deleted all 37 checks. A test now builds the service with only its required dependencies (database, payment gateway) and runs every public method. A benchmark showed the extra interface calls add under 200 ns to a request that spends 35 ms in the database and payment provider.
 
 The same review caught the opposite mistake: a `NullPaymentGateway` "so the CLI can start without credentials". It was rejected in favour of a `--dry-run` flag that wires an explicit `DryRunGateway` which logs what it would have charged, and production startup fails without the real gateway.
+
+## In the wild
+- **OpenTelemetry, ongoing: the no-op API.** The specification requires the Trace API to behave as a no-op when no SDK is installed, and the metrics API likewise. A library can create spans and record metrics unconditionally, and the host application decides whether anything is collected. The Go documentation warns of the flip side: if you forget to set the SDK provider, data is silently not generated ([OpenTelemetry spec](https://opentelemetry.io/docs/specs/otel/trace/api/), [Go instrumentation docs](https://opentelemetry.io/docs/languages/go/instrumentation/)).
+- **Google Cloud, 2025-06: the missing guard on blank fields.** A new quota check in Service Control had no error handling or feature flag. A policy row with blank fields replicated worldwide within seconds, hit a null pointer and crash-looped the service in every region; API calls returned 503 for hours, and a kill switch took about 40 minutes. Google's follow-ups included making the check fail open, which is a deliberate, reviewed version of a neutral default for a dependency that is not worth an outage ([Google Cloud status](https://status.cloud.google.com/incidents/ow5i3PPK96RduMcb1SsW)).
+- **Monzo, 2017-10: a NullPointerException on an empty service.** Restarting every Linkerd instance exposed a version incompatibility: Linkerd threw a NullPointerException on a Kubernetes service with no endpoints, left from a scale-to-zero the day before. The platform was down for roughly 1h20m until the empty service was deleted. The lesson for a null-safe design is to model "no endpoints" as an empty list the client handles, not as an absent value ([Monzo](https://community.monzo.com/t/resolved-current-account-payments-may-fail-major-outage-27-10-2017/26296/95)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -700,6 +705,26 @@ func (c *Checkout) Place(customer string, subtotal int, code string, catalog map
 - Visibility: log the wired implementations at startup, expose them in a health or info endpoint, and alert when expected metrics series are absent.
 - Required dependencies (credentials, the payment or storage backend) fail at construction with a clear error instead of degrading silently.
 - Go specifics: avoid returning typed nil pointers as interfaces; stateless zero-size null types that are free to share across goroutines.
+
+## Sources and further study
+**Primary**
+- [Go 1.24 release notes](https://go.dev/doc/go1.24): the addition of `slog.DiscardHandler`.
+- [Go FAQ: nil error values](https://go.dev/doc/faq#nil_error): why a typed nil inside an interface is not nil.
+- [OpenTelemetry Trace API spec](https://opentelemetry.io/docs/specs/otel/trace/api/): the required no-op behaviour when no SDK is installed.
+
+**Systems docs**
+- [Go io package](https://pkg.go.dev/io): `io.Discard` as a writer that does nothing.
+- [Python logging HOWTO](https://docs.python.org/3/howto/logging.html#configuring-logging-for-a-library): `NullHandler` for libraries.
+- [Python contextlib](https://docs.python.org/3/library/contextlib.html): `nullcontext` for optional context managers.
+- [Google Cloud incident, June 2025](https://status.cloud.google.com/incidents/ow5i3PPK96RduMcb1SsW): the cost of an unhandled null in a critical path.
+
+**Books**
+- *Refactoring*, Martin Fowler, 2nd edition: chapter 10 (Simplifying Conditional Logic), Introduce Special Case.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral Patterns), which has no Null Object entry; it is usually presented as a variation on Strategy and State.
+- *Head First Design Patterns*, Freeman and Robson: chapter 1 (Strategy), where a do-nothing behaviour is just one more interchangeable implementation.
+
+**Other curricula**
+- [Refactoring.Guru: Introduce Null Object](https://refactoring.guru/introduce-null-object): the mechanical steps from checks to a null class.
 
 ## Watch
 - [Nothing is Something (Sandi Metz, RailsConf 2015)](https://www.youtube.com/watch?v=29MAL8pJImQ): the classic talk on replacing conditionals about absence with objects.

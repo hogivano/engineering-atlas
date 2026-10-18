@@ -37,20 +37,20 @@ class BatchJob:
     def teardown(self): pass
 ```
 
-A coupon job now overrides `process` and perhaps `should_skip`, and nothing else. It cannot leak the connection, because it never writes the `finally`. Mark the template method so subclasses do not override it: `final` in Java, a non-virtual function in C++, `typing.final` in Python (enforced by type checkers, not at runtime).
+A coupon job now overrides `process` and perhaps `should_skip`, and nothing else. It cannot leak the connection, because it never writes the `finally`. Mark the template method so subclasses do not override it: `final` in Java, a non-virtual function in C++, `typing.final` in Python (enforced by type checkers, not at runtime; [typing docs](https://docs.python.org/3/library/typing.html)).
 
 ### Hooks versus abstract steps
 Abstract steps are the parts with no sensible default; leaving one out should fail loudly, when the subclass is instantiated (`abc.abstractmethod`) or at compile time. Hooks are extension points with a safe default, so most subclasses ignore them. Keep the number of steps small. A skeleton with twelve hooks is a framework nobody can reason about, because every subclass is a different program. Name hooks for *when* they run (`before_item`, `on_error`) and document whether their return value changes control flow.
 
 ### Where you already use it
-- **Python's `unittest`.** `TestCase.run` calls `setUp`, then the test method, then `tearDown` only if `setUp` succeeded, then `doCleanups` regardless. Each test class overrides steps and never writes the sequence.
-- **Python's `socketserver`.** `BaseRequestHandler.__init__` calls `setup()`, then `handle()` inside a `try`, with `finish()` in the `finally`.
-- **Java collections.** `AbstractList` asks a subclass for `get(int)` and `size()` and builds iteration, `indexOf`, `contains`, `equals` and `hashCode` on top.
-- **Servlets.** `HttpServlet.service()` reads the method and dispatches to `doGet`, `doPost` and the rest, which subclasses override.
+- **Python's `unittest`.** `TestCase.run` calls `setUp`, then the test method, then `tearDown` only if `setUp` succeeded, then `doCleanups` regardless ([unittest docs](https://docs.python.org/3/library/unittest.html)). Each test class overrides steps and never writes the sequence.
+- **Python's `socketserver`.** `BaseRequestHandler.__init__` calls `setup()`, then `handle()` inside a `try`, with `finish()` in the `finally` ([socketserver.py](https://github.com/python/cpython/blob/main/Lib/socketserver.py)).
+- **Java collections.** `AbstractList` asks a subclass for `get(int)` and `size()` and builds iteration, `indexOf`, `contains`, `equals` and `hashCode` on top; the Javadoc says an unmodifiable list needs only `get(int)` and `size()` ([AbstractList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/AbstractList.html)).
+- **Servlets.** `HttpServlet.service()` reads the method and dispatches to `doGet`, `doPost` and the rest, which subclasses override. The API docs say there is almost no reason to override `service` itself ([HttpServlet](https://docs.oracle.com/javaee/7/api/javax/servlet/http/HttpServlet.html)).
 - **Go's `sort.Sort`.** The skeleton is the sorting algorithm; the steps are `Len`, `Less` and `Swap` from `sort.Interface`. There is no base class, only a function over an interface.
 
 ### The composition version
-Template Method and Strategy solve the same problem with different tools (see Strategy). Template Method varies steps by subclassing; Strategy passes the varying part in as an object. Spring's `JdbcTemplate` is named after the pattern but uses callbacks: the template owns connection, statement and exception translation, and you pass a `RowMapper`. Callbacks let one class combine steps from different sources and change them at runtime; inheritance gives one fixed combination per subclass. The rule of thumb: inheritance when a framework owns the lifecycle and steps share state on `self`; composition everywhere else.
+Template Method and Strategy solve the same problem with different tools (see Strategy). Template Method varies steps by subclassing; Strategy passes the varying part in as an object. Spring's `JdbcTemplate` is named after the pattern but uses callbacks: the template runs the core JDBC workflow and translates JDBC exceptions into Spring's own hierarchy, and you pass a `RowMapper` or other callback ([Spring Javadoc](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/jdbc/core/JdbcTemplate.html)). Callbacks let one class combine steps from different sources and change them at runtime; inheritance gives one fixed combination per subclass. The rule of thumb: inheritance when a framework owns the lifecycle and steps share state on `self`; composition everywhere else.
 
 ### Go: embedding is not inheritance
 Engineers from Java often try this in Go: a `BaseJob` struct with a `Run` method that calls `j.Process(item)`, embedded in `CouponJob`, which defines its own `Process`. It compiles, and `Run` calls `BaseJob.Process`, not `CouponJob.Process`, because a promoted method's receiver is the embedded value and Go has no virtual dispatch on structs. The idiomatic version is a function `Run(job Steps, items)` that takes an interface for the required steps. Optional hooks become small extra interfaces checked with a type assertion, the same trick `io.Copy` uses when it checks for `WriterTo` and `ReaderFrom`.
@@ -67,9 +67,9 @@ Template Method is *multi-step consistency* inside one process: a fixed sequence
 The template method promises an order and a set of guarantees: which steps run, in what sequence, which run on failure, and what happens to errors. For the batch job: `setup` runs first; if it fails, nothing else runs and the run is reported as aborted; once it succeeds, `teardown` runs exactly once whatever happens; each item is skipped, processed or failed, never two of these. Subclasses promise that each step does only its own job and does not call the template method again (re-entrancy is usually unsupported). Hooks promise that their defaults preserve the base behaviour, so a subclass that overrides nothing still behaves correctly.
 
 ### Layer 2: The mechanism
-In class-based languages the skeleton calls steps through virtual dispatch. In C++ and Java, each object carries a pointer to its class's virtual method table, and `this->process(item)` loads the function pointer from a fixed slot. Herb Sutter's non-virtual interface idiom makes this explicit: the public method is non-virtual and owns the invariants, the customisation points are private virtual functions. Python looks steps up through the class's method resolution order on each call (`type(self).__mro__`), cached per type with a version tag that is invalidated when a class is modified. Java's `AbstractList` shows the cost of a poor primitive choice: its iterator calls `get(i)` per element, which is O(1) for an array but O(n) for a linked structure, so `AbstractSequentialList` exists to flip the primitive to a `listIterator`.
+In class-based languages the skeleton calls steps through virtual dispatch. In C++ and Java, each object carries a pointer to its class's virtual method table, and `this->process(item)` loads the function pointer from a fixed slot. Herb Sutter's non-virtual interface idiom makes this explicit: prefer non-virtual public interfaces built as template methods, and make the virtual customisation points private ([Virtuality](http://www.gotw.ca/publications/mill18.htm)). Python looks steps up through the class's method resolution order on each call (`type(self).__mro__`), cached per type with a version tag that is invalidated when a class is modified. Java's `AbstractList` shows the cost of a poor primitive choice: its iterator calls `get(i)` per element, which is O(1) for an array but O(n) for a linked structure, so `AbstractSequentialList` exists to flip the primitive to a `listIterator`.
 
-Go's mechanism is the interface: `sort.Sort(data)` calls `data.Less(i, j)` and `data.Swap(i, j)` through the itab, about n log n times each. The generic `slices.Sort` takes the same skeleton and lets the compiler specialise comparisons for the element type, which removes those interface calls; since Go 1.22, `sort.Ints` and friends call into `slices.Sort` for that reason.
+Go's mechanism is the interface: `sort.Sort(data)` calls `data.Less(i, j)` and `data.Swap(i, j)` through the itab, about n log n times each. The generic `slices.Sort` takes the same skeleton and lets the compiler specialise comparisons for the element type, which removes those interface calls; since Go 1.22, `sort.Ints` simply calls `slices.Sort` for that reason ([sort.go](https://github.com/golang/go/blob/master/src/sort/sort.go)).
 
 ### Layer 3: The machine
 A virtual call costs a dependent load of the vtable pointer, a load of the function pointer, and an indirect branch: around 1 to 3 ns when predicted, and 10 to 20 ns when the predictor misses. The bigger cost is lost inlining. If `less` is a two-instruction integer compare, calling it indirectly 20 million times while sorting a million items adds tens of milliseconds and blocks vectorisation. JITs recover this: HotSpot uses class hierarchy analysis and call-site profiles to inline a step when only one subclass is loaded or seen, guarded by a cheap type check, and deoptimises if a new subclass appears. C++ compilers devirtualise when the class or method is marked `final`. In CPython, a method call on `self` costs roughly 50 to 100 ns, so a step called per item in a million-item batch adds a fraction of a second, which matters only when the step itself is trivial.
@@ -107,6 +107,11 @@ The fix introduced a `BatchJob` base class whose `run` is final and owns setup, 
 
 The overhead of the extra method calls was measured on the largest job, 4.2 million items: about 0.4 s of a 38-minute run, under 0.02%.
 
+## In the wild
+- **Python standard library: `socketserver`.** `BaseRequestHandler.__init__` is a template method: it calls `setup()`, runs `handle()` inside a `try`, and calls `finish()` in the `finally`. A handler author overrides `handle` and cannot forget the cleanup, which is the invariant this lesson's batch job gets from its base class ([socketserver.py](https://github.com/python/cpython/blob/main/Lib/socketserver.py)).
+- **Spring Framework: `JdbcTemplate`.** The class runs the core JDBC workflow, iterates result sets and translates JDBC exceptions, so application code supplies only SQL and callbacks such as `RowMapper`. It shows the pattern's callback form, where the skeleton is owned by the framework but the variation is passed in as objects ([Spring Javadoc](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/jdbc/core/JdbcTemplate.html)).
+- **Jakarta/Java EE Servlet API: `HttpServlet.service`.** The base class reads the HTTP method and dispatches to `doGet`, `doPost` and the other hooks; its documentation warns there is almost no reason to override `service`, the template method itself ([HttpServlet](https://docs.oracle.com/javaee/7/api/javax/servlet/http/HttpServlet.html)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -118,7 +123,7 @@ The overhead of the extra method calls was measured on the largest job, 4.2 mill
 
 ## Pitfalls in production
 - Subclasses overriding the template method to add one line, which drops the base invariants. Fix: mark it final (or `typing.final`), and add the needed extension point as a hook.
-- The "call super" trap, where a subclass overrides `setup` and forgets to call the base `setup`. Fix: give the base class its own private setup that always runs, and a separate empty hook for subclasses.
+- The "call super" trap ([Fowler](https://martinfowler.com/bliki/CallSuper.html)), where a subclass overrides `setup` and forgets to call the base `setup`. Fix: give the base class its own private setup that always runs, and a separate empty hook for subclasses.
 - Too many hooks, so each subclass is effectively a different algorithm. Fix: split the base class by purpose, or move independent variations into strategies.
 - A step that calls back into the template method, causing recursion or double cleanup. Fix: document steps as non-re-entrant and guard with a state flag.
 - Deep hierarchies (`BaseJob`, `DbJob`, `PaymentsDbJob`, `NightlyPaymentsDbJob`), where nobody knows which override wins. Fix: keep one level of template, compose the rest.
@@ -710,6 +715,26 @@ func (s *SumJob) OnError(item string, err error) bool { return true }
 - Failure guarantees in the skeleton: staging tables or write-then-swap so a partial load is never visible, and cleanup that always runs after a successful start.
 - A reasoned choice between subclassing and composition: composition (steps as objects or functions) for mixing policies across teams, inheritance only if the framework owns object lifecycle.
 - A migration path: wrap existing runners as a single step first, then split them, with contract tests that every pipeline passes.
+
+## Sources and further study
+**Primary**
+- [Python unittest docs](https://docs.python.org/3/library/unittest.html): the exact order of `setUp`, `tearDown` and cleanups.
+- [Python typing docs: final](https://docs.python.org/3/library/typing.html): marking a template method or class as not overridable, enforced by type checkers.
+- [Herb Sutter, Virtuality](http://www.gotw.ca/publications/mill18.htm): the non-virtual interface idiom as a template method.
+
+**Systems docs**
+- [CPython socketserver.py](https://github.com/python/cpython/blob/main/Lib/socketserver.py): `setup`, `handle` and `finish` around a try/finally.
+- [Spring JdbcTemplate Javadoc](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/jdbc/core/JdbcTemplate.html): a framework-owned skeleton with callbacks.
+- [Java HttpServlet API](https://docs.oracle.com/javaee/7/api/javax/servlet/http/HttpServlet.html): `service` dispatching to `doGet` and `doPost`.
+- [Java AbstractList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/AbstractList.html): which primitives a subclass supplies.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides: chapter 5 (Behavioral Patterns), Template Method.
+- *Head First Design Patterns*, Freeman and Robson: chapter 8, "Encapsulating Algorithms", including hooks.
+- *Refactoring*, Martin Fowler, 2nd edition: chapter 12 (Dealing with Inheritance), Replace Subclass with Delegate and Replace Superclass with Delegate, the route from a template method to composition.
+
+**Other curricula**
+- [Refactoring catalog: Form Template Method](https://refactoring.com/catalog/formTemplateMethod.html): reaches the pattern from the other direction, by merging duplicated subclass methods.
 
 ## Watch
 - [Template Method Pattern, Design Patterns ep 13 (Christopher Okhravi)](https://www.youtube.com/watch?v=7ocpwK9uesw): the pattern on a whiteboard, including hooks and its relation to Strategy.

@@ -42,7 +42,7 @@ def take(self):
         return item
 ```
 
-The `while` is not optional. A waiting thread can wake up spuriously, and even a genuine notify does not guarantee the condition still holds: another consumer may have grabbed the item between the notify and this thread reacquiring the lock. Checking with `if` instead of `while` is the most common bug in hand-written versions. Using one condition variable for both conditions also works, but then every change must `notify_all`, waking producers that cannot proceed.
+The `while` is not optional. A waiting thread can wake up spuriously, and even a genuine notify does not guarantee the condition still holds: another consumer may have grabbed the item between the notify and this thread reacquiring the lock. Checking with `if` instead of `while` is the most common bug in hand-written versions. Systems with Mesa semantics, which is nearly all of them, treat a signal as a hint, and the standard advice is to always use `while` ([OSTEP ch. 30](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf)). Using one condition variable for both conditions also works, but then every change must `notify_all`, waking producers that cannot proceed.
 
 Dijkstra's original formulation used two counting semaphores, `empty_slots` (starting at capacity) and `full_slots` (starting at 0), plus a mutex for the buffer itself. A producer waits on `empty_slots`, adds, signals `full_slots`; a consumer does the reverse. The counts carry the state, so no `while` loop is needed.
 
@@ -50,21 +50,21 @@ Dijkstra's original formulation used two counting semaphores, `empty_slots` (sta
 Blocking is only one answer to "the buffer is full". The others are the same menu a thread pool offers:
 
 - **Block** the producer until there is room. Right when the producer can wait (reading files, a batch job).
-- **Fail** the put immediately and let the producer decide (`offer` in Java, `put_nowait` in Python, a `select` with `default` in Go). Right for request handlers that should return 503 rather than hang.
+- **Fail** the put immediately and let the producer decide (`offer` in Java, `put_nowait` in Python, a `select` with `default` in Go). Right for request handlers that should return 503 rather than hang. Python's `put` takes `block` and `timeout` arguments and raises `Full` when no slot frees up ([Python docs](https://docs.python.org/3/library/queue.html)).
 - **Drop** the newest or the oldest item. Right for telemetry and video frames, where fresh data beats complete data.
 - **Block with a timeout**, then fail. Usually the best default for services.
 
 ### Shutdown
-Consumers loop forever, so they need a way to know the stream has ended. Go's `close(ch)` makes receivers drain the remaining items and then get the zero value with `ok == false`; sending on a closed channel panics. In Java and Python, the convention is a poison pill: a special sentinel object put once per consumer. Either way, the rules are the same: only the producer side closes, everything buffered before close is still delivered, and anything blocked waiting to receive must wake up.
+Consumers loop forever, so they need a way to know the stream has ended. Go's `close(ch)` makes receivers drain the remaining items and then get the zero value with `ok == false`; sending on a closed channel panics. In Java, the convention is a poison pill: a special sentinel object put once per consumer. Python 3.13 added a built-in answer: `Queue.shutdown()` stops new `put` calls, lets consumers drain what is already queued, and then makes `get` raise `ShutDown`; `shutdown(immediate=True)` discards the backlog and wakes blocked consumers at once ([Python docs](https://docs.python.org/3/library/queue.html)). On older Pythons, use the pill. Either way, the rules are the same: only the producer side closes, everything buffered before close is still delivered, and anything blocked waiting to receive must wake up.
 
 ### Many producers, many consumers
 The pattern scales to M producers and N consumers on one buffer without code changes, which is why it is the basis of worker pools. What you lose is ordering: with several consumers, item 2 may finish before item 1. If order matters per key (all events for one account in order), partition: hash the key to one of N buffers, each with exactly one consumer. Kafka partitions apply exactly this rule across machines.
 
 ### Batching
-A consumer that takes one item at a time pays the per-item overhead (a lock, a syscall, a network round trip) every time. Draining everything available, up to a batch size, amortises that overhead and gets more efficient under load, which is the opposite of what most systems do. Java's `drainTo` and Go's "receive one, then non-blocking receive the rest" idiom both do this.
+A consumer that takes one item at a time pays the per-item overhead (a lock, a syscall, a network round trip) every time. Draining everything available, up to a batch size, amortises that overhead and gets more efficient under load, which is the opposite of what most systems do. Java's `drainTo` and Go's "receive one, then non-blocking receive the rest" idiom both do this; the Java docs note that `drainTo` may be more efficient than repeated polling ([Java SE 21 docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)).
 
 ### Reviewing agent-written code
-Agents produce two typical shapes. One is an unbounded queue (`queue.Queue()` with no `maxsize`, an unbuffered list, `new LinkedBlockingQueue<>()`) that works in tests and fails under load. The other is a hand-rolled buffer with `if` instead of `while` around `wait`, or a busy loop that polls `len(queue)` with a sleep. Ask for the platform's blocking queue with an explicit capacity, a stated overflow policy, and a shutdown path, and for tests that cover a full buffer and close with waiters.
+Agents produce two typical shapes. One is an unbounded queue (`queue.Queue()` with no `maxsize`, an unbuffered list, `new LinkedBlockingQueue<>()`) that works in tests and fails under load. The no-argument Java constructor has a capacity of `Integer.MAX_VALUE`, and Python treats `maxsize` of zero or less as infinite ([Java SE 21 docs](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html), [Python docs](https://docs.python.org/3/library/queue.html)). The other is a hand-rolled buffer with `if` instead of `while` around `wait`, or a busy loop that polls `len(queue)` with a sleep. Ask for the platform's blocking queue with an explicit capacity, a stated overflow policy, and a shutdown path, and for tests that cover a full buffer and close with waiters.
 
 ### The same shape elsewhere
 This is the *overload* problem shape solved with backpressure. A Unix pipeline `zcat logs.gz | grep ERROR | sort` runs three processes connected by kernel pipe buffers; when `sort` is slow, `grep` blocks on write and `zcat` blocks behind it. TCP's receive window is a producer-consumer buffer across a network: when the receiving application stops reading, the window shrinks to zero and the sender stops. A restaurant kitchen's ticket rail, with a limited number of clips, is the same buffer with humans on both sides.
@@ -78,7 +78,7 @@ A bounded buffer of capacity C promises: it never holds more than C items; every
 Go's channel is a struct called `hchan` with a ring buffer (`buf`, `dataqsiz`, `qcount`, `sendx`, `recvx`), a `closed` flag, a lock, and two FIFO wait queues, `recvq` and `sendq`, of parked goroutines. A send first checks `recvq`: if a receiver is waiting, the value is copied directly to that receiver and it is made runnable, bypassing the buffer. Otherwise, if there is room, the value goes into `buf[sendx]`. Otherwise the sender parks on `sendq` with its value. A receive that takes from a full buffer also moves the first parked sender's value into the freed slot and wakes it. An unbuffered channel (capacity 0) is a pure rendezvous. Java's `ArrayBlockingQueue` uses one `ReentrantLock` with `notEmpty` and `notFull` conditions; `LinkedBlockingQueue` uses separate put and take locks so producers and consumers do not contend. Python's `queue.Queue` is a `deque` with a lock and three conditions, plus `task_done` and `join` to wait until consumers have processed everything. The LMAX Disruptor drops locks altogether: a preallocated ring of slots, a producer sequence claimed with compare-and-set, and consumers that track their own sequence and spin or wait until the producer's sequence passes it.
 
 ### Layer 3: The machine
-When a consumer blocks on an empty queue, the runtime eventually parks the thread with a `futex` wait, and the producer's `notify` becomes a `futex` wake syscall, around 1 us, plus a context switch of a few microseconds when the woken thread runs. Go avoids the OS for goroutines: parking and waking is a scheduler operation of roughly 100 to 200 ns, and an uncontended buffered channel send or receive is tens of nanoseconds. Under contention the cost is in the cache: the head and tail indexes and the lock word bounce between cores, each transfer around 50 to 100 ns, so a single shared queue tops out at a few million operations per second. The Disruptor pads its sequence counters to separate 64-byte cache lines to stop false sharing and reaches tens of millions of events per second on one machine. The kernel has the same structure: a Linux pipe is a ring of 16 pages, 64 KiB by default, adjustable with `fcntl(F_SETPIPE_SZ)`, and a writer to a full pipe sleeps until the reader drains it.
+When a consumer blocks on an empty queue, the runtime eventually parks the thread with a `futex` wait, and the producer's `notify` becomes a `futex` wake syscall, around 1 us, plus a context switch of a few microseconds when the woken thread runs. Go avoids the OS for goroutines: parking and waking is a scheduler operation of roughly 100 to 200 ns, and an uncontended buffered channel send or receive is tens of nanoseconds. Under contention the cost is in the cache: the head and tail indexes and the lock word bounce between cores, each transfer around 50 to 100 ns, so a single shared queue tops out at a few million operations per second. The Disruptor pads its sequence counters to separate 64-byte cache lines to stop false sharing. In its authors' 2011 benchmark on a 2.8 GHz Nehalem, one producer and one consumer moved about 26 million operations per second through it against about 5.3 million through `ArrayBlockingQueue`, and mean latency per hop in a three-stage pipeline was 52 ns against 32,757 ns ([LMAX Disruptor paper](https://lmax-exchange.github.io/disruptor/disruptor.html)). Treat these as one benchmark on old hardware, not a promise. The kernel has the same structure: a Linux pipe is a ring of 16 pages, 64 KiB by default since Linux 2.6.35, adjustable with `fcntl(F_SETPIPE_SZ)`, and a writer to a full pipe sleeps until the reader drains it ([pipe(7)](https://man7.org/linux/man-pages/man7/pipe.7.html)). The man page warns not to rely on a particular capacity.
 
 ### Why it's built this way
 1. Producers and consumers run at different and varying speeds, so a direct call couples the fast side to the slow one; a buffer decouples them.
@@ -117,6 +117,10 @@ An earlier version used an unbounded queue. During the same outage it grew to 1.
 
 Batching mattered as much: sending one line per request at 40 ms each caps the consumer at 25 lines per second. Draining up to 1,000 available lines per request gives the 1,000-times improvement above.
 
+## In the wild
+- **Slack, about 2016: the job queue that could not dequeue.** Database contention slowed job execution until the Redis-backed job queue hit its configured memory limit, so new jobs were refused. Dequeuing also needed spare memory to move a job to an in-flight list, so the queue stayed stuck after the database recovered and needed extensive manual recovery. At the time of the write-up Slack ran over 1.4 billion jobs on busy days, peaking at 33,000 per second. The fix put Kafka in front of Redis as a durable buffer, so web servers keep enqueuing while Redis is backed up ([Slack Engineering](https://slack.engineering/scaling-slacks-job-queue/)).
+- **LMAX, 2011: queues were the bottleneck.** LMAX found that actor-style prototypes spent more time managing queues than running business logic, because multi-writer queues cost locks, kernel context switches and lost cache contents. It moved to one business-logic thread fed by a ring buffer (the Disruptor) and reported 6 million orders per second on a single thread on a 3 GHz Nehalem server ([Martin Fowler](https://martinfowler.com/articles/lmax.html)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -132,7 +136,7 @@ Batching mattered as much: sending one line per request at 40 ms each caps the c
 - `if` instead of `while` around a condition wait, so a consumer takes from an empty buffer after a race or spurious wakeup. Fix: always recheck in a loop, or use a library queue.
 - Consumers that never exit because nobody closed the queue or sent enough poison pills. Fix: close from the producer side once all producers are done (in Go, a `sync.WaitGroup` and one closer goroutine), or one pill per consumer.
 - Lost ordering after adding consumers. Fix: partition by key so each key has one consumer.
-- Deadlock when a producer holds a lock that the consumer needs while blocking on a full buffer. Fix: never block on a queue while holding other locks.
+- Deadlock when a producer holds a lock that the consumer needs while blocking on a full buffer. Fix: never block on a queue while holding other locks. The same trap appears with request and reply queues: if a client sends too many requests before reading replies, both sides can block on full bounded queues ([MIT 6.031](https://web.mit.edu/6.031/www/sp22/classes/24-message-passing/)).
 - Queue depth not monitored, so a slow consumer goes unnoticed until latency explodes. Fix: export depth, time-in-queue and blocked-producer time, and alert on sustained high water.
 
 ## Leadership lens
@@ -690,6 +694,24 @@ func (c *BoundedChannel) Size() int { return len(c.buf) }
 - Batching on the consumer side (drain up to N points or T milliseconds), retry with backoff and jitter, and catching up at a capped rate after recovery so 20,000 agents do not stampede the collector.
 - Shutdown that closes the buffer, flushes what fits in a deadline, and reports what was dropped.
 - Metrics on queue depth, drops, batch size and send latency, exported by the agent itself, and a reasoned choice of queue implementation (a plain bounded queue is ample at 2,000 points per second).
+
+## Sources and further study
+**Primary**
+- [Condition Variables (OSTEP ch. 30)](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf): the bounded-buffer problem worked through with two condition variables and Mesa semantics.
+- [LMAX Disruptor paper](https://lmax-exchange.github.io/disruptor/disruptor.html): benchmarks against `ArrayBlockingQueue` and the argument against contended locks.
+
+**Systems docs**
+- [Python queue module](https://docs.python.org/3/library/queue.html): `maxsize`, timeouts, `task_done`/`join` and the 3.13 `shutdown()`.
+- [LinkedBlockingQueue (Java SE 21)](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html): default capacity and `drainTo`.
+- [pipe(7)](https://man7.org/linux/man-pages/man7/pipe.7.html): the kernel's bounded buffer, its default size and blocking rules.
+- [Slack: Scaling Slack's job queue](https://slack.engineering/scaling-slacks-job-queue/): a real queue failing at its memory bound.
+
+**Books**
+- *Java Concurrency in Practice* (Goetz and others, 2006): blocking queues and the producer-consumer pattern as the basis for task execution.
+- *Release It!* 2nd ed. (Nygard, 2018), Ch 4 "Stability Antipatterns" and Ch 5 "Stability Patterns": unbounded queues and blocked threads as failure amplifiers.
+
+**Other curricula**
+- [MIT 6.031 Reading 24, Message-Passing](https://web.mit.edu/6.031/www/sp22/classes/24-message-passing/): frames queues as the only shared mutable object, with blocking and bounded variants, deadlock risks and poison-pill shutdown.
 
 ## Watch
 - [GopherCon 2017: Understanding Channels (Kavya Joshi)](https://www.youtube.com/watch?v=KBZlN0izeiY): the `hchan` structure, its wait queues and the direct handoff to parked goroutines.

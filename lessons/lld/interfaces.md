@@ -52,26 +52,26 @@ func ExportInvoices(invs []Invoice, out RowSink) error {
 ### Nominal and structural
 In Java a class must say `implements RowSink`. This is nominal typing: the relationship is declared by name. Intent is explicit and tools can find every implementation, but the interface must exist first, and a library type you do not own can only satisfy it through a wrapper.
 
-Go, TypeScript and Python protocols are structural. A Go type satisfies `RowSink` if it has the two methods, whether or not its author ever heard of `RowSink`, which is why `*os.File`, `*bytes.Buffer` and `*gzip.Writer` all fit interfaces declared long after them. The cost is that nothing records intent: a renamed method silently stops satisfying the interface. Go's idiom is a compile-time assertion, `var _ RowSink = (*CsvWriter)(nil)`, which fails the build if the method set drifts. TypeScript is structural even for classes: `implements` checks the class, but any object literal of the right shape is equally acceptable.
+Go, TypeScript and Python protocols are structural. A Go type satisfies `RowSink` if it has the two methods, whether or not its author ever heard of `RowSink`, which is why `*os.File`, `*bytes.Buffer` and `*gzip.Writer` all fit interfaces declared long after them. The cost is that nothing records intent: a renamed method silently stops satisfying the interface. Go's idiom is a compile-time assertion, `var _ RowSink = (*CsvWriter)(nil)`, which fails the build if the method set drifts. TypeScript is structural even for classes ([TypeScript handbook](https://www.typescriptlang.org/docs/handbook/type-compatibility.html)): `implements` checks the class, but any object literal of the right shape is equally acceptable.
 
 ### Signatures are not the whole contract
 `Close() error` says nothing about whether calling it twice is safe, whether rows are durable when `WriteRow` returns, or whether two goroutines may write at once. Callers will rely on whatever the first implementation did. Write those rules in the doc comment and enforce them with one contract test suite, as the Liskov Substitution lesson describes. The signature is the part the compiler checks, and usually the smaller half of the promise.
 
 ### Optional capabilities
-Sometimes an implementation can do more than the interface requires. `io.Copy` checks whether the source implements `io.WriterTo` or the destination `io.ReaderFrom`, and if so hands over the whole copy, which lets file-to-socket copies use `sendfile`. An HTTP handler checks whether its `ResponseWriter` is also an `http.Flusher` before streaming. The pattern: require a minimal interface, probe for richer ones at runtime, fall back otherwise.
+Sometimes an implementation can do more than the interface requires. `io.Copy` checks whether the source implements `io.WriterTo` or the destination `io.ReaderFrom`, and if so hands over the whole copy ([io package](https://pkg.go.dev/io)), which lets file-to-socket copies use `sendfile`. An HTTP handler checks whether its `ResponseWriter` is also an `http.Flusher` before streaming. The pattern: require a minimal interface, probe for richer ones at runtime, fall back otherwise.
 
-The trap is wrappers. A logging wrapper that implements only the three required `ResponseWriter` methods hides `Flusher`, and streaming silently becomes buffering. A wrapper must expose the same optional capabilities as what it wraps, or provide `Unwrap` so callers can reach the original, which `http.ResponseController` (Go 1.20) uses. The practice task builds this.
+The trap is wrappers. The `httpsnoop` library exists because a naive `ResponseWriter` wrapper hides `Flusher`, `Hijacker` and `ReaderFrom`, and its author says this is likely to break an application ([httpsnoop](https://github.com/felixge/httpsnoop)). A logging wrapper that implements only the three required `ResponseWriter` methods hides `Flusher`, and streaming silently becomes buffering. A wrapper must expose the same optional capabilities as what it wraps, or provide `Unwrap` so callers can reach the original, which `http.ResponseController` (Go 1.20) uses; the Go team added it because probing for optional interfaces was "not discoverable and clumsy" ([Go 1.20 notes](https://go.dev/doc/go1.20)). The practice task builds this.
 
 ### When not to add one
 - **One implementation, one caller, no test need.** The interface doubles the files a reader opens and hides the real type behind "go to definition".
 - **Data, not behaviour.** A struct of fields does not need an interface of getters.
-- **Producer-side interfaces in Go.** Returning `Store` instead of `*PostgresStore` hides methods and forces an allocation. Return the concrete type; let consumers declare what they use.
+- **Producer-side interfaces in Go.** Returning `Store` instead of `*PostgresStore` hides methods and forces an allocation. Return the concrete type; let consumers declare what they use, which also lets you add methods later without breaking anyone ([Go Code Review Comments](https://go.dev/wiki/CodeReviewComments)).
 
 ### Reviewing agent-written code
 Asked to "make this testable", agents generate an `IUserRepository` for every class, mirroring every public method, placed next to the implementation. Asked to "add metrics", they wrap a writer and lose its optional capabilities. Review three things: the interface lives with its consumer and lists only what it calls; a compile-time assertion or test proves each implementation fits; every wrapper forwards optional interfaces or exposes `Unwrap`.
 
 ### The same shape elsewhere
-An interface is a contract between parties that change independently, like a wire protocol. The POSIX file API (`read`, `write`, `close` on disks, pipes and sockets) and HTTP share its failure modes: implicit behaviour callers rely on (Hyrum's law), optional extensions negotiated at runtime (`Accept-Encoding`), and proxies that strip them.
+An interface is a contract between parties that change independently, like a wire protocol. The POSIX file API (`read`, `write`, `close` on disks, pipes and sockets) and HTTP share its failure modes: implicit behaviour callers rely on ([Hyrum's law](https://www.hyrumslaw.com/)), optional extensions negotiated at runtime (`Accept-Encoding`), and proxies that strip them.
 
 ## Down the stack
 
@@ -79,7 +79,7 @@ An interface is a contract between parties that change independently, like a wir
 A caller holding an interface value is promised that every listed method exists. Go and Java check this at compile time for static conversions and at runtime for assertions and casts. TypeScript checks only at compile time. Python checks nothing until a lookup raises `AttributeError`, except that `abc.ABC` refuses to instantiate a class with unimplemented abstract methods. No language checks behaviour.
 
 ### Layer 2: The mechanism
-**Go.** A non-empty interface value is two words, `(tab, data)`. `tab` points to an itab holding the interface type, the concrete type, a copy of the type's hash (for type switches) and an array of method pointers in the interface's sorted method order. The empty interface `any` stores the type descriptor directly instead. For a static conversion such as `var s RowSink = w`, the compiler emits the itab at build time. A dynamic assertion such as `x.(Flusher)` looks up `(interface, type)` in a global runtime hash table and, on a miss, builds the itab by merging the two sorted method lists, caching negative results too; recent releases put a small cache at each assertion site in front of that table. Because the type word is part of the value, an interface holding a nil `*MyErr` is not `nil`: the typed-nil bug.
+**Go.** A non-empty interface value is two words, `(tab, data)`. `tab` points to an itab holding the interface type, the concrete type, a copy of the type's hash (for type switches) and an array of method pointers in the interface's sorted method order. The empty interface `any` stores the type descriptor directly instead. For a static conversion such as `var s RowSink = w`, the compiler emits the itab at build time. A dynamic assertion such as `x.(Flusher)` looks up `(interface, type)` in a global runtime hash table and, on a miss, builds the itab by merging the two sorted method lists, caching negative results too; recent releases put a small cache at each assertion site in front of that table ([Go runtime source](https://github.com/golang/go/blob/master/src/internal/abi/iface.go)). Because the type word is part of the value, an interface holding a nil `*MyErr` is not `nil`: the typed-nil bug ([Go FAQ](https://go.dev/doc/faq#nil_error)).
 
 **Java (HotSpot).** Each class has a vtable followed by an itable: a list of `(interface, offset)` pairs, then a block of method entries per interface. `invokeinterface` cannot use a fixed slot, because the same interface method sits at different positions in different classes, so the megamorphic stub scans the pairs to find the block. JIT-compiled code avoids the scan with inline caches: a monomorphic site compares the receiver's class and jumps directly, and class hierarchy analysis drops even that check when only one loaded class implements the interface.
 
@@ -88,7 +88,7 @@ A caller holding an interface value is promised that every listed method exists.
 **Python.** `ABCMeta` computes `__abstractmethods__` at class creation; `object.__new__` raises `TypeError` if it is non-empty. `isinstance(x, SomeABC)` consults a per-ABC cache, `register()` calls and `__subclasshook__` (how `collections.abc.Iterable` accepts any class with `__iter__`). `typing.Protocol` is for type checkers; `@runtime_checkable` makes `isinstance` work but only checks that attributes exist, not their signatures.
 
 ### Layer 3: The machine
-A Go interface call loads `tab`, loads `tab.fun[i]`, and calls indirectly with `data` as the receiver: about 1 to 2 ns when the branch predictor knows the target. The bigger cost is lost inlining, which blocks bounds-check elimination and other loop optimisations. An interface needs a pointer, so a non-pointer struct stored in one usually escapes to the heap (20 to 50 ns plus GC work); zero-sized values and integers 0 to 255 avoid this by pointing into static data. `go build -gcflags=-m` shows the escapes, and profile-guided optimisation can devirtualise a hot site behind a type check. On the JVM a monomorphic inline cache costs one compare against the class pointer in the object header, and the itable scan is a short loop reached only from megamorphic sites. A Python method call costs tens of nanoseconds regardless; a `runtime_checkable` `isinstance` costs microseconds, so probe once, not per item.
+A Go interface call loads `tab`, loads `tab.fun[i]`, and calls indirectly with `data` as the receiver: about 1 to 2 ns when the branch predictor knows the target. The bigger cost is lost inlining, which blocks bounds-check elimination and other loop optimisations. An interface needs a pointer, so a non-pointer struct stored in one usually escapes to the heap (20 to 50 ns plus GC work); zero-sized values and integers 0 to 255 avoid this by pointing into static data. `go build -gcflags=-m` shows the escapes, and profile-guided optimisation (Go 1.21) can devirtualise a hot site behind a type check, adding a concrete call to the most common callee ([Go 1.21 notes](https://go.dev/doc/go1.21)). On the JVM a monomorphic inline cache costs one compare against the class pointer in the object header, and the itable scan is a short loop reached only from megamorphic sites. A Python method call costs tens of nanoseconds regardless; a `runtime_checkable` `isinstance` costs microseconds, so probe once, not per item.
 
 ### Why it's built this way
 1. Callers and implementations change at different times, so they need a written meeting point.
@@ -118,6 +118,11 @@ The team adds an optional `WriteBatch`. The shipper probes for it once at startu
 
 Later a metrics wrapper is added around every sink, implementing only `Write`. Kafka throughput quietly drops back, because the wrapper hides `WriteBatch`, and nobody notices for two weeks until a capacity review compares CPU graphs. The fix is a wrapper that forwards each capability its inner sink has, plus a test asserting `Counting(kafkaSink)` still satisfies `Batcher`.
 
+## In the wild
+- **Go net/http, 2023: optional interfaces replaced by `ResponseController`.** `ResponseWriter` extras such as `Flusher` were discovered by type assertion, which wrappers silently broke. Go 1.20 added `http.ResponseController`, a documented way to reach per-request controls (flush, read and write deadlines) that follows `Unwrap` through wrappers ([Go 1.20 notes](https://go.dev/doc/go1.20), [httpsnoop](https://github.com/felixge/httpsnoop)).
+- **Java 8, 2014: growing `Collection` without breaking implementers.** Java 8 added `stream()` and `removeIf()` to `java.util.Collection` as `default` methods, so the countless existing implementations kept compiling, a case where interface evolution was designed in rather than forbidden ([Collection Javadoc](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Collection.html), [Oracle tutorial](https://docs.oracle.com/javase/tutorial/java/IandI/defaultmethods.html)).
+- **Go, long-standing: the typed-nil `error`.** The Go FAQ documents the case where a function returns a nil `*MyError` as `error` and the caller's `err != nil` check is true. It is documented because it recurs in real code; the fix is to return a literal `nil` ([Go FAQ](https://go.dev/doc/faq#nil_error)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -134,7 +139,7 @@ Later a metrics wrapper is added around every sink, implementing only `Write`. K
 - Interface values in hot Go loops forcing heap allocations. Fix: concrete types or generics in the hot path; check with `-gcflags=-m`.
 
 ## Leadership lens
-- Treat a widely implemented interface as a public API: a new required method breaks every implementation, so add an optional interface first.
+- Treat a widely implemented interface as a public API: a new required method breaks every implementation, so add an optional interface first. In Java a `default` method is the other route: it adds behaviour without forcing old implementations to change ([Oracle tutorial](https://docs.oracle.com/javase/tutorial/java/IandI/defaultmethods.html)); Go has no equivalent.
 - In design review, ask for each new interface: who calls it, how many implementations exist or are planned, and where the behavioural contract is written down.
 - Put "wrappers forward optional capabilities" on the middleware review checklist; it prevents regressions nobody files tickets for.
 - Budget for contract tests; they keep implementations by different teams or agents behaving alike.
@@ -787,6 +792,26 @@ func Counting(s Sink) CountingSink {
 - Wrappers that forward every capability or expose `Unwrap`: the tracing decorator hid multipart upload, so 5 GB files fell back to a single `Put` over the size limit.
 - Evolving by adding an optional interface first, migrating backends, then making it required.
 - One shared contract test suite run against S3 (in an integration job), the on-premises store and the in-memory store.
+
+## Sources and further study
+**Primary**
+- [Go FAQ: why is my nil error value not equal to nil](https://go.dev/doc/faq#nil_error): the two-word interface value and the typed-nil trap.
+- [Go 1.20 release notes](https://go.dev/doc/go1.20): `ResponseController` and why optional-interface probing was replaced.
+- [Go runtime: internal/abi/iface.go](https://github.com/golang/go/blob/master/src/internal/abi/iface.go): the real `ITab` layout with its type, interface and method array.
+- [Oracle Java tutorial: default methods](https://docs.oracle.com/javase/tutorial/java/IandI/defaultmethods.html): how an interface can grow without breaking implementers.
+
+**Systems docs**
+- [Go io package](https://pkg.go.dev/io): small interfaces and the `WriterTo` and `ReaderFrom` fast paths.
+- [felixge/httpsnoop](https://github.com/felixge/httpsnoop): a worked explanation of how wrappers hide optional interfaces.
+- [Go Code Review Comments: Interfaces](https://go.dev/wiki/CodeReviewComments): define interfaces where they are consumed, return concrete types.
+
+**Books**
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides (1st ed.), chapter 1: "program to an interface, not an implementation" and the difference between class and interface inheritance.
+- *Clean Architecture*, Robert C. Martin, chapter 10 (Interface Segregation) and chapter 11 (Dependency Inversion): who owns an interface and how wide it should be.
+
+**Other curricula**
+- [Martin Fowler: RoleInterface](https://martinfowler.com/bliki/RoleInterface.html): interfaces shaped by what a client needs, set against ones that mirror a whole class.
+- [Microsoft C# docs: interfaces](https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces): the nominal-typing view, including when to choose an interface over an abstract class.
 
 ## Watch
 - [Go Proverbs (Rob Pike, Gopherfest 2015)](https://www.youtube.com/watch?v=PAAkCSZUG1c): "the bigger the interface, the weaker the abstraction" and other short rules for interface design.

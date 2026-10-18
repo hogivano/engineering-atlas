@@ -4,7 +4,7 @@ minutes: 15
 ---
 
 ## In one minute
-- YAGNI ("You Aren't Gonna Need It") says: build what today's requirements need, and add the rest when a real requirement arrives. It came out of Extreme Programming in the late 1990s.
+- YAGNI ("You Aren't Gonna Need It") says: build what today's requirements need, and add the rest when a real requirement arrives. It came out of Extreme Programming in the late 1990s, from a conversation between Kent Beck and Chet Hendrickson on the C3 payroll project ([Fowler](https://martinfowler.com/bliki/Yagni.html)).
 - It is a bet about economics. Speculative code costs time to build, costs effort to carry every month, and is often wrong when the real need shows up. Deferring costs only the price of building it later.
 - YAGNI is not "skip design". It depends on code that is cheap to change: tests, small modules and the habit of refactoring. Without those, deferral really is expensive.
 - It does not cover one-way doors: on-disk and wire formats, public APIs, data you cannot recreate later, and security. Decide those carefully up front.
@@ -38,13 +38,15 @@ def send_password_reset(email: str, link: str, mailer: Mailer) -> None:
 When SMS arrives, the team has two real channels to compare, so the shared shape is visible instead of guessed. The extraction takes a day, with tests that already cover the email path.
 
 ### Four costs of a speculative feature
-For any capability you are tempted to build early, compare:
-- **Cost of building it now**: the engineering days, plus the delay to whatever ships today.
-- **Cost of carrying it**: every reader must understand it, every refactor must preserve it, every dependency upgrade must keep it compiling, every test run executes its tests.
-- **Cost of being wrong**: when the need arrives it rarely matches the guess. A wrong abstraction costs more than none, because people bend new code to fit it.
-- **Cost of building it later**: often higher than building it now (the code has grown), but you pay it only if the need is real, and you build the right thing.
+Martin Fowler names four costs of a "presumptive feature", one that is built before anyone can use it ([Fowler](https://martinfowler.com/bliki/Yagni.html)). For any capability you are tempted to build early, compare:
+- **Cost of build**: the engineering days. If the guess is wrong, all of it is wasted.
+- **Cost of delay**: the feature you did not ship while you built this one. People forget this one, and it applies even when the guess is right.
+- **Cost of carry**: every reader must understand it, every refactor must preserve it, every dependency upgrade must keep it compiling, every test run executes its tests. The cost lands on every feature built until the speculative one is used or deleted.
+- **Cost of repair**: when the need arrives it rarely matches the guess. A wrong abstraction costs more than none, because people bend new code to fit it.
 
-Building early wins only when the later cost is much higher, the probability of need is high, and the wait before it is used is short. That combination is rarer than it feels in a design meeting.
+Against these sits the cost of building it later, which is often higher than building it now because the code has grown. You pay it only if the need is real, and you build the right thing. The odds matter: Fowler cites Kohavi's analysis of experiments at Microsoft, where only about a third of carefully chosen features improved the metrics they targeted, so assume your odds of being right are at best one in three.
+
+Building early wins only when the later cost is much higher, the probability of need is high, and the wait before it is used is short. That combination is rarer than it feels in a design meeting. One more filter from Fowler: if preparing for the future adds no complexity today, such as a lookup table for error messages instead of inline strings, there is nothing to defer.
 
 ### What YAGNI does not cover
 Some decisions are expensive or impossible to reverse:
@@ -53,10 +55,13 @@ Some decisions are expensive or impossible to reverse:
 - **Public APIs.** Removing a parameter breaks callers; adding one usually does not. Start small.
 - **Security and correctness.** Input validation and authorisation are part of today's requirements, not future features.
 
-The test is reversibility. If adding it later costs about the same as adding it now, wait.
+The test is reversibility. If adding it later costs about the same as adding it now, wait. Fowler also warns that YAGNI does not cover effort to keep code easy to change: refactoring, self-testing code and continuous delivery are what make deferral viable, and without them YAGNI "turns from a beneficial practice into a curse" ([Fowler](https://martinfowler.com/bliki/Yagni.html)).
+
+### Unused code is a liability, not just a cost
+Speculative code that ships and is never used does not sit quietly. Google's SRE book argues that code that is never executed, or is gated by a flag that is always off, is a time bomb, names Knight Capital as the example, and recommends routine removal of dead code because source control already remembers it ([SRE book, ch. 9](https://sre.google/sre-book/simplicity/)). The same rule explains why extension points that were never used tend to get in the way of the code that is.
 
 ### Reviewing agent-written code
-Coding agents add generality because it looks like quality: an interface with one implementation, a `strategy` parameter nobody passes, configuration for values that never change, `**kwargs` passed through "for flexibility". In review, ask for each: which current caller needs this? If none, remove it. Ask agents to "implement only what the tests require", and treat diffs that add abstractions without adding behaviour as a smell.
+Coding agents add generality because it looks like quality: an interface with one implementation, a `strategy` parameter nobody passes, configuration for values that never change, `**kwargs` passed through "for flexibility". In review, ask for each: which current caller needs this? If none, remove it. Google's reviewer guide says the same in its rule on over-engineering: solve the problem you know about now, and solve the future one when you can see its actual shape ([Google eng-practices](https://google.github.io/eng-practices/review/reviewer/looking-for.html)). Ask agents to "implement only what the tests require", and treat diffs that add abstractions without adding behaviour as a smell.
 
 ### The same shape elsewhere
 YAGNI is a *speculation* problem: do work early on a prediction, or wait for the fact. A CPU does speculative execution only because branch predictors are right about 95 percent of the time and a miss costs only about 15 to 20 cycles. Manufacturing calls the opposite of over-building "just in time" inventory: stock costs money to hold, and demand forecasts are often wrong. Capacity planning faces the same trade, which is why autoscaling usually beats provisioning for a 100x peak that may never come.
@@ -72,7 +77,7 @@ What makes deferral safe is tooling, not willpower:
 - **Refactoring tools** (IDE rename, extract interface, `gopls` rename, the TypeScript language service) make "add the seam when the second case arrives" a minutes-long change.
 - **Feature flags** let half-built work ship dark, so you build in small slices against real demand.
 - **Expand-and-contract migrations** (add a nullable column, backfill, switch reads, drop the old column) make schema changes incremental, which removes the urge to design every column up front.
-- **Dead code detection** keeps carrying costs visible: Go's `deadcode` tool and `staticcheck` report unused functions, `tsc` flags unused locals with `noUnusedLocals`, and `vulture` finds unused Python code.
+- **Dead code detection** keeps carrying costs visible: Go's `deadcode` tool reports functions that no execution can reach ([Go blog](https://go.dev/blog/deadcode)), `tsc` flags unused locals with `noUnusedLocals` ([TSConfig reference](https://www.typescriptlang.org/tsconfig/)), and `vulture` finds unused Python code ([Vulture](https://github.com/jendrikseipp/vulture)). Treat reports as leads, not verdicts: code reached only through reflection or plugins can look unused.
 
 ### Layer 3: The machine
 Speculative generality has a runtime price. A direct Go method call can be inlined to a few instructions. Wrap the same work in an interface "in case of a second implementation" and the call goes through an itab lookup and an indirect branch, roughly 1 to 3 ns, and usually cannot be inlined. Worse, a value passed through an interface often escapes to the heap, adding an allocation (tens of nanoseconds) and garbage collector work per call.
@@ -102,11 +107,16 @@ flowchart TD
 ```
 
 ## Worked example
-A B2B analytics startup with 6 engineers debated multi-tenant sharding before they had a second large customer. The proposal: 15 engineer-days to build per-tenant database routing now. Estimated cost to add it later, once the codebase was larger: 25 engineer-days. Probability the sales pipeline would actually need it within a year: about 30 percent, and not before month 6. Carrying cost of the routing layer: about 1 engineer-day per month (tests, migrations that must run on every shard, onboarding).
+An illustrative case, with made-up but plausible numbers: a B2B analytics startup with 6 engineers debated multi-tenant sharding before they had a second large customer. The proposal: 15 engineer-days to build per-tenant database routing now. Estimated cost to add it later, once the codebase was larger: 25 engineer-days. Probability the sales pipeline would actually need it within a year: about 30 percent, and not before month 6. Carrying cost of the routing layer: about 1 engineer-day per month (tests, migrations that must run on every shard, onboarding).
 
 Expected cost of building now: 15 days plus carrying it, about 6 months if needed and 12 months if not, which comes to 15 + (0.3 × 6 + 0.7 × 12) = 25.2 days. Expected cost of waiting: 0.3 × 25 = 7.5 days. They waited, and spent the 15 days on the reporting feature their first customer was asking for.
 
 The same team built the audit log immediately. Building it now cost 3 days. Building it later was effectively 20 days plus permanent loss of history that a regulated customer's contract required, with a 90 percent chance of being asked within 3 months. Expected cost now: 3 days. Expected cost later: 18 days. YAGNI said build it, because the economics, not the slogan, decide.
+
+## In the wild
+- **Knight Capital, 2012: the code nobody used anymore.** The "Power Peg" trading logic had been abandoned in 2003 but stayed in the codebase. A 2012 release reused its old flag for new functionality; one of eight servers missed the deploy and ran Power Peg instead. In about 45 minutes Knight made 4 million executions in 154 stocks and lost more than $460 million, and the SEC fined it $12 million ([SEC order](https://www.sec.gov/litigation/admin/2013/34-70694.pdf)). Dead code is a speculative feature whose carrying cost finally came due.
+- **OpenSSL, 2014: Heartbleed.** The TLS/DTLS heartbeat extension (RFC 6520) was motivated by DTLS, which has no cheap way to check that a peer is alive or to discover path MTU ([RFC 6520](https://www.rfc-editor.org/rfc/rfc6520)). A missing length check in its OpenSSL implementation, introduced in December 2011 and shipped in 1.0.1 from March 2012, let a client read server memory until 1.0.1g in April 2014. Anyone who could not upgrade was told to recompile with `-DOPENSSL_NO_HEARTBEATS` ([heartbleed.com](https://heartbleed.com)). Every capability you ship is attack surface whether or not your users ever need it.
+- **Microsoft experiments, as reported by Fowler.** Kohavi and colleagues found that only about one in three features, even after careful analysis, improved the metric it was built for ([Fowler](https://martinfowler.com/bliki/Yagni.html)). That base rate is the quantitative case for waiting.
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -589,6 +599,26 @@ func Plan(fs []Feature, horizon int) ([]Decision, int, error) {
 - Keeping provider-specific code behind a narrow module boundary, which is cheap today and makes extraction easy later, without building a plugin system.
 - Investing in tests at the behaviour level so the future change is a refactor.
 - Writing down the trigger that would justify the work, so the decision is revisited deliberately.
+
+## Sources and further study
+**Primary**
+- [RFC 6520: TLS and DTLS Heartbeat Extension](https://www.rfc-editor.org/rfc/rfc6520): the stated motivation for a feature that later became Heartbleed.
+- [SEC order: Knight Capital Americas](https://www.sec.gov/litigation/admin/2013/34-70694.pdf): the regulator's account of dead code coming back to life.
+
+**Systems docs**
+- [Google SRE book, ch. 9: Simplicity](https://sre.google/sre-book/simplicity/): why unused and flag-gated code is a liability.
+- [Google eng-practices: what to look for](https://google.github.io/eng-practices/review/reviewer/looking-for.html): the reviewer rule against solving problems you only speculate about.
+- [Go blog: finding unreachable functions with deadcode](https://go.dev/blog/deadcode): tooling that makes the carrying cost of dead code visible.
+- [Vulture](https://github.com/jendrikseipp/vulture): dead code detection for Python, with its caveats about implicit calls.
+
+**Books**
+- *Refactoring*, Fowler (2nd ed.), ch. 3 "Bad Smells in Code" for speculative generality and dead code, and ch. 4 "Building Tests" as the enabler for deferral.
+- *Software Engineering at Google*, Winters, Manshreck and Wright, ch. 15 "Deprecation": code as a liability that needs a plan for removal.
+
+**Other curricula**
+- [Refactoring.Guru: Speculative Generality](https://refactoring.guru/smells/speculative-generality): lists unused classes, parameters and hooks as a smell, and notes that framework code written for outside users is a legitimate exception.
+- [extremeprogramming.org: Never add functionality early](http://www.extremeprogramming.org/rules/early.html): the original XP rule in its plainest form.
+- [Ron Jeffries: You're NOT gonna need it](https://ronjeffries.com/xprog/articles/practices/pracnotneed/): a practitioner's argument that the cheapest code is the code you do not write.
 
 ## Watch
 - [The YAGNI Principle (Venkat Subramaniam, via Dev Tools Made Simple)](https://www.youtube.com/watch?v=QyOQBuHDAoY): a short talk on why postponing speculative work keeps a design easier to change.

@@ -5,7 +5,7 @@ minutes: 17
 
 ## In one minute
 - A concern is one thing a piece of software has to get right: the business rule, the storage format, the user interface, authentication, logging, retries. Separating concerns means each one lives in its own place, so you can think about, change and test it without holding the others in your head.
-- Dijkstra coined the phrase in 1974 to describe a way of thinking: study one aspect of a problem in depth while knowing, but temporarily ignoring, the others. Code structure is how that way of thinking survives after the author has moved on.
+- Dijkstra coined the phrase in 1974 ([EWD447](https://www.cs.utexas.edu/~EWD/transcriptions/EWD04xx/EWD447.html)) to describe a way of thinking: study one aspect of a problem in depth while knowing, but temporarily ignoring, the others. Code structure is how that way of thinking survives after the author has moved on.
 - The most useful split in everyday code is between deciding and doing: a pure core that decides what should happen, and a thin shell that talks to disks, networks and clocks. The core is tested with plain values; the shell is tested with a few fakes.
 - Concerns come in three shapes: horizontal layers (presentation, domain, data), vertical slices (features), and cross-cutting concerns (auth, logging, transactions) that touch everything and belong in middleware or wrappers.
 - Agents happily write one function that parses input, applies policy, calls the database and formats output. Review by asking which lines would change if the policy changed, and which if the storage changed. If the answer is "the same function", the concerns are tangled.
@@ -34,7 +34,7 @@ def render_report(plan, results):                     # presentation: pure
 `plan_cleanup` takes plain data and returns plain data. It never touches the disk and never reads the clock; `now` is a parameter. Dry-run is now `print(render_report(plan, []))`. Pinning and quota ordering are changes to one pure function, tested with lists of tuples in microseconds. `apply_plan` is ten lines that loop and call `fs.remove`, and its tests need one fake that fails on a chosen path. Gary Bernhardt named this shape "functional core, imperative shell": push decisions into code with no side effects, and keep the code with side effects so simple it barely needs tests.
 
 ### Three shapes of concern
-**Horizontal layers.** Presentation, domain and data access are the classic split, described well in Fowler's note on presentation-domain-data layering. Each layer knows only the one beneath it. A web handler parses the request and renders the response; the domain decides; the repository loads and stores. The rule that matters is direction: the domain must not import the web framework or the SQL driver.
+**Horizontal layers.** Presentation, domain and data access are the classic split, described well in [Fowler's note on presentation-domain-data layering](https://martinfowler.com/bliki/PresentationDomainDataLayering.html). Each layer knows only the one beneath it. A web handler parses the request and renders the response; the domain decides; the repository loads and stores. The rule that matters is direction: the domain must not import the web framework or the SQL driver.
 
 **Vertical slices.** Within a large application, features are also concerns. Billing, search and notifications change for different reasons and are owned by different people. Grouping code by feature (`billing/handler.py`, `billing/rules.py`, `billing/repo.py`) keeps a billing change inside one folder, where grouping by layer (`handlers/`, `services/`, `repos/`) spreads it across three. Most mature codebases do both: slices at the top level, layers inside each slice.
 
@@ -53,7 +53,7 @@ A 40-line script that runs once does not need a core, a shell and a presenter. S
 Ask an agent to "add dry-run to the cleanup job" and the usual result is a `dry_run` flag threaded through the loop with `if not dry_run:` around each side effect. It passes the test it wrote, and it leaves the policy untestable without a filesystem. Ask instead for a planner that returns actions and an executor that performs them, then check three things in review: the planner has no imports of I/O modules and no calls to the clock, the executor has no business rules (no `if size > ...`), and the report is built from the plan and results rather than from print statements inside the loop.
 
 ### The same shape elsewhere
-Deciding separately from doing is the *trust but verify* shape: the plan is data, so a human, a test or a policy engine can inspect it before anything irreversible happens. Terraform's `plan` and `apply`, Kubernetes controllers that compute a diff before calling the API, database query planners that produce an `EXPLAIN` tree before execution, and agent frameworks that ask for approval of a tool call before running it all use the same split.
+Deciding separately from doing is the *trust but verify* shape: the plan is data, so a human, a test or a policy engine can inspect it before anything irreversible happens. Terraform's [`plan`](https://developer.hashicorp.com/terraform/cli/commands/plan) and [`apply`](https://developer.hashicorp.com/terraform/cli/commands/apply), Kubernetes controllers that compute a diff before calling the API, database query planners that produce an `EXPLAIN` tree before execution, and agent frameworks that ask for approval of a tool call before running it all use the same split.
 
 ## Down the stack
 
@@ -61,9 +61,9 @@ Deciding separately from doing is the *trust but verify* shape: the plan is data
 Separation makes promises you can check. The policy module promises determinism: the same inputs produce the same plan, with no reads from disk, network, clock or randomness, so it can be called a million times in a property test. The execution module promises that it performs exactly the actions in the plan, in order, and reports the outcome of each, including partial failure; it does not add, drop or reorder actions. The presentation module promises that its output is a function of the plan and the results only. Each promise is a test you can write, and a violation (a hidden `time.time()` call, a filter inside the executor) is visible in review.
 
 ### Layer 2: The mechanism
-Languages and frameworks give you tools to enforce the boundaries rather than hope for them. Go refuses to compile an import of a package under an `internal/` directory from outside the tree rooted at that directory's parent. Java's module system only exposes packages listed in `exports`. Python has no enforcement, so teams use import-linter with a `layers` contract, and Java teams write ArchUnit tests such as "classes in `..domain..` must not depend on classes in `..web..`".
+Languages and frameworks give you tools to enforce the boundaries rather than hope for them. Go refuses to compile an import of a package under an `internal/` directory from outside the tree rooted at that directory's parent ([Go 1.4 release notes](https://go.dev/doc/go1.4#internalpackages)). Java's module system only exposes packages listed in `exports`. Python has no enforcement, so teams use import-linter with a `layers` contract, and Java teams write ArchUnit tests such as "classes in `..domain..` must not depend on classes in `..web..`".
 
-Cross-cutting concerns rely on wrapping. Go's `net/http` middleware is a function `func(http.Handler) http.Handler`; a chain of five is five nested handlers, each calling the next one's `ServeHTTP`. Express keeps an array of `(req, res, next)` functions and advances an index each time `next()` is called. Spring implements `@Transactional` with a proxy object (a JDK dynamic proxy for interfaces, or a CGLIB-generated subclass) that opens the transaction and then calls your method. That mechanism has a well-known edge: a method calling another `@Transactional` method on `this` bypasses the proxy, so the inner annotation does nothing.
+Cross-cutting concerns rely on wrapping. Go's `net/http` middleware is a function `func(http.Handler) http.Handler`; a chain of five is five nested handlers, each calling the next one's `ServeHTTP`. Express keeps an array of `(req, res, next)` functions and advances an index each time `next()` is called ([Express docs](https://expressjs.com/en/guide/using-middleware.html)). Spring implements `@Transactional` with a proxy object (a JDK dynamic proxy for interfaces, or a CGLIB-generated subclass) that opens the transaction and then calls your method. That mechanism has a well-known edge: a method calling another `@Transactional` method on `this` bypasses the proxy, so the inner annotation does nothing ([Spring docs](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)).
 
 ### Layer 3: The machine
 Separation has a runtime cost, and it is usually small. Each layer or middleware is one more call; through an interface or function value it is an indirect call of about 1 to 3 ns when the branch predictor has seen it before, and the compiler cannot inline across it. A ten-middleware HTTP chain adds tens of nanoseconds to a request whose database query takes a millisecond.
@@ -100,6 +100,11 @@ The refactor split the job three ways. The planner takes a list of `(path, size,
 
 Dry-run became a flag in `main` that skips `apply_plan`. Before the quota drop to 300 GB, ops reviewed a dry-run plan of 1.1 million files and 210 GB and caught that a team's nightly snapshot directory was unpinned. Planning 1.8 million entries takes about 1.5 seconds and a few hundred MB for the tuples; the `unlink` calls take roughly 25 minutes, so the separation cost nothing that mattered.
 
+## In the wild
+- **Apache Log4j, 2021: Log4Shell.** The logging library resolved JNDI lookups inside log messages, so a string that an application merely logged could make it load and run code from an attacker's LDAP server (CVE-2021-44228, CVSS 10.0). The first fix, 2.15.0, was incomplete in some non-default configurations (CVE-2021-45046), and 2.16.0 followed for Java 8 and later ([Apache Logging](https://logging.apache.org/log4j/2.x/security.html)). A recording concern had quietly gained an execution concern.
+- **HashiCorp Terraform: plan, then apply.** `terraform plan` produces an execution plan with a preview of changes, and `terraform apply` executes the actions proposed in a plan. The decision is data a human or policy check can read before anything irreversible happens ([plan](https://developer.hashicorp.com/terraform/cli/commands/plan), [apply](https://developer.hashicorp.com/terraform/cli/commands/apply)).
+- **Spring Framework: cross-cutting concerns by proxy.** Spring applies aspects such as transactions through proxies, which means a call from one method to another on the same object skips the advice. The docs call this out as the self-invocation issue, and note that AspectJ weaving does not have it ([Spring docs](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)).
+
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
 | --- | --- | --- | --- |
@@ -114,6 +119,7 @@ Dry-run became a flag in `main` that skips `apply_plan`. Before the quota drop t
 - Hidden inputs in the pure core (`datetime.now()`, environment variables, a global config). Fix: pass them as parameters; ban the imports in the core with a lint rule.
 - Business rules creeping into the shell ("skip files over 1 GB" added inside the executor loop). Fix: keep the executor free of conditions on domain data, and put every rule in the planner.
 - Cross-cutting code copied into handlers, so the one new endpoint lacks auth. Fix: apply it in middleware registered once, and test that every route passes through it.
+- A cross-cutting component trusted with too much power. Log4j's message lookups let logged text trigger a JNDI fetch, so attacker-controlled strings that were merely logged could run remote code ([Apache Logging security page](https://logging.apache.org/log4j/2.x/security.html)). Fix: a logging layer formats and records data and does nothing else; treat anything that logs untrusted input as an input boundary.
 - Layers that only forward calls and copy fields, adding files without separating anything. Fix: merge layers that never change independently.
 
 ## Leadership lens
@@ -646,6 +652,24 @@ func RenderReport(plan []Action, results []Outcome) string {
 - The preview for legal is the plan itself, rendered without executing, with the same code path as the real run.
 - Cross-cutting concerns (audit, metrics, retries) applied by wrapping the mail port, not inside the policy.
 - Modules with enforced import rules before services; split into services only for independent scaling or ownership, since the network adds latency and partial failure.
+
+## Sources and further study
+**Primary**
+- [Cockburn, Hexagonal architecture](https://alistair.cockburn.us/hexagonal-architecture/): the intent is an application that can be driven by users, tests or batch scripts and developed in isolation from its devices and databases.
+- [Go 1.4 release notes: internal packages](https://go.dev/doc/go1.4#internalpackages): a compiler-enforced boundary between concerns.
+
+**Systems docs**
+- [Terraform: plan command](https://developer.hashicorp.com/terraform/cli/commands/plan): a deciding step that previews changes without making them.
+- [Terraform: apply command](https://developer.hashicorp.com/terraform/cli/commands/apply): the doing step that executes a plan.
+- [Apache Log4j security page](https://logging.apache.org/log4j/2.x/security.html): what happens when a cross-cutting concern is allowed to do too much.
+
+**Books**
+- *Clean Architecture*, Robert C. Martin, chapter 17 "Boundaries: Drawing Lines" and chapter 23 "Presenters and Humble Objects": where to cut and how to keep the hard-to-test edge thin.
+- *Design Patterns*, Gamma, Helm, Johnson and Vlissides, chapter 4 (Structural patterns, including Decorator and Proxy): the wrapping mechanisms behind cross-cutting concerns.
+
+**Other curricula**
+- [Azure Architecture Center: Gateway Offloading](https://learn.microsoft.com/en-us/azure/architecture/patterns/gateway-offloading): moves shared concerns such as TLS termination into a gateway instead of duplicating them across services.
+- [Wikipedia: Separation of concerns](https://en.wikipedia.org/wiki/Separation_of_concerns): a neutral overview of the idea and its forms.
 
 ## Watch
 - [Boundaries (Gary Bernhardt, RubyConf 12)](https://www.youtube.com/watch?v=yTkzNHF6rMs): the functional core and imperative shell, and why isolating decisions from effects removes most mocks.

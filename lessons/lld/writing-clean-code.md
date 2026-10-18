@@ -16,7 +16,7 @@ minutes: 17
 Code is read many more times than it is written: in review, when debugging at 2 a.m., when someone extends it next year, and now when an agent reads it to make a change. Each reader has to rebuild your mental model from the text alone. Clean code minimises that rebuild cost. Every rule below is a way to put more of the model into the code and less into the reader's head.
 
 ### Names
-Names are the cheapest documentation and the one most often read.
+Names are the cheapest documentation and the one most often read. Google's reviewer guide asks for a name "long enough to fully communicate what the item is or does, without being so long that it becomes hard to read" ([Google eng-practices](https://google.github.io/eng-practices/review/reviewer/looking-for.html)).
 
 - **Say what it means in the domain.** `eligible_for_refund` beats `check2`; `retry_after_seconds` beats `delay`. Units belong in the name when the type does not carry them.
 - **Scale length with scope.** A loop index used in three lines can be `i`. A field visible across a package needs a full phrase. A one-letter name at package scope is a riddle; a 40-character name inside a two-line lambda is noise.
@@ -29,11 +29,11 @@ A function is clean when a reader can predict what it does from its name and sig
 
 - **One thing, one level.** `place_order` should read like the steps of placing an order: validate, reserve stock, charge, record. Parsing a date string in the middle of it drops the reader three levels down.
 - **Few parameters.** Three is a lot. Five usually means a missing concept: `(street, city, zip, country)` is an `Address`. Long parameter lists also invite argument-order bugs, which named arguments or a small options struct prevent.
-- **No flag arguments.** `render(doc, True)` tells the reader nothing, and the function now does two things. Split it into `render_preview(doc)` and `render_final(doc)`, or pass an enum if there are genuinely more modes.
+- **No flag arguments.** `render(doc, True)` tells the reader nothing, and the function now does two things. Split it into `render_preview(doc)` and `render_final(doc)`, or pass an enum if there are genuinely more modes. Fowler's objection is about the call site: `book(martin, false)` forces the reader to remember what the flag means, where `regularBook(martin)` does not ([Fowler](https://martinfowler.com/bliki/FlagArgument.html)).
 - **Shallow nesting.** Handle the error and edge cases first and return early (guard clauses), so the main path runs down the left margin. Nesting beyond two or three levels is the clearest sign a function wants to be split.
-- **Command-query separation.** A function either answers a question or changes state, not both. `pop()` is a deliberate exception; most are accidents (`validate()` that also normalises and saves).
+- **Command-query separation.** A function either answers a question or changes state, not both. The payoff is that queries can be called anywhere, in any order, with confidence ([Fowler](https://martinfowler.com/bliki/CommandQuerySeparation.html)). `pop()` is a deliberate exception; most are accidents (`validate()` that also normalises and saves).
 
-How long is too long? Length is a symptom, not the disease. A 40-line function that reads top to bottom as one sequence is fine; a 12-line function with four levels of nesting is not. A better test, from Martin Fowler: if you have to read the body to know what a block does, extract it and name it after its intention.
+How long is too long? Length is a symptom, not the disease. A 40-line function that reads top to bottom as one sequence is fine; a 12-line function with four levels of nesting is not. A better test, from Martin Fowler: if you have to read a fragment to know what it does, extract it and name the function after its intention ([Fowler](https://martinfowler.com/bliki/FunctionLength.html)).
 
 ### Errors and side effects
 - **Fail at the point of failure, specifically.** Raise or return `InsufficientCredits(needed=3, available=1)`, not `False` or `None`. The caller should be able to decide what to do from the error alone.
@@ -42,15 +42,15 @@ How long is too long? Length is a symptom, not the disease. A 40-line function t
 - **Inject what varies.** Time, randomness and I/O passed in as parameters make behaviour deterministic and testable, which is why every practice task in this course injects a clock.
 
 ### Comments
-Write comments for what the code cannot say: why this approach, which constraint forced it, what was tried and failed, links to the incident or spec. Do not narrate the code (`# increment i`). When you need a comment to explain *what* a block does, extract the block into a function whose name is that comment. Keep public API documentation accurate; a wrong comment is worse than none.
+Write comments for what the code cannot say (Google's guide: comments are useful when they explain why code exists, not what it does, and if the code is unclear it should be made simpler, per [eng-practices](https://google.github.io/eng-practices/review/reviewer/looking-for.html)): why this approach, which constraint forced it, what was tried and failed, links to the incident or spec. Do not narrate the code (`# increment i`). When you need a comment to explain *what* a block does, extract the block into a function whose name is that comment. Keep public API documentation accurate; a wrong comment is worse than none.
 
 ### Structure and data
 - Prefer immutable data and small value types (`Money`, `TimeRange`) to loose primitives. They carry their rules with them; How to Identify Entities and Model Relationships covers when to create one.
 - Replace a repeated `switch` on a type code with polymorphism or a table, once the same switch appears in three places (How to choose Design Patterns goes into the decision).
-- Keep a file or class about one thing. If its name needs "and" or "Utils", it holds unrelated concerns.
+- Keep a file or class about one thing. If its name needs "and" or "Utils", it holds unrelated concerns; the Go team's advice on package names says the same of `util`, `common` and `misc`, which tell clients nothing about what is inside ([Go blog](https://go.dev/blog/package-names)).
 
 ### Consistency and tools
-Formatting arguments are a waste of review time. Use the formatter your ecosystem standardised on (`gofmt`, `black` or `ruff format`, `prettier`) and run it in CI. Use a linter for mechanical rules (unused variables, shadowing, complexity limits) so reviewers spend their attention on names and design. In an existing codebase, local consistency beats your preferred style: a reader who learns one pattern should find it everywhere.
+Formatting arguments are a waste of review time. Use the formatter your ecosystem standardised on (`gofmt`, `black` or `ruff format`, `prettier`) and run it in CI. Use a linter for mechanical rules (unused variables, shadowing, complexity limits) so reviewers spend their attention on names and design. Google found the same: with automated formatters enforced in presubmit checks, line-length arguments simply stopped being interesting ([Software Engineering at Google, ch. 8](https://abseil.io/resources/swe-book/html/ch08.html)). In an existing codebase, local consistency beats your preferred style: a reader who learns one pattern should find it everywhere, and PEP 8 itself ranks consistency within a project above consistency with the guide ([PEP 8](https://peps.python.org/pep-0008/)).
 
 ### Clean code with coding agents
 Agents produce code that looks clean at a glance and fails on substance: long defensive blocks that catch every exception, comments restating each line, generic names like `data`, `result` and `handle`, and new helper functions duplicating ones that already exist two files away. They also follow what they see. A codebase with clear names, small functions and a lint config teaches the agent the house style; a messy one gets messier faster. Put your conventions in the repository (lint config, a short style note), and review generated code for names, error handling and duplication rather than formatting.
@@ -64,10 +64,10 @@ Clean code is the software version of plain-language writing rules used in law, 
 Clean code makes promises to the reader that you can check. Names match behaviour: a query does not mutate, a function named `save` persists. A function's signature lists everything it depends on that can vary (no hidden clock or global). Errors are explicit and specific. Mechanical limits hold across the codebase, for example at most 4 parameters, nesting at most 3, functions at most 50 statements. Those limits are proxies, but they are testable in CI, which turns "write clean code" from advice into a gate.
 
 ### Layer 2: The mechanism
-Linters parse source into an abstract syntax tree and walk it. Cyclomatic complexity, from Thomas McCabe's 1976 paper, counts independent paths through a function's control-flow graph: edges minus nodes plus 2, in practice one plus the number of decision points (`if`, loop, `case`, `&&`, `||`). Cognitive complexity, defined by SonarSource, adds a penalty for each nesting level, which matches how hard code feels to read better than raw path counts. Tools set defaults: Pylint flags more than 5 arguments (`too-many-arguments`), more than 50 statements and more than 5 nested blocks; ESLint's `max-params` defaults to 3 and `max-depth` to 4; `gocyclo` and Ruff's `C901` report McCabe complexity above a threshold you pick. Formatters such as `gofmt` parse to an AST and print it back in one canonical layout, which is why they can never disagree with themselves and why diffs only show real changes.
+Linters parse source into an abstract syntax tree and walk it. Cyclomatic complexity, from Thomas McCabe's 1976 paper ([McCabe](http://www.literateprogramming.com/mccabe.pdf)), counts independent paths through a function's control-flow graph: edges minus nodes plus 2, in practice one plus the number of decision points (`if`, loop, `case`, `&&`, `||`). Cognitive complexity, defined by SonarSource, adds a penalty for each nesting level, which matches how hard code feels to read better than raw path counts ([SonarSource white paper](https://www.sonarsource.com/docs/CognitiveComplexity.pdf)). Tools set defaults: Pylint flags more than 5 arguments (`too-many-arguments`), more than 50 statements and more than 5 nested blocks, and newer versions add `too-many-positional-arguments`, also at 5 ([Pylint options](https://pylint.readthedocs.io/en/stable/user_guide/configuration/all-options.html)); ESLint's `max-params` defaults to 3 ([ESLint](https://eslint.org/docs/latest/rules/max-params)) and `max-depth` to 4 ([ESLint](https://eslint.org/docs/latest/rules/max-depth)); Ruff's `C901` reports McCabe complexity above 10 by default ([Ruff settings](https://docs.astral.sh/ruff/settings/)), and `gocyclo` works the same way with a threshold you pick. Formatters such as `gofmt` parse to an AST and print it back in one canonical layout, which is why they can never disagree with themselves and why diffs only show real changes.
 
 ### Layer 3: The machine
-Clean code is mostly free at runtime. Small functions get inlined: Go's compiler inlines functions under a cost budget of 80 AST nodes, the JVM's JIT and V8's TurboFan inline hot small methods, so extracting a helper usually costs nothing after compilation. CPython does not inline: a Python function call costs roughly 50 to 100 ns, which matters only in loops running millions of times, where you would optimise deliberately anyway. The machine that clean code really optimises for is the reader's brain. Working memory holds about four chunks at once, so a function that needs the reader to track six variables, three nesting levels and a flag overflows it, and the reader starts scrolling back. Code review has a similar limit: reviewers find defects well in about 200 to 400 lines at a sitting and miss them beyond that, so smaller, clearer changes get better reviews.
+Clean code is mostly free at runtime. Small functions get inlined: Go's compiler inlines functions under a cost budget of 80 AST nodes ([cmd/compile source](https://github.com/golang/go/blob/master/src/cmd/compile/internal/inline/inl.go)), the JVM's JIT and V8's TurboFan inline hot small methods, so extracting a helper usually costs nothing after compilation. CPython does not inline function bodies, but since 3.11 a Python-to-Python call no longer re-enters the C interpreter loop, which sped up simple recursive functions by about 1.7 times ([What's New in 3.11](https://docs.python.org/3/whatsnew/3.11.html)). A call still costs tens of nanoseconds, which matters only in loops running millions of times, where you would optimise deliberately anyway. The machine that clean code really optimises for is the reader's brain. Working memory holds about four chunks at once, so a function that needs the reader to track six variables, three nesting levels and a flag overflows it, and the reader starts scrolling back. Code review has a similar limit: a SmartBear study of a Cisco team recommended reviewing no more than 200 to 400 lines at a time ([SmartBear](https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/)), so smaller, clearer changes get better reviews.
 
 ### Why it's built this way
 1. Code lives for years and is changed by people (and agents) who did not write it, so the cost that dominates is reading, not typing.
@@ -128,6 +128,10 @@ def issue_invoice(lines, prices, region, invoices):
 ```
 
 `invoice_total` is pure, takes three parameters, uses integer cents and basis points, and fails loudly on an unknown SKU. The region rule moved into `tax_rate_for`, so adding a second taxed region is one table entry. The dry run is now simply calling `invoice_total` without `issue_invoice`. Nesting dropped from four to two. Performance did not change in any way that matters: the extra call costs nanoseconds against a database write of about 2 ms. The bug class "typo yields a cheap invoice" is gone.
+
+## In the wild
+- **Apple, 2014: `goto fail`.** In `SSLVerifySignedServerKeyExchange`, a duplicated `goto fail;` line sat after an unbraced `if`. Despite the indentation, the second `goto` always ran, so the function skipped the signature check and returned success; iOS before 7.0.6 and OS X before 10.9.2 accepted forged handshakes for some cipher suites (CVE-2014-1266). Adam Langley's analysis notes that GCC and Clang stayed quiet under `-Wall`, that a test would have been hard to write, and that per-change code review is the practical defence ([ImperialViolet](https://www.imperialviolet.org/2014/02/22/applebug.html)). Misleading indentation is a naming-and-layout failure with a security price.
+- **Google, documented practice: formatters and readability review.** Google enforces `clang-format`, `gofmt` and similar tools through presubmit checks so that formatting never reaches human review, and separates correctness approval from a language-specific "readability" approval by engineers trained in that language's idioms ([SWE at Google, ch. 8](https://abseil.io/resources/swe-book/html/ch08.html), [ch. 9](https://abseil.io/resources/swe-book/html/ch09.html)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -698,6 +702,26 @@ func Lint(source string, limits Limits) ([]string, error) {
 - A formatter run once over the repository, then lint limits introduced as warnings, ratcheted to errors for new and changed code only.
 - Concrete rules for the domain: integer cents, specific errors, no swallowed exceptions, pure calculation separated from I/O.
 - Putting conventions in the repository (lint config, short style note) so agents follow them, and reviewing generated code for duplication and error handling.
+
+## Sources and further study
+**Primary**
+- [SonarSource, Cognitive Complexity white paper](https://www.sonarsource.com/docs/CognitiveComplexity.pdf): why nesting is weighted and how the metric differs from McCabe's.
+- [PEP 8](https://peps.python.org/pep-0008/): Python's style guide and its ranking of consistency.
+
+**Systems docs**
+- [Pylint options](https://pylint.readthedocs.io/en/stable/user_guide/configuration/all-options.html): the real default limits for arguments, statements and nesting.
+- [ESLint max-params](https://eslint.org/docs/latest/rules/max-params) and [max-depth](https://eslint.org/docs/latest/rules/max-depth): the JavaScript equivalents.
+- [Go blog: package names](https://go.dev/blog/package-names): why `util` and `common` are poor names.
+- [Software Engineering at Google, ch. 8 and 9](https://abseil.io/resources/swe-book/html/ch08.html): automated formatters, style rules and readability review at scale.
+
+**Books**
+- *Clean Code*, Robert C. Martin, ch. 2 "Meaningful Names", ch. 3 "Functions", ch. 4 "Comments" and ch. 7 "Error Handling": the source of many rules here, best read with Fowler's more flexible views on function length.
+- *Refactoring*, Fowler (2nd ed.), ch. 3 "Bad Smells in Code" and ch. 6 "A First Set of Refactorings": long function, long parameter list and Extract Function.
+- *Clean Architecture*, Martin, ch. 7 "SRP: The Single Responsibility Principle": the structural version of "one thing".
+
+**Other curricula**
+- [Refactoring.Guru: Long Method](https://refactoring.guru/smells/long-method) and [Long Parameter List](https://refactoring.guru/smells/long-parameter-list): smell-first framing, with the fix named for each.
+- [roadmap.sh: code review best practices](https://roadmap.sh/best-practices/code-review): a checklist view of what reviewers should look for.
 
 ## Watch
 - [Clean Code, Lesson 1 (Robert C. Martin)](https://www.youtube.com/watch?v=7EmboKQH8lM): the first of Uncle Bob's lectures on names, functions and why code is read more than written.

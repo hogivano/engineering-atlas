@@ -42,7 +42,7 @@ The six call sites become `files.write_atomic(path, data)`. The ordering rules, 
 
 ### Facades you already use
 - **git porcelain and plumbing.** `git commit` runs what plumbing commands such as `write-tree`, `commit-tree` and `update-ref` do one by one. Scripts that need control call the plumbing; people use the porcelain.
-- **`subprocess.run`** wraps `Popen`, `communicate`, `wait` and killing the child on timeout. It is the right default because the correct sequence (read both pipes concurrently to avoid deadlock, then reap the process) is easy to get wrong by hand.
+- **`subprocess.run`** wraps `Popen`, `communicate`, `wait` and killing the child on timeout. The Python docs recommend `run()` for every case it can handle, and keep `Popen` for the rest ([subprocess docs](https://docs.python.org/3/library/subprocess.html)). It is the right default because the correct sequence (read both pipes concurrently to avoid deadlock, then reap the process) is easy to get wrong by hand.
 - **`requests`** wraps a `Session`, an `HTTPAdapter` and urllib3's pool manager. Go's `http.Get` wraps `http.DefaultClient`, its `Transport` and connection pool.
 - **Service layers.** In the design lessons, `BookingService` and `ExpenseService` are facades: the API layer calls one method per user action and the service coordinates seats, payments and ledgers. At system scale, an API gateway or backend-for-frontend is a facade over many services (see those lessons in the system design course).
 
@@ -50,7 +50,7 @@ The six call sites become `files.write_atomic(path, data)`. The ordering rules, 
 The Adapter lesson separates the three wrappers by intent: an adapter changes an interface to fit what callers expect, a decorator adds behaviour behind the same interface, and a facade offers a new, simpler interface over several parts. A mediator is easy to confuse with a facade but works in the other direction: the parts of a mediated system know the mediator and talk to each other through it, while the parts behind a facade do not know the facade exists.
 
 ### When not to use it
-- **Pass-through facades.** A class whose methods mirror the subsystem one to one hides nothing and adds a layer to read. Facades earn their place by combining calls.
+- **Pass-through facades.** A class whose methods mirror the subsystem one to one hides nothing and adds a layer to read; Fowler's *Remove Middle Man* refactoring exists to delete exactly this. Facades earn their place by combining calls.
 - **Grab-bag facades.** `PlatformFacade` with 60 methods across billing, search and email is a god object. Split facades by task or by caller.
 - **Callers that need the details.** A storage engine should not go through a file-saving convenience; give it the parts.
 
@@ -66,12 +66,14 @@ A facade is where a *multi-step consistency* problem gets one owner. Every calle
 The facade's contract is stated in terms of the task, not the parts. For `write_atomic(path, data)`: on success, a reader opening `path` sees exactly `data`, and it will still see it after a crash or power loss; at no point can a reader see a partial file. On failure before the rename, the original file is unchanged and the temporary file is removed. If the rename succeeded but the directory flush failed, the new content is in place but its durability is not guaranteed, and the caller is told. The contract also names what is not promised: two concurrent writers to one path both succeed and the last rename wins, so callers that need ordering must serialise writes themselves.
 
 ### Layer 2: The mechanism
-POSIX `rename(2)` replaces the target atomically: any process that opens the path gets either the old inode or the new one. `fsync(2)` on the file descriptor flushes the file's data and metadata to the device and asks it to empty its volatile write cache; the man page notes that this does not make the directory entry durable, which needs a separate `fsync` on a descriptor for the directory. Go's `os.WriteFile` is `OpenFile(name, O_WRONLY|O_CREATE|O_TRUNC, perm)`, `Write` and `Close`, with no `fsync` and no rename, so it is a convenience facade, not a safe-save facade. git does safe saves with lock files: it creates `index.lock` with `O_CREAT|O_EXCL` (which fails if another git process holds the lock), writes the new index there, and renames it over `index`. The same layering appears in HTTP: `requests.get` creates a `Session`, which routes through an `HTTPAdapter` to urllib3's `PoolManager`, which keeps one connection pool per host.
+POSIX `rename(2)` replaces the target atomically: any process that opens the path gets either the old inode or the new one ([rename(2)](https://man7.org/linux/man-pages/man2/rename.2.html)). `fsync(2)` on the file descriptor flushes the file's data and metadata to the device and asks it to empty its volatile write cache; the man page notes that this does not make the directory entry durable, which needs a separate `fsync` on a descriptor for the directory ([fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html)). Go's `os.WriteFile` is `OpenFile(name, O_WRONLY|O_CREATE|O_TRUNC, perm)`, `Write` and `Close`, with no `fsync` and no rename, so it is a convenience facade, not a safe-save facade; its own comment warns that a failure mid-operation can leave the file partly written ([Go source](https://go.dev/src/os/file.go)). git does safe saves with lock files: it creates `index.lock` with `O_CREAT|O_EXCL` (which fails if another git process holds the lock), writes the new index there, and renames it over `index` ([git lockfile API](https://git-scm.com/docs/api-lockfile)). The same layering appears in HTTP: `requests.get` creates a `Session`, which routes through an `HTTPAdapter` to urllib3's `PoolManager`, which keeps one connection pool per host.
 
 ### Layer 3: The machine
 The facade call itself costs nothing measurable: one more stack frame, often inlined. What matters is what it hides. `rename` is a metadata update in the filesystem journal, a few microseconds. Each `fsync` waits for the device: tens of microseconds on an NVMe drive with power-loss protection, 1 to 10 ms on consumer SSDs that must flush their cache, and 5 to 20 ms on spinning disks. Two `fsync` calls per save is invisible for a settings file written once a minute. The same facade called in a loop over 10,000 small records costs 20 to 200 seconds, where batching the records into one file would cost one save.
 
-Other hidden costs follow the same pattern. Go's `http.DefaultClient` has no timeout, so `http.Get` against a server that stops responding blocks forever, and `requests` likewise waits indefinitely unless a `timeout` is passed. On macOS, `fsync` does not force the drive to flush its cache; `fcntl(F_FULLFSYNC)` does. Filesystems differ too: after ext4 introduced delayed allocation, applications that renamed a new file over an old one without `fsync` lost data in crashes, and ext4 added the `auto_da_alloc` heuristic to flush data on such renames. A facade is the one place to handle these per-platform details, and its documentation is the one place to warn about cost.
+Other hidden costs follow the same pattern. Go's `http.DefaultClient` has no timeout, so `http.Get` against a server that stops responding blocks forever ([Cloudflare](https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/)), and `requests` likewise waits indefinitely unless a `timeout` is passed ([Requests docs](https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts)). On macOS, `fsync` does not force the drive to flush its cache; `fcntl(F_FULLFSYNC)` does ([Apple man page](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)). Filesystems differ too: after ext4 introduced delayed allocation, applications that renamed a new file over an old one without `fsync` lost data in crashes, and ext4 added the `auto_da_alloc` heuristic to flush data on such renames ([kernel docs](https://www.kernel.org/doc/html/latest/admin-guide/ext4.html)). A facade is the one place to handle these per-platform details, and its documentation is the one place to warn about cost.
+
+One more detail belongs in the facade: what to do when `fsync` itself fails. Linux filesystems may respond to a failed buffered write by dropping the data and marking the pages clean, so a retried `fsync` can succeed without the data ever reaching the disk, a behaviour PostgreSQL's developers found in 2018 ([LWN](https://lwn.net/Articles/752063/)). A safe-save facade therefore treats a failed `fsync` as a failed save: it removes the temporary file and reports the error, and never retries the same file.
 
 ### Why it's built this way
 1. Many tasks need several low-level calls in a precise order, and getting the order or the cleanup wrong causes rare, expensive failures.
@@ -100,6 +102,11 @@ sequenceDiagram
 The sync client team replaced the six write paths with `SafeFiles.write_atomic`. Each state file is under 8 KB and is written at most once every 30 seconds, so two `fsync` calls (about 4 ms on a typical laptop SSD) cost under 0.02% of one core's time. Corrupted-state reports went from roughly 900 a month (0.3% of 300,000 active users after a major OS update) to fewer than 5, all of which traced to disks that were already failing. Each avoided full resync had been costing about 2 GB of download per user.
 
 One regression appeared in review. A migration that rewrote 40,000 per-folder metadata files through the facade took 11 minutes on a spinning-disk test machine: 80,000 synchronous flushes. The fix was not to bypass the facade but to add a second task-shaped method, `write_many_atomic`, that writes and flushes all temp files, renames them, and flushes each affected directory once. The migration dropped to 40 seconds. The facade grew because a new task appeared, not because a caller needed the parts.
+
+## In the wild
+- **Linux ext4, 2009: zero-length files after a crash.** Users of the new ext4 filesystem reported that after a crash, files that applications had just rewritten came back with 0 bytes. The pattern was truncate-and-rewrite, or write a new file and rename it over the old one, with no `fsync`. Delayed allocation meant the rename could reach the journal before the data blocks did. ext3 had hidden this by accident of its journal ordering. The kernel added heuristics that force allocation on rename-over and on truncate-then-close, which shipped as `auto_da_alloc` ([LWN](https://lwn.net/Articles/322823/), [kernel docs](https://www.kernel.org/doc/html/latest/admin-guide/ext4.html)).
+- **PostgreSQL, 2018: a successful `fsync` that did not mean durable.** Craig Ringer reported on the pgsql-hackers list that after a hardware write error the kernel could discard the dirty pages and mark them clean, so a later `fsync` returned success and a read could return something other than what was written. OpenBSD and NetBSD behaved similarly. PostgreSQL's assumption that a successful `fsync` covers all earlier writes turned out to be false, which shows how much a one-call durability facade can hide ([LWN](https://lwn.net/Articles/752063/)).
+- **Cloudflare, 2016: Go's package-level HTTP helpers have no timeouts.** In a widely read guide, a Cloudflare engineer pointed out that `http.Get` and its siblings use a client with every timeout off, which is dangerous against the open Internet because a stalled peer holds the call forever. The convenience facade picks defaults that suit examples, not production, and the fix is to build a client with explicit timeouts ([Cloudflare](https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/)).
 
 ## Trade-offs
 | Option | Strengths | Weaknesses | Choose when |
@@ -668,6 +675,27 @@ func (s *SafeFiles) Read(path string) (string, error) {
 - Errors that name the failed step and are safe to retry, instead of a bare boolean.
 - A second task-shaped method for a genuinely different task, while keeping the underlying clients available for teams with unusual needs.
 - Operational care: timeouts on every downstream call, metrics per step, and the facade deployed as a library or a horizontally scaled service with no shared mutable state.
+
+## Sources and further study
+**Primary**
+- [fsync(2), Linux man page](https://man7.org/linux/man-pages/man2/fsync.2.html) and [rename(2)](https://man7.org/linux/man-pages/man2/rename.2.html): the guarantees a safe-save facade is built from.
+- [ext4 admin guide (kernel.org)](https://www.kernel.org/doc/html/latest/admin-guide/ext4.html): the `auto_da_alloc` option and the reason it exists.
+- [fsync(2) on macOS (Apple)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html): `F_FULLFSYNC` and why plain `fsync` is weaker there.
+
+**Systems docs**
+- [git lockfile API](https://git-scm.com/docs/api-lockfile): how git writes a `.lock` file and renames it into place.
+- [subprocess (Python docs)](https://docs.python.org/3/library/subprocess.html): `run()` as the facade over `Popen`.
+- [Requests quickstart, timeouts](https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts): a convenience API that tells you to set the timeout it does not set for you.
+- [The complete guide to Go net/http timeouts (Cloudflare)](https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/): what the package-level helpers leave off.
+
+**Books**
+- *Design Patterns* (Gamma, Helm, Johnson, Vlissides, 1st ed.), Ch 4: Structural Patterns, the Facade entry.
+- *Head First Design Patterns* (Freeman and Robson, 2nd ed.), Ch 7: Being Adaptive, the Adapter and Facade Patterns.
+- *Refactoring* (Fowler, 2nd ed.), Ch 7: Encapsulation, which covers Hide Delegate and Remove Middle Man.
+
+**Other curricula**
+- [Facade (refactoring.guru)](https://refactoring.guru/design-patterns/facade): presents the pattern with a structure diagram and applicability list, and stresses that a facade can grow into a god object.
+- [Gateway Aggregation pattern (Azure Architecture Center)](https://learn.microsoft.com/en-us/azure/architecture/patterns/gateway-aggregation): the facade idea at service scale, one request fanned out to several back ends.
 
 ## Watch
 - [Facade Pattern, Design Patterns ep 9 (Christopher Okhravi)](https://www.youtube.com/watch?v=K4FkHVO5iac): the structure and intent of facade, and how it differs from adapter.

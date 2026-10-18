@@ -1,0 +1,32 @@
+name: Lessons
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Install check tools
+        working-directory: tools
+        run: npm install --no-audit --no-fund
+      - name: Practice code passes on solution and fails on starter (Python, TypeScript, Go)
+        run: |
+          export PATH="$PWD/tools/node_modules/.bin:$PATH"
+          python3 tools/check_all_practice.py
+      - name: Every diagram renders
+        run: CHROME="$(which google-chrome || which chromium)" node tools/check_diagrams.js
+      - name: Site builds
+        run: python3 -I site/build.py

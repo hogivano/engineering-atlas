@@ -1,0 +1,555 @@
+{
+  "key": "lld",
+  "title": "Low-Level Design",
+  "intro": "Go from a single well-guarded object to whole systems: model objects and their relationships, learn the principles that keep code cheap to change, meet patterns grouped by the problem they solve, then practise on design problems grouped by what makes them hard to model.",
+  "sections": [
+    {
+      "section": "What LLD is and how it is tested",
+      "chapters": [
+        [
+          "Low-level design: classes, methods and contracts",
+          "what-is-lld"
+        ],
+        [
+          "How low-level and high-level design differ",
+          "lld-vs-hld"
+        ],
+        [
+          "Formats an LLD interview can take",
+          "lld-interview-types"
+        ],
+        [
+          "A study path for low-level design",
+          "how-to-learn-lld"
+        ],
+        [
+          "Solving an object-oriented design question",
+          "ood-approach"
+        ],
+        [
+          "Solving a machine coding round",
+          "machine-coding-approach"
+        ]
+      ]
+    },
+    {
+      "section": "Modelling a single object",
+      "chapters": [
+        [
+          "Object-oriented programming at a glance",
+          "oop-concepts"
+        ],
+        [
+          "Classes and objects in practice",
+          "classes-and-objects"
+        ],
+        [
+          "Modelling fixed choices with enums",
+          "enums"
+        ],
+        [
+          "Hiding state behind encapsulation",
+          "encapsulation"
+        ],
+        [
+          "Hiding complexity with abstraction",
+          "abstraction"
+        ],
+        [
+          "Defining contracts with interfaces",
+          "interfaces"
+        ],
+        [
+          "Reusing behaviour through inheritance",
+          "inheritance"
+        ],
+        [
+          "One interface, many behaviours: polymorphism",
+          "polymorphism"
+        ]
+      ]
+    },
+    {
+      "section": "Relationships, and how to draw them",
+      "chapters": [
+        [
+          "Turning a problem statement into classes and links",
+          "identifying-entities"
+        ],
+        [
+          "Association between classes",
+          "association"
+        ],
+        [
+          "Dependency between classes",
+          "dependency"
+        ],
+        [
+          "Aggregation: a has-a relationship",
+          "aggregation"
+        ],
+        [
+          "Composition: owned parts",
+          "composition"
+        ],
+        [
+          "Realization: implementing an interface",
+          "realization"
+        ],
+        [
+          "Drawing UML class diagrams",
+          "class-diagram"
+        ],
+        [
+          "Drawing UML use case diagrams",
+          "use-case-diagram"
+        ],
+        [
+          "Drawing UML sequence diagrams",
+          "sequence-diagram"
+        ],
+        [
+          "Drawing UML activity diagrams",
+          "activity-diagram"
+        ],
+        [
+          "Drawing UML state machine diagrams",
+          "state-machine-diagram"
+        ]
+      ]
+    },
+    {
+      "section": "Principles that keep code changeable",
+      "chapters": [
+        [
+          "Low coupling and high cohesion",
+          "coupling-and-cohesion"
+        ],
+        [
+          "Splitting concerns cleanly",
+          "soc"
+        ],
+        [
+          "Single responsibility principle (SRP)",
+          "srp"
+        ],
+        [
+          "Open/closed principle (OCP)",
+          "ocp"
+        ],
+        [
+          "Liskov substitution principle (LSP)",
+          "lsp"
+        ],
+        [
+          "Interface segregation principle (ISP)",
+          "isp"
+        ],
+        [
+          "Dependency inversion principle (DIP)",
+          "dip"
+        ],
+        [
+          "Why composition beats inheritance",
+          "composing-objects"
+        ],
+        [
+          "The Law of Demeter: talk to friends only",
+          "lod"
+        ],
+        [
+          "Don't repeat yourself (DRY)",
+          "dry"
+        ],
+        [
+          "Keep it simple (KISS)",
+          "kiss"
+        ],
+        [
+          "You aren't gonna need it (YAGNI)",
+          "yagni"
+        ],
+        [
+          "Clean code habits for design interviews",
+          "writing-clean-code"
+        ]
+      ]
+    },
+    {
+      "section": "Thinking in patterns",
+      "chapters": [
+        [
+          "What design patterns are for",
+          "design-patterns"
+        ],
+        [
+          "The most useful design patterns, summarised",
+          "patterns-field-guide"
+        ],
+        [
+          "Choosing a pattern for your problem",
+          "choosing-design-patterns"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for creating objects",
+      "chapters": [
+        [
+          "Factory Method pattern",
+          "factory-method"
+        ],
+        [
+          "Abstract Factory pattern",
+          "abstract-factory"
+        ],
+        [
+          "Builder pattern",
+          "builder"
+        ],
+        [
+          "Prototype pattern",
+          "prototype"
+        ],
+        [
+          "Singleton pattern",
+          "singleton"
+        ],
+        [
+          "Passing dependencies in: dependency injection",
+          "dependency-injection"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for adapting and wrapping",
+      "chapters": [
+        [
+          "Adapter pattern",
+          "adapter"
+        ],
+        [
+          "Facade pattern",
+          "facade"
+        ],
+        [
+          "Decorator pattern",
+          "decorator"
+        ],
+        [
+          "Proxy pattern",
+          "proxy"
+        ],
+        [
+          "Composite pattern",
+          "composite"
+        ],
+        [
+          "Bridge pattern",
+          "bridge"
+        ],
+        [
+          "Flyweight pattern",
+          "flyweight"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for varying behaviour",
+      "chapters": [
+        [
+          "Strategy pattern",
+          "strategy"
+        ],
+        [
+          "State pattern",
+          "state"
+        ],
+        [
+          "Template Method pattern",
+          "template-method"
+        ],
+        [
+          "Null Object: replacing nulls with a safe default",
+          "null-object"
+        ],
+        [
+          "Specification: composable business rules",
+          "specification"
+        ],
+        [
+          "Iterator pattern",
+          "iterator"
+        ],
+        [
+          "Visitor pattern",
+          "visitor"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for coordinating objects",
+      "chapters": [
+        [
+          "Observer pattern",
+          "observer"
+        ],
+        [
+          "Mediator pattern",
+          "mediator"
+        ],
+        [
+          "Command pattern",
+          "command"
+        ],
+        [
+          "Chain of Responsibility pattern",
+          "chain-of-responsibility"
+        ],
+        [
+          "Memento pattern",
+          "memento"
+        ],
+        [
+          "Repository: a collection-like data access layer",
+          "repository"
+        ],
+        [
+          "Model-View-Controller (MVC) architecture",
+          "mvc"
+        ],
+        [
+          "Game loop: update, render, repeat",
+          "game-loop"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for concurrency",
+      "chapters": [
+        [
+          "Handling thread safety in design questions",
+          "handling-concurrency"
+        ],
+        [
+          "Producer-consumer with a shared buffer",
+          "producer-consumer"
+        ],
+        [
+          "Reusing workers with a thread pool",
+          "thread-pool"
+        ]
+      ]
+    },
+    {
+      "section": "State machines",
+      "chapters": [
+        [
+          "Code a snack vending machine",
+          "design-vending-machine"
+        ],
+        [
+          "Code a cash machine (ATM)",
+          "design-atm"
+        ],
+        [
+          "Code a traffic light controller",
+          "design-traffic-control-system"
+        ],
+        [
+          "Code an elevator scheduler",
+          "design-elevator-system"
+        ],
+        [
+          "Code an auction with bids and winners",
+          "design-online-auction-system"
+        ],
+        [
+          "Code a workflow engine",
+          "design-workflow-engine"
+        ]
+      ]
+    },
+    {
+      "section": "Inventories, slots and bookings",
+      "chapters": [
+        [
+          "Code a parking lot with tickets and fees",
+          "design-parking-lot"
+        ],
+        [
+          "Code a library catalogue and lending system",
+          "design-library-management-system"
+        ],
+        [
+          "Code a stock inventory tracker",
+          "design-inventory-management-system"
+        ],
+        [
+          "Code an online shopping platform",
+          "design-amazon"
+        ],
+        [
+          "Code a meeting room booking system",
+          "design-meeting-room-scheduler"
+        ],
+        [
+          "Code a cinema seat reservation system",
+          "design-movie-booking-system"
+        ],
+        [
+          "Code a restaurant ordering system",
+          "design-restaurant-management-system"
+        ]
+      ]
+    },
+    {
+      "section": "Ledgers and matching",
+      "chapters": [
+        [
+          "Code an expense-sharing app",
+          "design-splitwise"
+        ],
+        [
+          "Code a payment gateway with pluggable providers",
+          "design-payment-gateway"
+        ],
+        [
+          "Code a ride-hailing service with driver matching",
+          "design-uber"
+        ],
+        [
+          "Code an order-matching stock exchange",
+          "design-online-stock-exchange"
+        ],
+        [
+          "Code a discount and pricing rules engine",
+          "design-discount-rules-engine"
+        ]
+      ]
+    },
+    {
+      "section": "Games and their rules",
+      "chapters": [
+        [
+          "Code a tic-tac-toe game",
+          "design-tic-tac-toe"
+        ],
+        [
+          "Code a minesweeper game",
+          "design-minesweeper"
+        ],
+        [
+          "Code a chess game with move rules",
+          "design-chess-game"
+        ]
+      ]
+    },
+    {
+      "section": "Platforms with many users",
+      "chapters": [
+        [
+          "Code a task tracker with assignees and statuses",
+          "design-task-management-system"
+        ],
+        [
+          "Code a multi-channel notification module",
+          "design-notification-system"
+        ],
+        [
+          "Code a chat app with rooms and messages",
+          "design-chat-application"
+        ],
+        [
+          "Code a social network with friends and posts",
+          "design-social-network"
+        ],
+        [
+          "Code a Q&A site with votes and reputation",
+          "design-stack-overflow"
+        ],
+        [
+          "Code an online course platform",
+          "design-learning-platform"
+        ],
+        [
+          "Code a live cricket scoreboard",
+          "design-live-cricket-scores"
+        ],
+        [
+          "Code a music player with playlists",
+          "design-spotify"
+        ]
+      ]
+    },
+    {
+      "section": "Reusable building blocks",
+      "chapters": [
+        [
+          "Code an LRU cache",
+          "design-lru-cache"
+        ],
+        [
+          "Code a Bloom filter",
+          "design-bloom-filter"
+        ],
+        [
+          "Code a rate limiter with swappable algorithms",
+          "design-rate-limiter"
+        ],
+        [
+          "Code a logging framework",
+          "design-logging-framework"
+        ],
+        [
+          "Code an in-process publish-subscribe system",
+          "design-pub-sub"
+        ],
+        [
+          "Code a task scheduler",
+          "design-task-scheduler"
+        ],
+        [
+          "Code a short-link generator",
+          "design-url-shortener"
+        ],
+        [
+          "Code an in-memory file system",
+          "design-in-memory-file-system"
+        ],
+        [
+          "Code a prefix-based suggestion engine",
+          "design-search-autocomplete"
+        ],
+        [
+          "Code a mini Git-style version control system",
+          "design-version-control-system"
+        ],
+        [
+          "Code a spreadsheet engine with formulas",
+          "design-spreadsheet-engine"
+        ],
+        [
+          "Code a text editor with undo and redo",
+          "design-text-editor-with-undo"
+        ],
+        [
+          "Code an in-memory key-value store with transactions",
+          "design-kv-store-with-transactions"
+        ],
+        [
+          "Code a resilient HTTP client",
+          "design-resilient-http-client"
+        ],
+        [
+          "Code an application plugin system",
+          "design-plugin-system"
+        ],
+        [
+          "Code a command-line argument parser",
+          "design-cli-argument-parser"
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,739 @@
+{
+  "key": "sd",
+  "title": "System Design Fundamentals",
+  "intro": "Start with what a single request touches, then follow the data, the machines and the failures until you can reason about a whole production system. Sections follow the order you meet these problems in real life, and most are named after the problem they solve.",
+  "sections": [
+    {
+      "section": "Thinking in systems",
+      "chapters": [
+        [
+          "What system design is and why it matters",
+          "what-is-system-design"
+        ],
+        [
+          "A map of core system design ideas",
+          "core-concepts-map"
+        ],
+        [
+          "Scaling a system up and out",
+          "scalability"
+        ],
+        [
+          "Keeping a service up: availability and nines",
+          "availability"
+        ],
+        [
+          "Building systems that keep working correctly",
+          "reliability"
+        ],
+        [
+          "Latency, throughput and bandwidth compared",
+          "latency-vs-throughput"
+        ],
+        [
+          "Finding and removing single points of failure",
+          "single-points-of-failure"
+        ]
+      ]
+    },
+    {
+      "section": "How a request travels",
+      "chapters": [
+        [
+          "How IP addresses identify machines",
+          "ip-address"
+        ],
+        [
+          "The OSI layers in practice",
+          "osi"
+        ],
+        [
+          "Choosing between TCP and UDP",
+          "tcp-vs-udp"
+        ],
+        [
+          "How DNS turns names into addresses",
+          "domain-name-system-dns"
+        ],
+        [
+          "How HTTP and HTTPS work",
+          "http-https"
+        ],
+        [
+          "How TLS secures a connection",
+          "ssl-tls"
+        ],
+        [
+          "Detecting corrupted data with checksums",
+          "checksums"
+        ],
+        [
+          "Forward proxies and reverse proxies",
+          "forward-and-reverse-proxies"
+        ],
+        [
+          "Spreading traffic with load balancers",
+          "load-balancers"
+        ],
+        [
+          "Round robin, least connections and other balancing rules",
+          "load-balancing-algorithms"
+        ],
+        [
+          "Balancing traffic through DNS",
+          "dns-load-balancing"
+        ],
+        [
+          "Anycast: one address, many locations",
+          "anycast-routing"
+        ],
+        [
+          "Serving content from the edge with a CDN",
+          "content-delivery-network-cdn"
+        ]
+      ]
+    },
+    {
+      "section": "Designing the contract",
+      "chapters": [
+        [
+          "What an API is and what it promises",
+          "what-is-an-api"
+        ],
+        [
+          "REST, RPC and GraphQL: picking an API style",
+          "api-styles"
+        ],
+        [
+          "Designing clean REST APIs",
+          "rest-api-design"
+        ],
+        [
+          "GraphQL: querying exactly what you need",
+          "graphql"
+        ],
+        [
+          "gRPC for service-to-service calls",
+          "grpc"
+        ],
+        [
+          "JSON, Protobuf and other wire formats",
+          "data-formats"
+        ],
+        [
+          "Putting an API gateway at the front door",
+          "api-gateways"
+        ]
+      ]
+    },
+    {
+      "section": "Trust and identity",
+      "chapters": [
+        [
+          "Who you are versus what you may do",
+          "authentication-authorization"
+        ],
+        [
+          "Server sessions or tokens for login state",
+          "session-vs-token-auth"
+        ],
+        [
+          "JSON Web Tokens (JWT) explained",
+          "jwt"
+        ],
+        [
+          "Delegated access with OAuth 2.0",
+          "oauth"
+        ],
+        [
+          "Signing in once with SSO",
+          "sso"
+        ],
+        [
+          "SAML for enterprise sign-in",
+          "saml"
+        ],
+        [
+          "Role-based access control (RBAC)",
+          "rbac"
+        ],
+        [
+          "Storing and handling passwords safely",
+          "password-management"
+        ],
+        [
+          "Keeping API keys and secrets out of code",
+          "secrets-management"
+        ],
+        [
+          "Protecting stored data with encryption at rest",
+          "encryption-at-rest"
+        ]
+      ]
+    },
+    {
+      "section": "Handing off work and pushing updates",
+      "chapters": [
+        [
+          "Decoupling work with message queues",
+          "message-queues"
+        ],
+        [
+          "What a message broker does",
+          "message-brokers"
+        ],
+        [
+          "Publish-subscribe messaging",
+          "pub-sub"
+        ],
+        [
+          "At-most-once, at-least-once and exactly-once delivery",
+          "delivery-semantics"
+        ],
+        [
+          "Making retries safe with idempotency",
+          "idempotency"
+        ],
+        [
+          "Parking failed messages in a dead letter queue",
+          "dead-letter-queues"
+        ],
+        [
+          "Pushing events to other systems with webhooks",
+          "webhooks"
+        ],
+        [
+          "Near-real-time updates via long polling",
+          "long-polling"
+        ],
+        [
+          "One-way streaming with Server-Sent Events",
+          "server-sent-events"
+        ],
+        [
+          "Two-way messaging over WebSockets",
+          "websockets"
+        ],
+        [
+          "Peer-to-peer media with WebRTC",
+          "webrtc"
+        ]
+      ]
+    },
+    {
+      "section": "Where data lives",
+      "chapters": [
+        [
+          "A tour of database families",
+          "database-types"
+        ],
+        [
+          "How relational databases model data",
+          "relational-databases"
+        ],
+        [
+          "When to pick SQL and when NoSQL",
+          "sql-vs-nosql"
+        ],
+        [
+          "Key-value stores and their sweet spot",
+          "key-value-stores"
+        ],
+        [
+          "Storing flexible records in document databases",
+          "document-databases"
+        ],
+        [
+          "Wide-column stores for huge write loads",
+          "wide-column-databases"
+        ],
+        [
+          "Modelling relationships in graph databases",
+          "graph-databases"
+        ],
+        [
+          "Storing metrics in time series databases",
+          "time-series-databases"
+        ],
+        [
+          "How databases make committed data durable",
+          "how-databases-guarantee-durability"
+        ],
+        [
+          "B-trees and B+ trees on disk",
+          "b-trees"
+        ],
+        [
+          "Write-optimised storage with LSM trees",
+          "lsm-trees"
+        ],
+        [
+          "Shrinking data: how compression works",
+          "data-compression"
+        ],
+        [
+          "Raw volumes with block storage",
+          "block-storage"
+        ],
+        [
+          "Storing blobs in object storage",
+          "object-storage"
+        ],
+        [
+          "Files spread across machines: distributed file systems",
+          "distributed-file-systems"
+        ],
+        [
+          "Surviving disk loss with erasure coding",
+          "erasure-coding"
+        ]
+      ]
+    },
+    {
+      "section": "Making data findable",
+      "chapters": [
+        [
+          "Speeding up queries with database indexes",
+          "indexing"
+        ],
+        [
+          "Making slow queries fast",
+          "query-optimization"
+        ],
+        [
+          "Trading duplication for read speed",
+          "denormalization"
+        ],
+        [
+          "Precomputing results with materialized views",
+          "materialized-views"
+        ],
+        [
+          "How full-text search engines work",
+          "full-text-search-engines"
+        ],
+        [
+          "Similarity search with vector databases",
+          "vector-databases"
+        ],
+        [
+          "Skip lists: fast ordered lookups",
+          "skip-lists"
+        ],
+        [
+          "Encoding locations with Geohash",
+          "geohash"
+        ],
+        [
+          "Splitting space with quadtrees",
+          "quad-tree"
+        ],
+        [
+          "Indexing regions with R-trees",
+          "r-trees"
+        ],
+        [
+          "Geospatial cells with S2 and H3",
+          "s2-h3"
+        ]
+      ]
+    },
+    {
+      "section": "Scaling reads, writes and hot spots",
+      "chapters": [
+        [
+          "Reusing database connections with a pool",
+          "connection-pooling"
+        ],
+        [
+          "Copying data across nodes with replication",
+          "database-replication"
+        ],
+        [
+          "Splitting tables with partitioning",
+          "database-partitioning"
+        ],
+        [
+          "Spreading data across machines by sharding",
+          "sharding"
+        ],
+        [
+          "Consistent hashing for stable key placement",
+          "consistent-hashing"
+        ],
+        [
+          "Why and where to cache",
+          "what-is-caching"
+        ],
+        [
+          "Cache-aside, write-through and write-back",
+          "caching-strategies"
+        ],
+        [
+          "Deciding what to evict: LRU, LFU and friends",
+          "cache-eviction-policies"
+        ],
+        [
+          "Keeping cached data fresh",
+          "cache-invalidation"
+        ],
+        [
+          "Preloading a cold cache",
+          "cache-warming"
+        ],
+        [
+          "Preventing a cache stampede",
+          "cache-stampede"
+        ],
+        [
+          "Designing a cache that spans many nodes",
+          "distributed-caching"
+        ]
+      ]
+    },
+    {
+      "section": "Approximate answers in tiny memory",
+      "chapters": [
+        [
+          "Approximate data structures for huge scale",
+          "probabilistic-data-structures"
+        ],
+        [
+          "Bloom filters: cheap membership checks",
+          "bloom-filters"
+        ],
+        [
+          "Cuckoo filters that support deletion",
+          "cuckoo-filter"
+        ],
+        [
+          "Estimating frequencies with a Count-Min Sketch",
+          "count-min-sketch"
+        ],
+        [
+          "Counting unique items with HyperLogLog",
+          "hyperloglog"
+        ],
+        [
+          "Estimating set similarity with MinHash",
+          "minhash"
+        ],
+        [
+          "Comparing data quickly with Merkle trees",
+          "merkle-trees"
+        ]
+      ]
+    },
+    {
+      "section": "When machines disagree",
+      "chapters": [
+        [
+          "Why distributed systems are hard",
+          "challenges-of-distribution"
+        ],
+        [
+          "The CAP theorem and its trade-offs",
+          "cap-theorem"
+        ],
+        [
+          "Strong, eventual and causal consistency",
+          "consistency-models"
+        ],
+        [
+          "Detecting dead nodes with heartbeats",
+          "heartbeats"
+        ],
+        [
+          "Spreading state through gossip",
+          "gossip-protocol"
+        ],
+        [
+          "Why clocks drift and how to cope",
+          "clock-synchronization"
+        ],
+        [
+          "Ordering events without wall clocks",
+          "logical-clocks"
+        ],
+        [
+          "Ordering events with Lamport timestamps",
+          "lamport-timestamps"
+        ],
+        [
+          "Tracking causality with vector clocks",
+          "vector-clocks"
+        ]
+      ]
+    },
+    {
+      "section": "When writes collide",
+      "chapters": [
+        [
+          "ACID guarantees in transactions",
+          "acid-transactions"
+        ],
+        [
+          "Mutual exclusion with distributed locks",
+          "distributed-locks"
+        ],
+        [
+          "Choosing a leader among nodes",
+          "leader-election"
+        ],
+        [
+          "Getting nodes to agree: consensus",
+          "consensus-algorithms"
+        ],
+        [
+          "Raft consensus step by step",
+          "raft-algorithm"
+        ],
+        [
+          "Paxos consensus explained",
+          "paxos-algorithm"
+        ],
+        [
+          "Conflict-free replicated data types (CRDTs)",
+          "crdts"
+        ],
+        [
+          "Merging concurrent edits with operational transformation",
+          "operational-transformation"
+        ]
+      ]
+    },
+    {
+      "section": "Surviving partial failure",
+      "chapters": [
+        [
+          "Designing for partial failure",
+          "handling-failures-in-distributed-systems"
+        ],
+        [
+          "Surviving network partitions",
+          "network-partitions"
+        ],
+        [
+          "Avoiding split brain",
+          "split-brain-problem"
+        ],
+        [
+          "Stopping cascading failures with a circuit breaker",
+          "circuit-breaker-pattern"
+        ],
+        [
+          "Isolating failures with bulkheads",
+          "bulkhead-pattern"
+        ],
+        [
+          "Protecting services with rate limiting",
+          "rate-limiting"
+        ]
+      ]
+    },
+    {
+      "section": "Multi-step changes that must agree",
+      "chapters": [
+        [
+          "Why transactions across services are hard",
+          "distributed-transactions-problems"
+        ],
+        [
+          "Atomic commit with two-phase commit",
+          "two-phase-commit-protocol"
+        ],
+        [
+          "Three-phase commit and what it fixes",
+          "three-phase-commit"
+        ],
+        [
+          "Long-running transactions with the saga pattern",
+          "saga-pattern"
+        ],
+        [
+          "Reliable events with the outbox pattern",
+          "outbox-pattern"
+        ],
+        [
+          "Streaming database changes with CDC",
+          "change-data-capture-cdc"
+        ]
+      ]
+    },
+    {
+      "section": "Shaping the architecture",
+      "chapters": [
+        [
+          "The client-server model",
+          "client-server-architecture"
+        ],
+        [
+          "When a monolith is the right call",
+          "monolithic-architecture"
+        ],
+        [
+          "Splitting a system into microservices",
+          "microservices-architecture"
+        ],
+        [
+          "Running code without servers",
+          "serverless-architecture"
+        ],
+        [
+          "Peer-to-peer systems without a center",
+          "peer-to-peer"
+        ],
+        [
+          "Ports and adapters: hexagonal architecture",
+          "hexagonal-architecture"
+        ],
+        [
+          "Systems that react to events",
+          "event-driven-architecture"
+        ],
+        [
+          "Storing state as a log of events",
+          "event-sourcing"
+        ],
+        [
+          "Separating reads from writes with CQRS",
+          "cqrs"
+        ],
+        [
+          "How services find each other",
+          "service-discovery"
+        ],
+        [
+          "Routing and policy at the API gateway",
+          "api-gateway-pattern"
+        ],
+        [
+          "One backend per client: BFF",
+          "backend-for-frontend"
+        ],
+        [
+          "Helper processes with the sidecar pattern",
+          "sidecar-pattern"
+        ],
+        [
+          "Managing service traffic with a service mesh",
+          "service-mesh"
+        ],
+        [
+          "Migrating legacy systems with the strangler fig",
+          "strangler-fig-pattern"
+        ]
+      ]
+    },
+    {
+      "section": "Running it in production",
+      "chapters": [
+        [
+          "Logs, metrics and traces together",
+          "three-pillars-observability"
+        ],
+        [
+          "Writing logs that help during incidents",
+          "logging"
+        ],
+        [
+          "Instrumenting code to emit metrics",
+          "metrics-instrumentation"
+        ],
+        [
+          "Collecting logs into one place",
+          "log-aggregation"
+        ],
+        [
+          "Following a request across services",
+          "distributed-tracing"
+        ],
+        [
+          "Alerting that wakes people for the right reasons",
+          "alert-monitoring"
+        ],
+        [
+          "Dashboards and runbooks for on-call",
+          "dashboards-runbooks"
+        ],
+        [
+          "Automating build, test and release",
+          "ci-cd-pipelines"
+        ],
+        [
+          "Choosing how to roll out a release",
+          "deployment-strategies"
+        ],
+        [
+          "Updating servers a few at a time",
+          "rolling-deployments"
+        ],
+        [
+          "Switching traffic between two environments",
+          "blue-green-deployments"
+        ],
+        [
+          "Testing a release on a small slice of users",
+          "canary-releases"
+        ],
+        [
+          "Shipping code dark with feature flags",
+          "feature-flags"
+        ],
+        [
+          "Running experiments: A/B testing plumbing",
+          "ab-testing-infrastructure"
+        ],
+        [
+          "Safe rollbacks and immutable servers",
+          "rollbacks-and-immutable-infrastructure"
+        ],
+        [
+          "Changing a database schema without downtime",
+          "schema-migrations"
+        ]
+      ]
+    },
+    {
+      "section": "Data in motion",
+      "chapters": [
+        [
+          "Processing data in batches or streams",
+          "batch-vs-stream-processing"
+        ],
+        [
+          "MapReduce for large-scale processing",
+          "mapreduce"
+        ],
+        [
+          "Moving data with ETL pipelines",
+          "etl-pipelines"
+        ],
+        [
+          "How stream processing engines work",
+          "streaming-engines"
+        ],
+        [
+          "Combining batch and speed layers",
+          "lambda-architecture"
+        ],
+        [
+          "Streaming-only data pipelines",
+          "kappa-architecture"
+        ],
+        [
+          "Analytics storage in a data warehouse",
+          "data-warehousing"
+        ],
+        [
+          "Raw data at scale in a data lake",
+          "data-lakes"
+        ],
+        [
+          "Warehouse meets lake: the lakehouse",
+          "data-lakehouse"
+        ]
+      ]
+    }
+  ]
+}

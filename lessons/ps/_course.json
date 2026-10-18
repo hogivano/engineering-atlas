@@ -1,0 +1,221 @@
+{
+  "key": "ps",
+  "title": "Problem Solving & Incidents (AI era)",
+  "intro": "When agents can write most of the code, the scarce skills are seeing that a new problem is an old problem in a new domain, framing it, verifying what was built, finding root causes fast, and leading the team when production is on fire. This course trains those skills.",
+  "sections": [
+    {
+      "section": "Same Problems, Different Domains",
+      "chapters": [
+        [
+          "The Paradox: Every System Has the Same Problems",
+          "same-problems-different-domains"
+        ],
+        [
+          "Naming the Problem Shape",
+          "naming-problem-shapes"
+        ],
+        [
+          "Translating a Domain into Known Problems",
+          "translating-domains"
+        ],
+        [
+          "One Problem, Five Domains: The Duplicate Request",
+          "one-problem-five-domains"
+        ]
+      ]
+    },
+    {
+      "section": "Thinking Like a Problem Solver",
+      "chapters": [
+        [
+          "Why Problem Solving Is the Job Now",
+          "problem-solving-in-the-ai-era"
+        ],
+        [
+          "Framing the Problem Before Solving It",
+          "framing-the-problem"
+        ],
+        [
+          "First Principles and Mental Models",
+          "first-principles-and-mental-models"
+        ],
+        [
+          "Hypothesis-Driven Investigation",
+          "hypothesis-driven-investigation"
+        ],
+        [
+          "Making Decisions Under Uncertainty",
+          "decisions-under-uncertainty"
+        ]
+      ]
+    },
+    {
+      "section": "Building Fast with AI Agents",
+      "chapters": [
+        [
+          "Whiteboard First: Judgment Before Automation",
+          "whiteboard-first"
+        ],
+        [
+          "Spec-Driven Development with Agents",
+          "spec-driven-development"
+        ],
+        [
+          "Context Engineering for Coding Agents",
+          "context-engineering"
+        ],
+        [
+          "Verifying Agent-Written Code",
+          "verifying-agent-written-code"
+        ],
+        [
+          "Reading and Owning Code You Didn't Write",
+          "owning-code-you-didnt-write"
+        ],
+        [
+          "Guardrails for Agents in Production",
+          "guardrails-for-agents"
+        ],
+        [
+          "Debugging LLM-Powered Systems",
+          "debugging-llm-systems"
+        ],
+        [
+          "Debugging with an Agent as Your Pair",
+          "debugging-with-agents"
+        ],
+        [
+          "Shipping Agent Code Safely: Small Batches, Flags and Rollbacks",
+          "shipping-agent-code-safely"
+        ]
+      ]
+    },
+    {
+      "section": "Debugging and Root Cause Analysis",
+      "chapters": [
+        [
+          "The Scientific Method of Debugging",
+          "scientific-debugging"
+        ],
+        [
+          "Reproducing the Bug",
+          "reproducing-bugs"
+        ],
+        [
+          "Bisecting: Binary Search for Causes",
+          "bisecting"
+        ],
+        [
+          "Debugging with Logs, Metrics and Traces",
+          "observability-driven-debugging"
+        ],
+        [
+          "Performance Debugging: USE, RED and Flame Graphs",
+          "performance-debugging"
+        ],
+        [
+          "Memory Leaks and Resource Exhaustion",
+          "memory-and-resource-leaks"
+        ],
+        [
+          "Concurrency and Race Conditions",
+          "concurrency-bugs"
+        ],
+        [
+          "Debugging Distributed Systems",
+          "debugging-distributed-systems"
+        ],
+        [
+          "Root Cause Analysis: 5 Whys, Fishbone and Causal Graphs",
+          "root-cause-analysis"
+        ]
+      ]
+    },
+    {
+      "section": "When Disaster Happens",
+      "chapters": [
+        [
+          "Incident Response: The First 15 Minutes",
+          "incident-first-15-minutes"
+        ],
+        [
+          "Roles: Incident Commander, Ops, Comms",
+          "incident-roles"
+        ],
+        [
+          "Mitigate First, Diagnose Second",
+          "mitigate-first"
+        ],
+        [
+          "Communicating During an Incident",
+          "incident-communication"
+        ],
+        [
+          "When the Agent Breaks Production",
+          "agent-caused-incidents"
+        ],
+        [
+          "Data Corruption and Bad Migrations",
+          "data-corruption-recovery"
+        ],
+        [
+          "Security Incident Response",
+          "security-incident-response"
+        ],
+        [
+          "Blameless Postmortems That Change Things",
+          "blameless-postmortems"
+        ],
+        [
+          "Disaster Recovery: RTO, RPO and Restore Drills",
+          "disaster-recovery"
+        ],
+        [
+          "Chaos Engineering and Game Days",
+          "chaos-engineering-and-game-days"
+        ],
+        [
+          "Leading the Team Through a Crisis",
+          "leading-through-a-crisis"
+        ]
+      ]
+    },
+    {
+      "section": "Case Studies: Famous Outages",
+      "chapters": [
+        [
+          "AWS S3 us-east-1 Outage (2017)",
+          "case-aws-s3-2017"
+        ],
+        [
+          "GitLab Database Deletion (2017)",
+          "case-gitlab-2017"
+        ],
+        [
+          "Cloudflare Regex Outage (2019)",
+          "case-cloudflare-2019"
+        ],
+        [
+          "Facebook BGP Outage (2021)",
+          "case-facebook-2021"
+        ],
+        [
+          "Knight Capital Deployment Failure (2012)",
+          "case-knight-capital-2012"
+        ],
+        [
+          "CrowdStrike Content Update (2024)",
+          "case-crowdstrike-2024"
+        ],
+        [
+          "Replit Agent Deletes a Production Database (2025)",
+          "case-replit-agent-2025"
+        ],
+        [
+          "AWS us-east-1 DynamoDB DNS Outage (2025)",
+          "case-aws-dynamodb-2025"
+        ]
+      ]
+    }
+  ]
+}

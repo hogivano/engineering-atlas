@@ -1,0 +1,655 @@
+{
+  "levels": [
+    "Mid",
+    "Senior",
+    "Staff"
+  ],
+  "skills": [
+    {
+      "id": "systems-fundamentals",
+      "name": "Systems fundamentals",
+      "summary": "How code, operating systems and networks actually run underneath a service: processes, memory, TCP/IP, DNS, HTTP and the edge.",
+      "levels": {
+        "Mid": {
+          "expectation": "Explains what happens between a user's click and a database row, and debugs a slow or failing request with the shell, logs and basic network tools.",
+          "lessons": [
+            "fd/how-computers-run-code",
+            "fd/processes-threads-async",
+            "fd/networking-basics",
+            "fd/http-and-the-web",
+            "fd/linux-command-line",
+            "fd/backend-data-structures",
+            "fd/databases-101",
+            "sd/client-server-architecture",
+            "sd/ip-address",
+            "sd/domain-name-system-dns",
+            "sd/tcp-vs-udp"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Reasons about latency, connection reuse, TLS and proxies on the real request path and sizes the edge (load balancers, CDN) for a service they own.",
+          "lessons": [
+            "sd/osi",
+            "sd/http-https",
+            "sd/ssl-tls",
+            "sd/forward-and-reverse-proxies",
+            "sd/load-balancers",
+            "sd/content-delivery-network-cdn",
+            "sdi/networking",
+            "sd/latency-vs-throughput",
+            "sd/data-compression",
+            "sd/data-formats",
+            "ps/concurrency-bugs",
+            "ps/memory-and-resource-leaks"
+          ],
+          "assessments": [
+            "M2"
+          ]
+        },
+        "Staff": {
+          "expectation": "Sets the platform shape for many teams (containers, orchestration, service mesh, global traffic routing) and explains which layer a cross-team failure lives in.",
+          "lessons": [
+            "sd/anycast-routing",
+            "sd/dns-load-balancing",
+            "sd/webrtc",
+            "sd/service-mesh",
+            "sd/sidecar-pattern",
+            "sdi/nginx",
+            "sdi/docker",
+            "sdi/kubernetes",
+            "sd/peer-to-peer",
+            "sdi/lambda"
+          ],
+          "assessments": [
+            "M14"
+          ]
+        }
+      }
+    },
+    {
+      "id": "apis-communication",
+      "name": "APIs, communication and security",
+      "summary": "Designing contracts between components: API styles, synchronous and asynchronous messaging, identity, and protecting data in transit and at rest.",
+      "levels": {
+        "Mid": {
+          "expectation": "Designs a clear, versioned REST endpoint with authentication and picks polling, WebSockets, SSE or a queue appropriately for a feature.",
+          "lessons": [
+            "sd/what-is-an-api",
+            "sd/api-styles",
+            "sd/rest-api-design",
+            "sdi/api-design",
+            "sd/authentication-authorization",
+            "sd/session-vs-token-auth",
+            "sd/jwt",
+            "sd/websockets",
+            "sd/long-polling",
+            "sd/server-sent-events",
+            "sd/webhooks",
+            "sd/message-queues"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Makes APIs safe to retry and safe to overload (idempotency keys, rate limits, gateways) and chooses delivery semantics for an event flow with failure handling.",
+          "lessons": [
+            "sd/graphql",
+            "sd/grpc",
+            "sd/api-gateways",
+            "sd/api-gateway-pattern",
+            "sd/backend-for-frontend",
+            "sd/idempotency",
+            "sd/rate-limiting",
+            "sd/oauth",
+            "sd/pub-sub",
+            "sd/message-brokers",
+            "sd/delivery-semantics",
+            "sd/dead-letter-queues",
+            "sdi/realtime-updates"
+          ],
+          "assessments": [
+            "M3",
+            "M4"
+          ]
+        },
+        "Staff": {
+          "expectation": "Owns the organisation's integration and identity strategy: event backbone, SSO and access models, secrets and encryption, with a threat model for each external surface.",
+          "lessons": [
+            "sd/event-driven-architecture",
+            "sdi/kafka",
+            "sdi/rabbitmq",
+            "sdi/sqs",
+            "sd/sso",
+            "sd/saml",
+            "sd/rbac",
+            "sd/secrets-management",
+            "sd/encryption-at-rest",
+            "sd/password-management",
+            "sdi/design-api-gateway",
+            "sdi/design-rate-limiter",
+            "sdi/design-slack"
+          ],
+          "assessments": [
+            "M19"
+          ]
+        }
+      }
+    },
+    {
+      "id": "data-storage",
+      "name": "Data storage and modelling",
+      "summary": "Choosing and modelling data stores, understanding how engines store and retrieve data, and running data platforms for analytics.",
+      "levels": {
+        "Mid": {
+          "expectation": "Models a schema for a feature, adds the right indexes, uses transactions correctly, and justifies SQL versus a key-value or document store.",
+          "lessons": [
+            "sd/database-types",
+            "sd/relational-databases",
+            "sd/sql-vs-nosql",
+            "sd/indexing",
+            "sd/acid-transactions",
+            "sd/key-value-stores",
+            "sd/document-databases",
+            "sd/object-storage",
+            "sdi/database-design",
+            "sdi/database-selection",
+            "sdi/postgresql",
+            "sdi/redis"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Predicts store behaviour from its engine (B-tree vs LSM, durability, query plans), denormalises deliberately, and ships zero-downtime schema migrations.",
+          "lessons": [
+            "sd/b-trees",
+            "sd/lsm-trees",
+            "sd/how-databases-guarantee-durability",
+            "sd/query-optimization",
+            "sd/denormalization",
+            "sd/wide-column-databases",
+            "sd/graph-databases",
+            "sd/time-series-databases",
+            "sd/full-text-search-engines",
+            "sd/schema-migrations",
+            "sdi/dynamodb",
+            "sdi/mysql",
+            "sdi/mongodb",
+            "sdi/elasticsearch",
+            "sdi/s3"
+          ],
+          "assessments": [
+            "M5",
+            "M6"
+          ]
+        },
+        "Staff": {
+          "expectation": "Designs the data platform across operational and analytical stores (CDC, streams, lakehouse), and plans for corruption, recovery and data ownership between teams.",
+          "lessons": [
+            "sd/distributed-file-systems",
+            "sd/data-warehousing",
+            "sd/data-lakes",
+            "sd/data-lakehouse",
+            "sd/etl-pipelines",
+            "sd/batch-vs-stream-processing",
+            "sd/change-data-capture-cdc",
+            "sd/streaming-engines",
+            "sd/lambda-architecture",
+            "sd/kappa-architecture",
+            "sdi/cassandra",
+            "sdi/flink",
+            "sdi/design-object-storage",
+            "ps/data-corruption-recovery"
+          ],
+          "assessments": [
+            "M9",
+            "M20"
+          ]
+        }
+      }
+    },
+    {
+      "id": "scaling-performance",
+      "name": "Scaling and performance",
+      "summary": "Making systems handle more load and respond faster: caching, replication, partitioning, estimation and specialised data structures.",
+      "levels": {
+        "Mid": {
+          "expectation": "Estimates load with back-of-envelope numbers and applies caching, read replicas and connection pooling to fix a read-heavy bottleneck.",
+          "lessons": [
+            "sd/scalability",
+            "sd/what-is-caching",
+            "sd/caching-strategies",
+            "sd/cache-eviction-policies",
+            "sd/load-balancing-algorithms",
+            "sd/connection-pooling",
+            "sd/database-replication",
+            "sdi/caching",
+            "sdi/estimation-cheatsheet",
+            "sdi/high-read-traffic"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Handles write scaling and hot spots: chooses a partition key, plans for stampedes and invalidation, and absorbs traffic spikes without data loss.",
+          "lessons": [
+            "sd/cache-invalidation",
+            "sd/cache-stampede",
+            "sd/cache-warming",
+            "sd/distributed-caching",
+            "sd/database-partitioning",
+            "sd/sharding",
+            "sd/consistent-hashing",
+            "sd/materialized-views",
+            "sdi/high-write-traffic",
+            "sdi/hot-keys",
+            "sdi/traffic-spikes",
+            "sdi/memcached",
+            "sdi/fanout",
+            "sdi/handling-large-files"
+          ],
+          "assessments": [
+            "M7",
+            "M8"
+          ]
+        },
+        "Staff": {
+          "expectation": "Produces capacity and cost forecasts for 10x growth and reaches for probabilistic and geospatial structures when exact answers cost too much.",
+          "lessons": [
+            "sd/probabilistic-data-structures",
+            "sd/bloom-filters",
+            "sd/cuckoo-filter",
+            "sd/count-min-sketch",
+            "sd/hyperloglog",
+            "sd/skip-lists",
+            "sd/geohash",
+            "sd/quad-tree",
+            "sd/s2-h3",
+            "sdi/distributed-counting",
+            "sdi/media-streaming",
+            "sdi/design-key-value-store",
+            "ps/performance-debugging"
+          ],
+          "assessments": [
+            "M18"
+          ]
+        }
+      }
+    },
+    {
+      "id": "distributed-systems",
+      "name": "Distributed systems and consistency",
+      "summary": "Reasoning about time, failure, coordination and consistency when state lives on more than one machine or service.",
+      "levels": {
+        "Mid": {
+          "expectation": "Names the consistency a feature needs, recognises partitions and single points of failure, and avoids duplicate IDs and lost updates across nodes.",
+          "lessons": [
+            "sd/challenges-of-distribution",
+            "sd/cap-theorem",
+            "sd/consistency-models",
+            "sd/network-partitions",
+            "sd/heartbeats",
+            "sd/leader-election",
+            "sd/single-points-of-failure",
+            "sd/service-discovery",
+            "sdi/distributed-systems",
+            "sdi/generating-unique-ids"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Coordinates work across services with sagas, outbox and fencing rather than naive locks, and explains clock and ordering hazards in a design review.",
+          "lessons": [
+            "sd/clock-synchronization",
+            "sd/logical-clocks",
+            "sd/lamport-timestamps",
+            "sd/vector-clocks",
+            "sd/split-brain-problem",
+            "sd/distributed-locks",
+            "sd/two-phase-commit-protocol",
+            "sd/saga-pattern",
+            "sd/outbox-pattern",
+            "sd/distributed-transactions-problems",
+            "sdi/distributed-transactions",
+            "sdi/keeping-data-in-sync",
+            "sdi/preventing-double-booking",
+            "sdi/zookeeper"
+          ],
+          "assessments": [
+            "M10"
+          ]
+        },
+        "Staff": {
+          "expectation": "Chooses consistency models per data domain and explains the cost of each to non-specialists, including when consensus, CRDTs or event sourcing are worth it.",
+          "lessons": [
+            "sd/consensus-algorithms",
+            "sd/raft-algorithm",
+            "sd/paxos-algorithm",
+            "sd/gossip-protocol",
+            "sd/three-phase-commit",
+            "sd/crdts",
+            "sd/operational-transformation",
+            "sd/merkle-trees",
+            "sd/event-sourcing",
+            "sd/cqrs",
+            "sdi/design-key-value-store",
+            "sdi/design-locking-service",
+            "sdi/deduplicating-data",
+            "ps/debugging-distributed-systems"
+          ],
+          "assessments": [
+            "M11"
+          ]
+        }
+      }
+    },
+    {
+      "id": "reliability-operations",
+      "name": "Reliability, observability and incident response",
+      "summary": "Keeping services up and changes safe: instrumentation, debugging, resilience patterns, progressive delivery and running incidents.",
+      "levels": {
+        "Mid": {
+          "expectation": "Instruments their code with logs and metrics, reproduces and bisects bugs methodically, and ships through CI/CD with sensible alerts.",
+          "lessons": [
+            "sd/availability",
+            "sd/reliability",
+            "sd/logging",
+            "sd/metrics-instrumentation",
+            "sd/three-pillars-observability",
+            "sd/alert-monitoring",
+            "sd/ci-cd-pipelines",
+            "sd/rolling-deployments",
+            "ps/reproducing-bugs",
+            "ps/scientific-debugging",
+            "ps/bisecting",
+            "ps/owning-code-you-didnt-write"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Leads mitigation in the first minutes of an incident, finds root cause from traces and dashboards, and builds timeouts, breakers and canaries into what they ship.",
+          "lessons": [
+            "sd/handling-failures-in-distributed-systems",
+            "sd/circuit-breaker-pattern",
+            "sd/bulkhead-pattern",
+            "sd/distributed-tracing",
+            "sd/log-aggregation",
+            "sd/dashboards-runbooks",
+            "sd/blue-green-deployments",
+            "sd/canary-releases",
+            "sd/feature-flags",
+            "sdi/surviving-component-failures",
+            "ps/incident-first-15-minutes",
+            "ps/mitigate-first",
+            "ps/observability-driven-debugging",
+            "ps/hypothesis-driven-investigation",
+            "ps/root-cause-analysis"
+          ],
+          "assessments": [
+            "M12"
+          ]
+        },
+        "Staff": {
+          "expectation": "Sets reliability strategy across teams (SLOs, game days, disaster recovery, incident roles) and draws systemic lessons from industry outages.",
+          "lessons": [
+            "sd/deployment-strategies",
+            "sd/rollbacks-and-immutable-infrastructure",
+            "ps/chaos-engineering-and-game-days",
+            "ps/disaster-recovery",
+            "ps/incident-roles",
+            "ps/security-incident-response",
+            "ps/case-aws-s3-2017",
+            "ps/case-cloudflare-2019",
+            "ps/case-crowdstrike-2024",
+            "ps/case-facebook-2021",
+            "ps/case-gitlab-2017",
+            "ps/case-aws-dynamodb-2025"
+          ],
+          "assessments": [
+            "M16",
+            "M17"
+          ]
+        }
+      }
+    },
+    {
+      "id": "software-design",
+      "name": "Software design (LLD, OOP and patterns)",
+      "summary": "Code-level design: object modelling, SOLID, design patterns, concurrency in-process and architectural styles inside a service.",
+      "levels": {
+        "Mid": {
+          "expectation": "Writes clean, well-encapsulated classes with single responsibilities and can turn a small brief such as a parking lot into a working class model.",
+          "lessons": [
+            "lld/what-is-lld",
+            "lld/classes-and-objects",
+            "lld/encapsulation",
+            "lld/abstraction",
+            "lld/inheritance",
+            "lld/polymorphism",
+            "lld/interfaces",
+            "lld/composition",
+            "lld/srp",
+            "lld/ocp",
+            "lld/dry",
+            "lld/kiss",
+            "lld/writing-clean-code",
+            "lld/class-diagram",
+            "lld/design-parking-lot"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Applies SOLID and the common patterns to keep modules decoupled and testable, and handles shared state safely in concurrent code.",
+          "lessons": [
+            "lld/lsp",
+            "lld/isp",
+            "lld/dip",
+            "lld/dependency-injection",
+            "lld/coupling-and-cohesion",
+            "lld/strategy",
+            "lld/observer",
+            "lld/factory-method",
+            "lld/builder",
+            "lld/decorator",
+            "lld/adapter",
+            "lld/state",
+            "lld/repository",
+            "lld/handling-concurrency",
+            "lld/design-elevator-system"
+          ],
+          "assessments": [
+            "M15"
+          ]
+        },
+        "Staff": {
+          "expectation": "Chooses architectural styles and pattern vocabulary for a codebase many teams share, and designs correctness-critical domains (payments, matching, versioning).",
+          "lessons": [
+            "lld/choosing-design-patterns",
+            "sd/hexagonal-architecture",
+            "sd/serverless-architecture",
+            "lld/producer-consumer",
+            "lld/thread-pool",
+            "lld/mediator",
+            "lld/specification",
+            "lld/design-version-control-system",
+            "lld/design-payment-gateway",
+            "lld/design-online-stock-exchange"
+          ],
+          "assessments": [
+            "M13"
+          ]
+        }
+      }
+    },
+    {
+      "id": "system-design-interviewing",
+      "name": "System design interviewing",
+      "summary": "Communicating a design under time pressure: framing, estimating, diagramming, deep dives and level-appropriate trade-offs.",
+      "levels": {
+        "Mid": {
+          "expectation": "Delivers a complete, sensible design for a well-known prompt with guidance: requirements, API, data model and a working high-level diagram.",
+          "lessons": [
+            "sd/what-is-system-design",
+            "sd/core-concepts-map",
+            "sdi/what-interviews-measure",
+            "sdi/question-types",
+            "sdi/answering-framework",
+            "sdi/diagramming-tips",
+            "sdi/default-stack",
+            "sdi/design-url-shortener",
+            "sdi/design-url-shortener",
+            "sdi/design-leaderboard",
+            "lld/lld-vs-hld",
+            "lld/ood-approach",
+            "lld/machine-coding-approach"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Drives the session, reaches a high-level design by minute 20, then proposes and goes deep on the hard parts with failure modes and trade-offs.",
+          "lessons": [
+            "sdi/expectations-by-level",
+            "sdi/tradeoffs",
+            "lld/lld-interview-types",
+            "sdi/design-whatsapp",
+            "sdi/design-news-feed",
+            "sdi/design-youtube",
+            "sdi/design-uber",
+            "sdi/design-movie-booking-system",
+            "sdi/design-web-crawler",
+            "sdi/design-search-autocomplete-system",
+            "sdi/design-top-k",
+            "sdi/design-google-drive",
+            "sdi/design-notification-service"
+          ],
+          "assessments": [
+            "M8"
+          ]
+        },
+        "Staff": {
+          "expectation": "Reshapes the problem, then covers rollout, migration, operating cost and evolution for correctness-critical, high-scale prompts.",
+          "lessons": [
+            "sdi/design-payment-system",
+            "sdi/design-stock-exchange",
+            "sdi/design-payment-system",
+            "sdi/design-google-docs",
+            "sdi/design-ad-click-aggregator",
+            "sdi/design-flash-sale",
+            "sdi/design-google-maps",
+            "sdi/design-youtube",
+            "sdi/design-job-scheduler",
+            "sdi/design-messaging-queue",
+            "sdi/design-monitoring-and-alerting-system",
+            "sdi/design-cicd-pipeline",
+            "sdi/design-cdn"
+          ],
+          "assessments": [
+            "M18"
+          ]
+        }
+      }
+    },
+    {
+      "id": "ai-systems",
+      "name": "AI systems engineering",
+      "summary": "Building and operating LLM-powered features and working effectively with coding agents: RAG, tools, evals, cost and safety.",
+      "levels": {
+        "Mid": {
+          "expectation": "Builds a retrieval-augmented feature with structured output and tool calls, and reviews agent-written code before trusting it.",
+          "lessons": [
+            "ai/llm-application-basics",
+            "ai/structured-output-and-tool-use",
+            "ai/embeddings-and-vector-search",
+            "ai/rag-architecture",
+            "ps/problem-solving-in-the-ai-era",
+            "ps/verifying-agent-written-code",
+            "ps/context-engineering"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Designs agents with memory and state, runs evals in production, routes models by cost and quality, and debugs non-deterministic LLM failures.",
+          "lessons": [
+            "ai/agent-architectures",
+            "ai/agent-memory-and-state",
+            "ai/llm-gateways-and-caching",
+            "ai/model-selection-and-cost",
+            "ai/evals-in-production",
+            "sd/vector-databases",
+            "ps/debugging-llm-systems",
+            "ps/debugging-with-agents"
+          ],
+          "assessments": [
+            "M8"
+          ]
+        },
+        "Staff": {
+          "expectation": "Sets guardrails, observability, cost budgets and security policy for AI features and agents across the organisation, informed by agent-caused incidents.",
+          "lessons": [
+            "ai/ai-observability-and-cost",
+            "ai/ai-security-and-prompt-injection",
+            "ai/design-ai-support-assistant",
+            "ps/guardrails-for-agents",
+            "ps/shipping-agent-code-safely",
+            "ps/agent-caused-incidents",
+            "ps/case-replit-agent-2025"
+          ],
+          "assessments": [
+            "M16",
+            "M19"
+          ]
+        }
+      }
+    },
+    {
+      "id": "technical-leadership",
+      "name": "Technical leadership and decisions",
+      "summary": "Framing problems, making and communicating decisions under uncertainty, evolving architecture and leading people through change and crisis.",
+      "levels": {
+        "Mid": {
+          "expectation": "Frames a problem before solving it, keeps designs simple, and writes reviewable changes with tests and clear descriptions.",
+          "lessons": [
+            "ps/framing-the-problem",
+            "ps/first-principles-and-mental-models",
+            "ps/naming-problem-shapes",
+            "ps/whiteboard-first",
+            "fd/git-testing-code-review",
+            "lld/yagni",
+            "lld/soc",
+            "lld/lod"
+          ],
+          "assessments": []
+        },
+        "Senior": {
+          "expectation": "Writes specs and decision records that weigh options under uncertainty, transfers patterns across domains, and runs blameless reviews of what went wrong.",
+          "lessons": [
+            "ps/decisions-under-uncertainty",
+            "ps/spec-driven-development",
+            "ps/translating-domains",
+            "ps/same-problems-different-domains",
+            "ps/one-problem-five-domains",
+            "ps/blameless-postmortems",
+            "sd/ab-testing-infrastructure"
+          ],
+          "assessments": [
+            "M1"
+          ]
+        },
+        "Staff": {
+          "expectation": "Sets multi-year architecture direction (monolith to services, multi-region, incremental migration), aligns teams on it, and leads calmly through a crisis.",
+          "lessons": [
+            "sd/monolithic-architecture",
+            "sd/microservices-architecture",
+            "sd/strangler-fig-pattern",
+            "sdi/multi-region-architecture",
+            "ps/leading-through-a-crisis",
+            "ps/incident-communication",
+            "ps/case-knight-capital-2012"
+          ],
+          "assessments": [
+            "M13",
+            "M14"
+          ]
+        }
+      }
+    }
+  ]
+}

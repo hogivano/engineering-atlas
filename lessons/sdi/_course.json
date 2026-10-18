@@ -1,0 +1,531 @@
+{
+  "key": "sdi",
+  "title": "System Design Interviews",
+  "intro": "Learn the method first, then the recurring patterns, then practise on walkthroughs grouped by the problem that makes each one hard rather than by product category. The tools section is a reference for the technologies interviewers expect you to name and defend.",
+  "sections": [
+    {
+      "section": "What the interview is testing",
+      "chapters": [
+        [
+          "What interviewers look for in a system design round",
+          "what-interviews-measure"
+        ],
+        [
+          "Common shapes of design questions",
+          "question-types"
+        ],
+        [
+          "What is expected from junior to staff",
+          "expectations-by-level"
+        ],
+        [
+          "Explaining your trade-offs out loud",
+          "tradeoffs"
+        ]
+      ]
+    },
+    {
+      "section": "From prompt to design in 45 minutes",
+      "chapters": [
+        [
+          "A time plan for a 45-minute design round",
+          "answering-framework"
+        ],
+        [
+          "Quick capacity maths for interviews",
+          "estimation-cheatsheet"
+        ],
+        [
+          "Sketching APIs under interview pressure",
+          "api-design"
+        ],
+        [
+          "Choosing tables and schemas in an interview",
+          "database-design"
+        ],
+        [
+          "Drawing architecture diagrams that read well",
+          "diagramming-tips"
+        ]
+      ]
+    },
+    {
+      "section": "Reaching for the right building block",
+      "chapters": [
+        [
+          "Mapping requirements to building blocks",
+          "requirements-to-concepts"
+        ],
+        [
+          "Networking essentials for design interviews",
+          "networking"
+        ],
+        [
+          "Where to add caches in a design answer",
+          "caching"
+        ],
+        [
+          "Choosing a database for the job",
+          "database-selection"
+        ],
+        [
+          "Distributed systems topics interviewers probe",
+          "distributed-systems"
+        ],
+        [
+          "Specialised data structures worth mentioning",
+          "data-structures"
+        ],
+        [
+          "Picking a default tech stack for answers",
+          "default-stack"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for load and speed",
+      "chapters": [
+        [
+          "Handling read-heavy workloads",
+          "high-read-traffic"
+        ],
+        [
+          "Handling write-heavy workloads",
+          "high-write-traffic"
+        ],
+        [
+          "Taming hot keys and hot partitions",
+          "hot-keys"
+        ],
+        [
+          "Surviving sudden bursts of load",
+          "traffic-spikes"
+        ],
+        [
+          "Counting accurately across many servers",
+          "distributed-counting"
+        ],
+        [
+          "Fan-out on write versus on read",
+          "fanout"
+        ],
+        [
+          "Delivering live updates to clients",
+          "realtime-updates"
+        ],
+        [
+          "Building search and typeahead",
+          "search-and-typeahead"
+        ],
+        [
+          "Storing and querying locations",
+          "handling-location-data"
+        ],
+        [
+          "Moving large files reliably",
+          "handling-large-files"
+        ],
+        [
+          "Delivering video and audio at scale",
+          "media-streaming"
+        ],
+        [
+          "Designing for several regions",
+          "multi-region-architecture"
+        ]
+      ]
+    },
+    {
+      "section": "Patterns for correctness",
+      "chapters": [
+        [
+          "Generating unique IDs in a distributed system",
+          "generating-unique-ids"
+        ],
+        [
+          "Avoiding duplicate processing",
+          "deduplicating-data"
+        ],
+        [
+          "Stopping two people from booking the same slot",
+          "preventing-double-booking"
+        ],
+        [
+          "Consistency across services in interviews",
+          "distributed-transactions"
+        ],
+        [
+          "Keeping copies of data consistent",
+          "keeping-data-in-sync"
+        ],
+        [
+          "Running slow jobs in the background",
+          "handling-long-running-tasks"
+        ],
+        [
+          "Scheduling timers and recurring jobs",
+          "scheduling-delayed-and-recurring-jobs"
+        ],
+        [
+          "Designing for failing components",
+          "surviving-component-failures"
+        ]
+      ]
+    },
+    {
+      "section": "Finding things fast",
+      "chapters": [
+        [
+          "Design a short-link service",
+          "design-url-shortener"
+        ],
+        [
+          "Design a search suggestion service",
+          "design-search-autocomplete-system"
+        ],
+        [
+          "Design a web crawler",
+          "design-web-crawler"
+        ],
+        [
+          "Design a swipe-based dating app",
+          "design-tinder"
+        ],
+        [
+          "Design a ride-hailing app",
+          "design-uber"
+        ],
+        [
+          "Design a food ordering and delivery platform",
+          "design-food-delivery-service"
+        ],
+        [
+          "Design a mapping and navigation service",
+          "design-google-maps"
+        ],
+        [
+          "Design code search across repositories",
+          "design-code-search"
+        ],
+        [
+          "Design a semantic search service",
+          "design-semantic-search-service"
+        ]
+      ]
+    },
+    {
+      "section": "One event, many receivers",
+      "chapters": [
+        [
+          "Design a push notification platform",
+          "design-notification-service"
+        ],
+        [
+          "Design a social news feed",
+          "design-news-feed"
+        ],
+        [
+          "Design a photo-sharing app",
+          "design-instagram"
+        ],
+        [
+          "Design a community discussion forum",
+          "design-reddit"
+        ],
+        [
+          "Design live comments for streams",
+          "design-live-comments"
+        ],
+        [
+          "Design a webhook delivery service",
+          "design-webhook-delivery-service"
+        ]
+      ]
+    },
+    {
+      "section": "Counting and ranking under skew",
+      "chapters": [
+        [
+          "Design a top-K trending service",
+          "design-top-k"
+        ],
+        [
+          "Design a real-time game ranking board",
+          "design-leaderboard"
+        ],
+        [
+          "Design an ad click analytics pipeline",
+          "design-ad-click-aggregator"
+        ]
+      ]
+    },
+    {
+      "section": "Moving big bytes",
+      "chapters": [
+        [
+          "Design an S3-style object store",
+          "design-object-storage"
+        ],
+        [
+          "Design a cloud file storage and sync service",
+          "design-google-drive"
+        ],
+        [
+          "Design an email service",
+          "design-email-service"
+        ],
+        [
+          "Design a video-sharing platform",
+          "design-youtube"
+        ],
+        [
+          "Design a music streaming service",
+          "design-spotify"
+        ]
+      ]
+    },
+    {
+      "section": "Order and real-time conversation",
+      "chapters": [
+        [
+          "Design a chat messaging app",
+          "design-whatsapp"
+        ],
+        [
+          "Design a team collaboration chat tool",
+          "design-slack"
+        ],
+        [
+          "Design a video conferencing system",
+          "design-zoom"
+        ],
+        [
+          "Design a Google Docs-style collaborative editor",
+          "design-google-docs"
+        ],
+        [
+          "Design a multiplayer online chess service",
+          "design-chess"
+        ],
+        [
+          "Design a collaborative whiteboard",
+          "design-collaborative-whiteboard"
+        ],
+        [
+          "Design a multiplayer game backend",
+          "design-multiplayer-game-server"
+        ]
+      ]
+    },
+    {
+      "section": "Many buyers, one seat",
+      "chapters": [
+        [
+          "Design a cinema ticket booking service",
+          "design-movie-booking-system"
+        ],
+        [
+          "Design a shared calendar service",
+          "design-calendar-system"
+        ],
+        [
+          "Design a vacation rental marketplace",
+          "design-airbnb"
+        ],
+        [
+          "Design a high-demand flash sale",
+          "design-flash-sale"
+        ],
+        [
+          "Design a real-time bidding platform",
+          "design-online-auction-system"
+        ],
+        [
+          "Design a stock trading exchange",
+          "design-stock-exchange"
+        ],
+        [
+          "Design a virtual waiting room",
+          "design-virtual-waiting-room"
+        ]
+      ]
+    },
+    {
+      "section": "When money has to add up",
+      "chapters": [
+        [
+          "Design a payment processing system",
+          "design-payment-system"
+        ],
+        [
+          "Design an e-commerce marketplace",
+          "design-amazon"
+        ],
+        [
+          "Design usage metering and billing",
+          "design-usage-metering-and-billing"
+        ]
+      ]
+    },
+    {
+      "section": "Work that must eventually happen",
+      "chapters": [
+        [
+          "Design a distributed job scheduler",
+          "design-job-scheduler"
+        ],
+        [
+          "Design a distributed message queue",
+          "design-messaging-queue"
+        ],
+        [
+          "Design a build and deploy pipeline",
+          "design-cicd-pipeline"
+        ],
+        [
+          "Design an online coding judge",
+          "design-leetcode"
+        ],
+        [
+          "Design a metrics monitoring and alerting platform",
+          "design-monitoring-and-alerting-system"
+        ],
+        [
+          "Design a platform that runs AI coding agents",
+          "design-ai-coding-agent-platform"
+        ]
+      ]
+    },
+    {
+      "section": "Building the infrastructure itself",
+      "chapters": [
+        [
+          "Design a distributed rate limiter",
+          "design-rate-limiter"
+        ],
+        [
+          "Design a scalable load balancer",
+          "design-load-balancer"
+        ],
+        [
+          "Design an API gateway service",
+          "design-api-gateway"
+        ],
+        [
+          "Design a content delivery network",
+          "design-cdn"
+        ],
+        [
+          "Design a distributed key-value store",
+          "design-key-value-store"
+        ],
+        [
+          "Design a distributed lock service",
+          "design-locking-service"
+        ],
+        [
+          "Design a metrics database",
+          "design-time-series-database"
+        ],
+        [
+          "Design a feature flag service",
+          "design-feature-flag-service"
+        ],
+        [
+          "Design a distributed tracing system",
+          "design-distributed-tracing-system"
+        ]
+      ]
+    },
+    {
+      "section": "Tools you will be asked about: storing data",
+      "chapters": [
+        [
+          "PostgreSQL for system design interviews",
+          "postgresql"
+        ],
+        [
+          "MySQL for system design interviews",
+          "mysql"
+        ],
+        [
+          "MongoDB for system design interviews",
+          "mongodb"
+        ],
+        [
+          "DynamoDB for system design interviews",
+          "dynamodb"
+        ],
+        [
+          "Cassandra for system design interviews",
+          "cassandra"
+        ],
+        [
+          "Redis for system design interviews",
+          "redis"
+        ],
+        [
+          "Memcached for system design interviews",
+          "memcached"
+        ],
+        [
+          "Elasticsearch for system design interviews",
+          "elasticsearch"
+        ],
+        [
+          "Amazon S3 for system design interviews",
+          "s3"
+        ]
+      ]
+    },
+    {
+      "section": "Tools you will be asked about: moving and running work",
+      "chapters": [
+        [
+          "Kafka for system design interviews",
+          "kafka"
+        ],
+        [
+          "RabbitMQ for system design interviews",
+          "rabbitmq"
+        ],
+        [
+          "Amazon SQS for system design interviews",
+          "sqs"
+        ],
+        [
+          "Apache Flink for system design interviews",
+          "flink"
+        ],
+        [
+          "Apache Spark for system design interviews",
+          "spark"
+        ],
+        [
+          "ZooKeeper for system design interviews",
+          "zookeeper"
+        ],
+        [
+          "Nginx for system design interviews",
+          "nginx"
+        ],
+        [
+          "Docker for system design interviews",
+          "docker"
+        ],
+        [
+          "Kubernetes for system design interviews",
+          "kubernetes"
+        ],
+        [
+          "AWS Lambda for system design interviews",
+          "lambda"
+        ],
+        [
+          "Prometheus for system design interviews",
+          "prometheus"
+        ]
+      ]
+    }
+  ]
+}

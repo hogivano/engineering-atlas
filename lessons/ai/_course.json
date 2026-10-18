@@ -1,0 +1,44 @@
+{
+  "key": "ai",
+  "title": "Building AI Systems",
+  "intro": "How to design, ship and operate products built on language models: the same problem shapes as any distributed system (latency, cost, retries, retrieval, trust), plus the new ones that come from non-deterministic models and agents that act.",
+  "sections": [
+    {
+      "section": "Foundations of LLM Applications",
+      "chapters": [
+        ["How LLM Applications Work: Tokens, Context and Latency", "llm-application-basics"],
+        ["Choosing and Calling Models: Cost, Latency and Quality", "model-selection-and-cost"],
+        ["Structured Output and Tool Use", "structured-output-and-tool-use"]
+      ]
+    },
+    {
+      "section": "Retrieval",
+      "chapters": [
+        ["Retrieval-Augmented Generation", "rag-architecture"],
+        ["Embeddings and Vector Search in Production", "embeddings-and-vector-search"]
+      ]
+    },
+    {
+      "section": "Agents",
+      "chapters": [
+        ["Agent Architectures: Loops, Workflows and Sub-agents", "agent-architectures"],
+        ["Memory and State for Agents", "agent-memory-and-state"]
+      ]
+    },
+    {
+      "section": "Running AI in Production",
+      "chapters": [
+        ["Evals: Testing Non-Deterministic Systems", "evals-in-production"],
+        ["LLM Gateways, Caching and Rate Limits", "llm-gateways-and-caching"],
+        ["AI Security: Prompt Injection, Data Leaks and Abuse", "ai-security-and-prompt-injection"],
+        ["Observability and Cost Control for AI Features", "ai-observability-and-cost"]
+      ]
+    },
+    {
+      "section": "Design Walkthrough",
+      "chapters": [
+        ["Design an AI Support Assistant", "design-ai-support-assistant"]
+      ]
+    }
+  ]
+}

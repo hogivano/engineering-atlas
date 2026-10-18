@@ -1,0 +1,35 @@
+{
+  "key": "fd",
+  "title": "Foundations",
+  "intro": "The ground floor under every other course: how a computer runs your code, how machines talk, how data is stored, and the everyday tools of the job. Start here if HTTP, databases or threads still feel fuzzy.",
+  "sections": [
+    {
+      "section": "The Machine",
+      "chapters": [
+        ["How a Computer Runs Your Code: CPU, Memory and Disk", "how-computers-run-code"],
+        ["Processes, Threads and Async I/O", "processes-threads-async"]
+      ]
+    },
+    {
+      "section": "The Network",
+      "chapters": [
+        ["Networking Basics: IP, TCP, UDP and DNS", "networking-basics"],
+        ["HTTP and How the Web Works", "http-and-the-web"]
+      ]
+    },
+    {
+      "section": "Data",
+      "chapters": [
+        ["Databases 101: Tables, Indexes and Transactions", "databases-101"],
+        ["Data Structures Every Backend Uses", "backend-data-structures"]
+      ]
+    },
+    {
+      "section": "Tools of the Trade",
+      "chapters": [
+        ["Linux and the Command Line for Debugging", "linux-command-line"],
+        ["Git, Testing and Code Review Basics", "git-testing-code-review"]
+      ]
+    }
+  ]
+}

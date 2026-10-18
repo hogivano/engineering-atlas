@@ -1,0 +1,54 @@
+<title>Engineering Atlas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap">
+<style>
+__CSS__
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="titlerow">
+      <div class="brand"><h1><span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="10.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M16 3.5v3M16 25.5v3M3.5 16h3M25.5 16h3" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M16 8.5l3 7.5h-6z" fill="currentColor"/><path d="M16 23.5l-3-7.5h6z" fill="currentColor" fill-opacity=".45"/></svg></span>Engineering Atlas</h1><p class="tagline">System design, problem solving and incident response for engineers in the AI era</p></div>
+      <div class="toolbox">
+        <div class="sync" id="sync" data-s="local">Connecting…</div>
+        <div class="btnrow"><button class="btn small" id="account" data-account hidden>Sign in to sync</button><button class="btn ghost small" data-export title="Download your progress as a file">Export</button><label class="btn ghost small" title="Load progress from a file">Import<input type="file" id="importfile" accept="application/json,.json" hidden></label></div>
+      </div>
+    </div>
+    <input class="gsearch" id="gq" type="search" placeholder="Search lessons, chapters, resources and projects" aria-label="Search everything" autocomplete="off">
+    <div class="meters" id="meters"></div>
+  </header>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" data-view="today">Today</button>
+    <button role="tab" data-view="home">Home</button>
+    <button role="tab" data-view="learn">Learn</button>
+    <button role="tab" data-view="review">Review</button>
+    <button role="tab" data-view="progress">Progress</button>
+    <button role="tab" data-view="team">Team</button>
+    <button role="tab" data-view="projects">Projects</button>
+    <button role="tab" data-view="whiteboard">Whiteboard</button>
+    <button role="tab" data-view="resources">Resources</button>
+    <button role="tab" data-view="sprint">30-Day Sprint</button>
+    <button role="tab" data-view="curriculum">24-Week Curriculum</button>
+    <button role="tab" data-view="books">Books</button>
+    <button role="tab" data-view="library">Library</button>
+  </nav>
+  <main id="main"></main>
+  <footer class="sitefoot">
+    <span>Engineering Atlas · free and open source</span>
+    <nav aria-label="Policies"><button class="linkbtn" data-ai-settings>AI settings</button><button class="linkbtn" data-legal="privacy">Privacy</button><button class="linkbtn" data-legal="terms">Terms</button><button class="linkbtn" data-legal="ai-use">AI use</button><button class="linkbtn" data-legal="accessibility">Accessibility</button><button class="linkbtn" data-legal="security">Security</button><a href="https://github.com/hogivano/algoexpert" target="_blank" rel="noopener">GitHub</a></nav>
+  </footer>
+</div>
+<nav class="bnav" aria-label="Main">
+  <button data-goto="today"><span aria-hidden="true">◎</span>Today</button>
+  <button data-goto="learn"><span aria-hidden="true">▤</span>Learn</button>
+  <button data-goto="review"><span aria-hidden="true">↻</span>Review</button>
+  <button data-goto="progress"><span aria-hidden="true">▦</span>Progress</button>
+  <button data-more><span aria-hidden="true">⋯</span>More</button>
+</nav>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+__JS__
+</script>

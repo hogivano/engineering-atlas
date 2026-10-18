@@ -1,0 +1,11 @@
+{
+  "name": "engineering-atlas-checks",
+  "private": true,
+  "description": "Tools used by CI to check lessons: TypeScript compiler for practice code, mermaid and headless Chrome for diagrams.",
+  "devDependencies": {
+    "axe-core": "^4.10.2",
+    "mermaid": "10.9.1",
+    "puppeteer-core": "23.10.4",
+    "typescript": "5.6.3"
+  }
+}

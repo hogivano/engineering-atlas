@@ -1,0 +1,6 @@
+dist/
+__pycache__/
+tools/node_modules/
+tools/package-lock.json
+node_modules/
+sources/work/

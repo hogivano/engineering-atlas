@@ -147,7 +147,7 @@ For N = 3 the whole state fits in a few cache lines: 9 cells, plus 8 small integ
 - **K in a row on an N×N board (Gomoku, the [m,n,k-game](https://en.wikipedia.org/wiki/M,n,k-game) family).** Swap the detector. From the last move, walk outward in four directions (horizontal, vertical and the two diagonals) and count consecutive marks. That costs O(K) per move. Line counters no longer work because K < N.
 - **More than two players.** The ±1 trick breaks. Use one set of counters per player, or keep per-line "owner and count" pairs that mark a line dead once a second player touches it.
 - **Undo and replay.** Pop the `Move`, clear the cell, subtract the delta, decrement the move count and restore the turn. Reset the state to `IN_PROGRESS` if the undone move had ended the game.
-- **Bots.** A `Player` with a `chooseMove(board)` method. Minimax works for 3×3, which has [5,478 reachable positions](https://en.wikipedia.org/wiki/Tic-tac-toe). Larger boards need heuristics or Monte Carlo search.
+- **Bots.** A `Player` with a `chooseMove(board)` method. Minimax works for 3×3, whose game tree is tiny (only [765 essentially different positions](https://en.wikipedia.org/wiki/Tic-tac-toe) once rotations and reflections are merged). Larger boards need heuristics or Monte Carlo search.
 - **Networked play.** Put `Game` behind a service. Add a game ID and a move sequence number for optimistic concurrency, and broadcast events through the observer hook.
 
 ### Variant: snake and ladder board game
@@ -805,7 +805,7 @@ func (g *Game) Move(row, col int) (State, error) {
 
 ## Sources and further study
 **Primary**
-- [Tic-tac-toe (Wikipedia)](https://en.wikipedia.org/wiki/Tic-tac-toe): rules, the count of reachable positions and why perfect play draws.
+- [Tic-tac-toe (Wikipedia)](https://en.wikipedia.org/wiki/Tic-tac-toe): rules, the count of distinct positions and why perfect play draws.
 - [m,n,k-game (Wikipedia)](https://en.wikipedia.org/wiki/M,n,k-game): the general family behind the K-in-a-row extension.
 
 **Systems docs**
@@ -822,7 +822,6 @@ func (g *Game) Move(row, col int) (State, error) {
 - [Refactoring Guru: Strategy](https://refactoring.guru/design-patterns/strategy) and [Command](https://refactoring.guru/design-patterns/command): how that catalogue frames the two patterns used for win detection and undo.
 
 ## Watch
-- [Low-Level Design of Tic Tac Toe (SCALER)](https://www.youtube.com/watch?v=ULnY8VW7YCs): an interview-style walk from entities to classes for the game.
 - [System Design: Tic Tac Toe, Low Level System Design (The Tech Granth)](https://www.youtube.com/watch?v=V7aFobyuLrU): an object-oriented breakdown with players, board and game classes.
 - [Leetcode 348: Design Tic-Tac-Toe (LC Bear)](https://www.youtube.com/watch?v=oP_0hWm_bDA): the O(1) row, column and diagonal counter trick, explained step by step.
 
